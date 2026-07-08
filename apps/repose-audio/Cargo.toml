@@ -1,0 +1,32 @@
+[package]
+name = "repose-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+env_logger.workspace = true
+log.workspace = true
+
+player-core.workspace = true
+player-sync.workspace = true
+player-platform.workspace = true
+
+repose-core.workspace = true
+repose-ui.workspace = true
+repose-material.workspace = true
+repose-platform.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen.workspace = true
+js-sys.workspace = true
+web-sys = { workspace = true, features = [
+    "Window",
+    "HtmlCanvasElement",
+    "Document",
+    "Element",
+] }
+console_error_panic_hook.workspace = true
+console_log.workspace = true
+rlobkit-dialogs.workspace = true

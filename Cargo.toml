@@ -1,0 +1,36 @@
+[workspace]
+members = ["crates/*", "apps/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+license = "LGPL-2.1-or-later"
+
+[workspace.dependencies]
+anyhow = "1"
+crossbeam-channel = "0.5"
+env_logger = "0.11"
+log = "0.4"
+symphonia = { version = "0.6", features = ["all"] }
+rlobkit-dialogs = "0.4"
+
+repose-core = "0.22"
+repose-ui = "0.22"
+repose-material = "0.22"
+repose-platform = "0.22"
+
+console_error_panic_hook = "0.1"
+console_log = "1.0"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = "0.3"
+opfs = { git = "https://github.com/mlm-games/opfs" }
+
+cpal = "0.18"
+
+player-core = { path = "crates/player-core" }
+player-sync = { path = "crates/player-sync" }
+player-platform = { path = "crates/player-platform" }
