@@ -1,0 +1,45 @@
+name: repose-audio-player
+base: core24
+version: '0.1.0'
+summary: Pure-Rust audio player built with Symphonia and CPAL
+description: |
+  Repose Audio is a cross-platform audio player built as a reference example
+  for the Repose GUI framework. It uses Symphonia for decoding and CPAL for
+  low-latency playback, all in pure Rust.
+grade: stable
+confinement: strict
+icon: snap/gui/icon.png
+title: Repose Audio
+license: LGPL-2.1
+platforms:
+  amd64:
+  arm64:
+apps:
+  repose-audio:
+    command: repose-audio
+    extensions: [gnome]
+    plugs:
+      - home
+      - network
+      - removable-media
+      - unity7
+      - desktop
+      - desktop-legacy
+      - wayland
+      - x11
+parts:
+  repose-audio:
+    plugin: dump
+    source: ./builds/
+    source-type: local
+    stage-packages:
+      - libpulse0
+      - libglu1-mesa
+      - libxcursor1
+      - libxinerama1
+      - libxrandr2
+      - libxi6
+      - libudev1
+    override-build: |
+      craftctl default
+      chmod +x $CRAFT_PART_INSTALL/repose-audio

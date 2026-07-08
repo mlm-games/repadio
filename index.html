@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="description" content="Repose Audio Player" />
+  <meta name="theme-color" content="#101418" />
+  <link rel="icon" type="image/png" href="favicon.png" />
+  <title>Repose Audio</title>
+
+  <link data-trunk rel="rust" data-target-name="repose-audio" data-reference-types data-wasm-opt-params="--enable-sign-ext --enable-bulk-memory --enable-multivalue --enable-mutable-globals --enable-nontrapping-float-to-int" />
+
+  <style>
+    html,
+    body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #101418;
+    }
+
+    canvas {
+      outline: none;
+      touch-action: none;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+  </style>
+</head>
+
+<body></body>
+
+</html>

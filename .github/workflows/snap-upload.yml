@@ -1,0 +1,51 @@
+name: Snap upload
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: "Release version (e.g. 0.1.0)"
+        required: true
+
+concurrency:
+  group: snap-${{ inputs.version_name }}
+
+jobs:
+  snap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux binary
+        uses: robinraju/release-downloader@v1
+        with:
+          tag: v${{ inputs.version_name }}
+          fileName: '*x86_64*.tar.gz'
+          out-file-path: builds
+
+      - name: Extract binary
+        shell: bash
+        run: |
+          mkdir -p builds
+          tar xzf builds/*.tar.gz -C builds
+          rm builds/*.tar.gz
+          ls -la builds/
+
+      - name: Prepare snap files
+        shell: bash
+        run: |
+          mkdir -p others/snap/snap/gui
+          cp others/flathub/io.github.mlm_games.repose-audio-player.desktop others/snap/snap/gui/
+          cp others/packaging/icon.png others/snap/snap/gui/icon.png
+          sed -i "s/version: '.*'/version: '${{ inputs.version_name }}'/" others/snap/snapcraft.yaml
+
+      - name: Build snap
+        uses: snapcore/action-build@v1
+        with:
+          path: others/snap
+
+      - name: Publish snap
+        uses: snapcore/action-publish@v1
+        with:
+          store_login: ${{ secrets.SNAP_STORE_LOGIN }}
+          snap: repose-audio-player_*.snap
+          release: stable

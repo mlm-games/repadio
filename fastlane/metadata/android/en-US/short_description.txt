@@ -1,0 +1,1 @@
+Pure-Rust audio player with Symphonia + CPAL on the Repose GUI framework

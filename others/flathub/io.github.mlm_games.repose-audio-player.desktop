@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Repose Audio
+Comment=Audio player built with Repose — Symphonia + CPAL in pure Rust
+Categories=Audio;AudioVideo;Player;
+Keywords=audio;player;music;repose;symphonia;cpal;
+Exec=repose-audio %F
+Icon=io.github.mlm_games.repose-audio-player
+Terminal=false
+StartupNotify=true
+StartupWMClass=repose-audio
+MimeType=audio/mpeg;audio/flac;audio/ogg;audio/x-wav;audio/mp4;audio/aac;

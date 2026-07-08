@@ -1,4 +1,4 @@
-#![allow(non_snake_case)]
+#![allow(non_snake_case, non_upper_case_globals)]
 
 use std::{
     path::PathBuf,
@@ -9,7 +9,19 @@ use std::{
 use player_core::{AudioPlayer, PlaybackState, TrackMeta, probe_track_meta};
 use repose_core::prelude::*;
 use repose_material::material3 as m3;
+use repose_material::{Icon, material_symbols};
 use repose_ui::TextStyle;
+
+material_symbols! {
+    add            : '\u{E145}',
+    image          : '\u{E3F4}',
+    music_note     : '\u{E405}',
+    pause          : '\u{E034}',
+    play_arrow     : '\u{E037}',
+    skip_next      : '\u{E044}',
+    skip_previous  : '\u{E045}',
+    stop           : '\u{E047}',
+}
 use repose_ui::{Box, Column, LazyColumn, LazyColumnConfig, Row, Spacer, Text, ViewExt};
 
 #[derive(Clone)]
@@ -205,7 +217,7 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
                             .clip_rounded(12.0)
                             .background(theme().surface_variant))
                         .child(
-                            Text("🖼")
+                            Icon(Symbols::image)
                                 .size(40.0)
                                 .color(theme().on_surface.with_alpha(120)),
                         )
@@ -217,7 +229,7 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
                             .clip_rounded(12.0)
                             .background(theme().surface_variant))
                         .child(
-                            Text("♪")
+                            Icon(Symbols::music_note)
                                 .size(40.0)
                                 .color(theme().on_surface.with_alpha(120)),
                         )
@@ -301,7 +313,10 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
                             }
                         },
                         m3::ButtonConfig::default(),
-                        || Text("⏮ Prev"),
+                        || Row(Modifier::new().gap(8.0)).child((
+                            Icon(Symbols::skip_previous),
+                            Text("Prev"),
+                        )),
                     ),
                     m3::Button(
                         Modifier::new(),
@@ -315,11 +330,12 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
                         },
                         m3::ButtonConfig::default(),
                         move || {
-                            if snap.state == PlaybackState::Playing {
-                                Text("⏸ Pause")
+                            let (icon, label) = if snap.state == PlaybackState::Playing {
+                                (Icon(Symbols::pause), Text("Pause"))
                             } else {
-                                Text("▶ Play")
-                            }
+                                (Icon(Symbols::play_arrow), Text("Play"))
+                            };
+                            Row(Modifier::new().gap(8.0)).child((icon, label))
                         },
                     ),
                     m3::OutlinedButton(
@@ -339,7 +355,10 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
                             }
                         },
                         m3::ButtonConfig::default(),
-                        || Text("Next ⏭"),
+                        || Row(Modifier::new().gap(8.0)).child((
+                            Text("Next"),
+                            Icon(Symbols::skip_next),
+                        )),
                     ),
                     m3::OutlinedButton(
                         Modifier::new(),
@@ -352,7 +371,10 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
                             }
                         },
                         m3::ButtonConfig::default(),
-                        || Text("⏹ Stop"),
+                        || Row(Modifier::new().gap(8.0)).child((
+                            Icon(Symbols::stop),
+                            Text("Stop"),
+                        )),
                     ),
                     Spacer(),
                     m3::FilledTonalButton(
@@ -369,7 +391,10 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
                             }
                         },
                         m3::ButtonConfig::default(),
-                        || Text("＋ Add files"),
+                        || Row(Modifier::new().gap(8.0)).child((
+                            Icon(Symbols::add),
+                            Text("Add files"),
+                        )),
                     ),
                 )),
                 Row(Modifier::new().fill_max_width().gap(12.0)).child((

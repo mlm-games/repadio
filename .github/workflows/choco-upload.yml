@@ -1,0 +1,66 @@
+name: Chocolatey upload
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: "Release version (e.g. 0.1.0)"
+        required: true
+
+jobs:
+  choco:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Windows binary
+        uses: robinraju/release-downloader@v1
+        with:
+          tag: v${{ inputs.version_name }}
+          fileName: '*windows*.zip'
+          out-file-path: builds
+
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash builds/*.zip -Algorithm SHA256).Hash.ToLower()
+          echo "CHECKSUM=$hash" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Create chocolatey package
+        shell: pwsh
+        run: |
+          $ver = "${{ inputs.version_name }}"
+          mkdir choco-package/tools -Force
+
+          @"
+          <?xml version="1.0" encoding="utf-8"?>
+          <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+            <metadata>
+              <id>repose-audio-player</id>
+              <version>$ver</version>
+              <title>Repose Audio</title>
+              <authors>MLM Games</authors>
+              <description>Pure-Rust audio player built with Symphonia and CPAL on the Repose GUI framework</description>
+              <projectUrl>https://github.com/mlm-games/repose-audio-player</projectUrl>
+              <licenseUrl>https://www.gnu.org/licenses/lgpl-2.1.txt</licenseUrl>
+              <tags>audio player music repose symphonia cpal rust</tags>
+            </metadata>
+          </package>
+          "@ | Set-Content choco-package/repose-audio-player.nuspec
+
+          @"
+          `$ErrorActionPreference = 'Stop'
+          `$toolsDir = Split-Path -Parent `$MyInvocation.MyCommand.Definition
+          `$packageArgs = @{
+            packageName   = 'repose-audio-player'
+            url64         = "https://github.com/mlm-games/repose-audio-player/releases/download/v$ver/repose-audio-player-$ver-x86_64-pc-windows-gnu.zip"
+            checksum64    = '${{ env.CHECKSUM }}'
+            checksumType64 = 'sha256'
+          }
+          Install-ChocolateyZipPackage @packageArgs
+          "@ | Set-Content choco-package/tools/chocolateyinstall.ps1
+
+      - name: Pack and push
+        shell: pwsh
+        run: |
+          choco pack choco-package/repose-audio-player.nuspec
+          choco push repose-audio-player.${{ inputs.version_name }}.nupkg --source https://push.chocolatey.org/ --api-key ${{ secrets.CHOCO_API_KEY }}
