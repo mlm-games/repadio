@@ -4,6 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+default-run = "repadio-desktop"
+
+[lib]
+name = "repadio"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "repadio-desktop"
+path = "src/main.rs"
 
 [package.metadata.android]
 package = "org.mlm.repadio"
@@ -59,6 +68,9 @@ repose-core.workspace = true
 repose-ui.workspace = true
 repose-material.workspace = true
 repose-platform.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.15"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen.workspace = true
