@@ -29,7 +29,7 @@ impl MediaClock for AudioPlayer {
     }
 }
 
-/// One decoded video frame in planar 8-bit YUV420 —
+/// One decoded video frame in planar 8-bit YUV420
 /// exactly what videoson's H.264 (`rust_h264`) and AV1 (`rav1d-safe`)
 /// decoders emit for the supported profile.
 #[derive(Clone)]

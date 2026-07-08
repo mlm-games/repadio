@@ -2,7 +2,7 @@
 Type=Application
 Version=1.5
 Name=Repadio
-Comment=Audio player built with Repose — Symphonia + CPAL in pure Rust
+Comment=Audio player built with Repose
 Categories=Audio;AudioVideo;Player;
 Keywords=audio;player;music;repose;symphonia;cpal;
 Exec=repadio %F

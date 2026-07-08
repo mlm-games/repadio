@@ -15,7 +15,7 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
 /// Returns an empty Vec if the user cancels.
 ///
 /// NOTE: blocks the calling thread on desktop. On WASM the synchronous
-/// API is unavailable — use `pick_audio_files_async` instead.
+/// API is unavailable -> use `pick_audio_files_async` instead.
 pub fn pick_audio_files() -> Vec<PathBuf> {
     #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     {

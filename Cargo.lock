@@ -2795,6 +2795,7 @@ dependencies = [
  "cpal",
  "crossbeam-channel",
  "js-sys",
+ "log",
  "symphonia",
  "wasm-bindgen",
  "wasm-bindgen-futures",

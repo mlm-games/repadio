@@ -2,11 +2,13 @@
 
 use std::{
     path::PathBuf,
+    rc::Rc,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use player_core::{AudioPlayer, PlaybackState, TrackMeta, probe_track_meta};
+use repose_core::modifier::PaddingValues;
 use repose_core::prelude::*;
 use repose_material::material3 as m3;
 use repose_material::{Icon, material_symbols};
@@ -21,6 +23,13 @@ material_symbols! {
     skip_next      : '\u{E044}',
     skip_previous  : '\u{E045}',
     stop           : '\u{E047}',
+    volume_up      : '\u{E050}',
+    volume_down    : '\u{E04D}',
+    volume_off     : '\u{E04F}',
+    library_music  : '\u{E030}',
+    error_icon     : '\u{E000}',
+    close          : '\u{E5CD}',
+    graphic_eq     : '\u{E1B8}',
 }
 use repose_ui::{Box, Column, LazyColumn, LazyColumnConfig, Row, Spacer, Text, ViewExt};
 
@@ -72,7 +81,6 @@ pub async fn wasm_main() {
     let player = AudioPlayer::spawn().expect("failed to spawn audio player");
     let pending: PendingFiles = Arc::new(Mutex::new(Vec::new()));
 
-    let _resume_player = player.clone();
     let canvas = web_sys::window()
         .and_then(|w| w.document())
         .and_then(|d| d.get_element_by_id("repadio_canvas"))
@@ -129,7 +137,7 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
     let volume = remember(|| signal(1.0f32));
     let advance_armed = remember(|| signal(true));
     let scrubbing = remember(|| signal(None::<f32>));
-
+    let dismissed_error = remember(|| signal(None::<String>));
     {
         let new_files: Vec<PathBuf> = pending.lock().unwrap().drain(..).collect();
         if !new_files.is_empty() {
@@ -149,7 +157,6 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
     }
 
     let snap = player.snapshot();
-
     if snap.state == PlaybackState::Ended && advance_armed.get() {
         let list = playlist.get();
         if let Some(idx) = current.get() {
@@ -164,25 +171,128 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
         advance_armed.set(true);
     }
 
-    let status_text = match snap.state {
-        PlaybackState::Idle => "Idle",
-        PlaybackState::Loading => "Loading",
-        PlaybackState::Playing => "Playing",
-        PlaybackState::Paused => "Paused",
-        PlaybackState::Stopped => "Stopped",
-        PlaybackState::Ended => "Ended",
-        PlaybackState::Error => "Error",
+    let playlist_len = playlist.get().len();
+
+    let top_bar = m3::TopAppBar(
+        Row(Modifier::new().gap(10.0)).child((
+            Icon(Symbols::graphic_eq).size(22.0).color(theme().primary),
+            Text("Repadio").size(20.0),
+        )),
+        None,
+        None,
+        vec![],
+        m3::TopAppBarConfig::default(),
+    );
+
+    let fab = m3::FAB(
+        Icon(Symbols::add).size(24.0),
+        {
+            let pending = pending.clone();
+            move || {
+                let pending = pending.clone();
+                player_platform::pick_audio_files_async(move |files| {
+                    if !files.is_empty() {
+                        pending.lock().unwrap().extend(files);
+                    }
+                });
+            }
+        },
+        m3::FABConfig::default(),
+    );
+
+    m3::Scaffold(
+        move |padding| {
+            Column(
+                Modifier::new()
+                    .fill_max_size()
+                    .padding_values(padding)
+                    .padding(16.0)
+                    .gap(16.0),
+            )
+            .child((
+                ErrorBanner(snap.error.clone(), dismissed_error.clone()),
+                NowPlayingCard(player.clone(), snap.clone(), scrubbing.clone()),
+                TransportBar(
+                    player.clone(),
+                    playlist.clone(),
+                    current.clone(),
+                    snap.state,
+                ),
+                VolumeRow(player.clone(), volume.clone()),
+                PlaylistHeader(playlist_len),
+                if playlist_len == 0 {
+                    EmptyPlaylist(pending.clone())
+                } else {
+                    PlaylistList(playlist.clone(), current.clone(), player.clone())
+                },
+            ))
+        },
+        m3::ScaffoldConfig {
+            top_bar: Some(top_bar),
+            floating_action_button: Some(fab),
+            ..Default::default()
+        },
+    )
+}
+
+fn ErrorBanner(error: Option<String>, dismissed: Rc<Signal<Option<String>>>) -> View {
+    let should_show = match (&error, &dismissed.get()) {
+        (Some(e), Some(d)) => e != d,
+        (Some(_), None) => true,
+        (None, _) => false,
     };
 
+    if !should_show {
+        return Box(Modifier::new().height(0.0));
+    }
+
+    let msg = error.clone().unwrap_or_default();
+
+    Row(Modifier::new()
+        .fill_max_width()
+        .padding(14.0)
+        .clip_rounded(16.0)
+        .background(theme().error_container)
+        .gap(12.0)
+        .align_items(AlignItems::CENTER))
+    .child((
+        Icon(Symbols::error_icon)
+            .size(20.0)
+            .color(theme().on_error_container),
+        Text(msg)
+            .size(13.0)
+            .color(theme().on_error_container)
+            .modifier(Modifier::new().weight(1.0)),
+        m3::IconButton(
+            Icon(Symbols::close)
+                .size(18.0)
+                .color(theme().on_error_container),
+            {
+                let dismissed = dismissed.clone();
+                move || dismissed.set(error.clone())
+            },
+            m3::IconButtonConfig {
+                container_size: Some(28.0),
+                ..Default::default()
+            },
+        ),
+    ))
+}
+
+fn NowPlayingCard(
+    player: AudioPlayer,
+    snap: player_core::PlayerSnapshot,
+    scrubbing: Rc<Signal<Option<f32>>>,
+) -> View {
     let title = snap
         .title
         .clone()
         .unwrap_or_else(|| "No track loaded".into());
     let sub_line = match (&snap.artist, &snap.album) {
-        (Some(ar), Some(al)) => format!("{ar} — {al}"),
+        (Some(ar), Some(al)) => format!("{ar} - {al}"),
         (Some(ar), None) => ar.clone(),
         (None, Some(al)) => al.clone(),
-        (None, None) => String::new(),
+        (None, None) => "Add a track to get started".into(),
     };
 
     let pos = format_duration(snap.position);
@@ -195,309 +305,492 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
         .get()
         .unwrap_or_else(|| progress_ratio(snap.position, snap.duration));
 
-    let top_bar = m3::TopAppBar(
-        Text("Repadio"),
-        Some(Text("Symphonia + CPAL — pure Rust")),
-        None,
-        vec![],
-        m3::TopAppBarConfig::default(),
-    );
+    let is_playing = snap.state == PlaybackState::Playing;
 
-    m3::Scaffold(
-        move |padding| {
-            Column(
-                Modifier::new()
-                    .fill_max_size()
-                    .padding_values(padding)
-                    .padding(20.0)
-                    .gap(14.0),
-            )
-            .child((
-                Row(Modifier::new().fill_max_width().gap(16.0)).child((
-                    if snap.art.is_some() {
-                        Box(Modifier::new()
-                            .width(96.0)
-                            .height(96.0)
-                            .clip_rounded(12.0)
-                            .background(theme().surface_variant))
-                        .child(
-                            Icon(Symbols::image)
-                                .size(40.0)
-                                .color(theme().on_surface.with_alpha(120)),
-                        )
-                    } else {
-                        Box(Modifier::new()
-                            .width(96.0)
-                            .height(96.0)
-                            .clip_rounded(12.0)
-                            .background(theme().surface_variant))
-                        .child(
-                            Icon(Symbols::music_note)
-                                .size(40.0)
-                                .color(theme().on_surface.with_alpha(120)),
-                        )
-                    },
-                    Column(Modifier::new().weight(1.0).gap(4.0)).child((
-                        Text(title.clone())
-                            .size(24.0)
-                            .single_line()
-                            .overflow_ellipsize(),
-                        Text(sub_line.clone())
-                            .size(14.0)
-                            .color(theme().on_surface.with_alpha(170))
-                            .single_line()
-                            .overflow_ellipsize(),
-                        Text(format!("Status: {status_text}"))
-                            .size(13.0)
-                            .color(match snap.state {
-                                PlaybackState::Error => theme().error,
-                                PlaybackState::Playing => theme().primary,
-                                _ => theme().on_surface.with_alpha(150),
-                            }),
-                    )),
-                )),
-                if let Some(err) = &snap.error {
-                    Text(err.clone()).size(13.0).color(theme().error)
+    let art_bg = if is_playing {
+        theme().primary_container
+    } else {
+        theme().surface_variant
+    };
+    let art_fg = if is_playing {
+        theme().on_primary_container
+    } else {
+        theme().on_surface.with_alpha(120)
+    };
+
+    Column(
+        Modifier::new()
+            .fill_max_width()
+            .padding(20.0)
+            .clip_rounded(24.0)
+            .background(theme().surface_variant.with_alpha(70))
+            .gap(16.0),
+    )
+    .child((
+        Row(Modifier::new()
+            .fill_max_width()
+            .gap(16.0)
+            .align_items(AlignItems::CENTER))
+        .child((
+            Box(Modifier::new()
+                .width(88.0)
+                .height(88.0)
+                .clip_rounded(20.0)
+                .background(art_bg)
+                .align_items(AlignItems::CENTER)
+                .justify_content(JustifyContent::CENTER))
+            .child(
+                Icon(if snap.art.is_some() {
+                    Symbols::image
                 } else {
-                    Box(Modifier::new())
-                },
-                Row(Modifier::new().fill_max_width().gap(8.0)).child((
-                    Text(pos.clone()).size(13.0),
-                    Spacer(),
-                    Text(dur.clone()).size(13.0),
-                )),
-                m3::Slider(
-                    slider_value,
-                    (0.0, 1.0),
-                    None,
-                    {
-                        let scrubbing = scrubbing.clone();
-                        move |ratio: f32| scrubbing.set(Some(ratio))
-                    },
-                    m3::SliderConfig {
-                        enabled: snap.duration.is_some(),
-                        modifier: Modifier::new().fill_max_width(),
-                        on_value_change_finished: {
-                            let player = player.clone();
-                            let scrubbing = scrubbing.clone();
-                            let duration = snap.duration;
-                            Some(std::rc::Rc::new(move || {
-                                let ratio = scrubbing.get().unwrap_or(0.0);
-                                scrubbing.set(None);
-                                if let Some(d) = duration {
-                                    let target =
-                                        Duration::from_secs_f64(d.as_secs_f64() * ratio as f64);
-                                    if let Err(e) = player.seek(target) {
-                                        log::error!("seek failed: {e}");
-                                    }
-                                }
-                            }))
-                        },
-                        ..Default::default()
-                    },
-                ),
-                Row(Modifier::new().fill_max_width().gap(12.0)).child((
-                    m3::OutlinedButton(
-                        Modifier::new(),
-                        {
-                            let player = player.clone();
-                            let playlist = playlist.clone();
-                            let current = current.clone();
-                            move || {
-                                let list = playlist.get();
-                                if let Some(idx) = current.get() {
-                                    if idx > 0 {
-                                        current.set(Some(idx - 1));
-                                        let _ = player.load(list[idx - 1].path.clone());
-                                    }
-                                }
-                            }
-                        },
-                        m3::ButtonConfig::default(),
-                        || {
-                            Row(Modifier::new().gap(8.0))
-                                .child((Icon(Symbols::skip_previous), Text("Prev")))
-                        },
-                    ),
-                    m3::Button(
-                        Modifier::new(),
-                        {
-                            let player = player.clone();
-                            move || {
-                                if let Err(e) = player.toggle() {
-                                    log::error!("toggle failed: {e}");
-                                }
-                            }
-                        },
-                        m3::ButtonConfig::default(),
-                        move || {
-                            let (icon, label) = if snap.state == PlaybackState::Playing {
-                                (Icon(Symbols::pause), Text("Pause"))
-                            } else {
-                                (Icon(Symbols::play_arrow), Text("Play"))
-                            };
-                            Row(Modifier::new().gap(8.0)).child((icon, label))
-                        },
-                    ),
-                    m3::OutlinedButton(
-                        Modifier::new(),
-                        {
-                            let player = player.clone();
-                            let playlist = playlist.clone();
-                            let current = current.clone();
-                            move || {
-                                let list = playlist.get();
-                                if let Some(idx) = current.get() {
-                                    if idx + 1 < list.len() {
-                                        current.set(Some(idx + 1));
-                                        let _ = player.load(list[idx + 1].path.clone());
-                                    }
-                                }
-                            }
-                        },
-                        m3::ButtonConfig::default(),
-                        || {
-                            Row(Modifier::new().gap(8.0))
-                                .child((Text("Next"), Icon(Symbols::skip_next)))
-                        },
-                    ),
-                    m3::OutlinedButton(
-                        Modifier::new(),
-                        {
-                            let player = player.clone();
-                            move || {
-                                if let Err(e) = player.stop() {
-                                    log::error!("stop failed: {e}");
-                                }
-                            }
-                        },
-                        m3::ButtonConfig::default(),
-                        || Row(Modifier::new().gap(8.0)).child((Icon(Symbols::stop), Text("Stop"))),
-                    ),
-                    Spacer(),
-                    m3::FilledTonalButton(
-                        Modifier::new(),
-                        {
-                            let pending = pending.clone();
-                            move || {
-                                let pending = pending.clone();
-                                player_platform::pick_audio_files_async(move |files| {
-                                    if !files.is_empty() {
-                                        pending.lock().unwrap().extend(files);
-                                    }
-                                });
-                            }
-                        },
-                        m3::ButtonConfig::default(),
-                        || {
-                            Row(Modifier::new().gap(8.0))
-                                .child((Icon(Symbols::add), Text("Add files")))
-                        },
-                    ),
-                )),
-                Row(Modifier::new().fill_max_width().gap(12.0)).child((
-                    Text(format!("Vol {:.0}%", volume.get() * 100.0)).size(13.0),
-                    m3::Slider(
-                        volume.get(),
-                        (0.0, 1.5),
-                        None,
-                        {
-                            let volume = volume.clone();
-                            let player = player.clone();
-                            move |v| {
-                                volume.set(v);
-                                let _ = player.set_volume(v);
-                            }
-                        },
-                        m3::SliderConfig {
-                            modifier: Modifier::new().weight(1.0),
-                            ..Default::default()
-                        },
-                    ),
-                )),
-                Text(format!("Playlist — {} tracks", playlist.get().len()))
-                    .size(15.0)
-                    .color(theme().on_surface.with_alpha(200)),
+                    Symbols::music_note
+                })
+                .size(36.0)
+                .color(art_fg),
+            ),
+            Column(Modifier::new().weight(1.0).gap(6.0)).child((
+                Text(title).size(20.0).single_line().overflow_ellipsize(),
+                Text(sub_line)
+                    .size(13.0)
+                    .color(theme().on_surface.with_alpha(170))
+                    .single_line()
+                    .overflow_ellipsize(),
+                StatusChip(snap.state),
+            )),
+        )),
+        Column(Modifier::new().fill_max_width().gap(4.0)).child((
+            m3::Slider(
+                slider_value,
+                (0.0, 1.0),
+                None,
                 {
-                    let list = playlist.get();
-                    LazyColumn(
-                        list,
-                        64.0f32,
-                        |entry: &Entry| {
-                            use std::hash::{Hash, Hasher};
-                            let mut s = std::collections::hash_map::DefaultHasher::new();
-                            entry.path.hash(&mut s);
-                            s.finish()
-                        },
-                        {
-                            let current = current.clone();
-                            let player = player.clone();
-                            move |entry: Entry, idx: usize| {
-                                let is_current = current.get() == Some(idx);
-                                let row_player = player.clone();
-                                let row_current = current.clone();
-                                let row_path = entry.path.clone();
-
-                                Row(Modifier::new()
-                                    .fill_max_width()
-                                    .padding(10.0)
-                                    .clip_rounded(8.0)
-                                    .background(if is_current {
-                                        theme().surface_variant
-                                    } else {
-                                        theme().surface
-                                    })
-                                    .on_click(move || {
-                                        row_current.set(Some(idx));
-                                        let _ = row_player.load(row_path.clone());
-                                    })
-                                    .gap(10.0))
-                                .child((
-                                    Text(format!("{}.", idx + 1))
-                                        .size(13.0)
-                                        .color(theme().on_surface.with_alpha(140)),
-                                    Column(Modifier::new().weight(1.0)).child((
-                                        Text(entry.display_title())
-                                            .size(14.0)
-                                            .single_line()
-                                            .overflow_ellipsize(),
-                                        Text(
-                                            entry
-                                                .meta
-                                                .artist
-                                                .clone()
-                                                .unwrap_or_else(|| "Unknown artist".into()),
-                                        )
-                                        .size(12.0)
-                                        .color(theme().on_surface.with_alpha(150))
-                                        .single_line()
-                                        .overflow_ellipsize(),
-                                    )),
-                                    Text(
-                                        entry
-                                            .meta
-                                            .duration
-                                            .map(format_duration)
-                                            .unwrap_or_else(|| "--:--".into()),
-                                    )
-                                    .size(12.0)
-                                    .color(theme().on_surface.with_alpha(150)),
-                                ))
-                            }
-                        },
-                        LazyColumnConfig {
-                            modifier: Modifier::new().fill_max_width().weight(1.0),
-                            ..Default::default()
-                        },
-                    )
+                    let scrubbing = scrubbing.clone();
+                    move |ratio: f32| scrubbing.set(Some(ratio))
                 },
-            ))
+                m3::SliderConfig {
+                    enabled: snap.duration.is_some(),
+                    modifier: Modifier::new().fill_max_width(),
+                    on_value_change_finished: {
+                        let player = player.clone();
+                        let scrubbing = scrubbing.clone();
+                        let duration = snap.duration;
+                        Some(std::rc::Rc::new(move || {
+                            let ratio = scrubbing.get().unwrap_or(0.0);
+                            scrubbing.set(None);
+                            if let Some(d) = duration {
+                                let target =
+                                    Duration::from_secs_f64(d.as_secs_f64() * ratio as f64);
+                                if let Err(e) = player.seek(target) {
+                                    log::error!("seek failed: {e}");
+                                }
+                            }
+                        }))
+                    },
+                    ..Default::default()
+                },
+            ),
+            Row(Modifier::new().fill_max_width()).child((
+                Text(pos)
+                    .size(12.0)
+                    .color(theme().on_surface.with_alpha(150)),
+                Spacer(),
+                Text(dur)
+                    .size(12.0)
+                    .color(theme().on_surface.with_alpha(150)),
+            )),
+        )),
+    ))
+}
+
+fn StatusChip(state: PlaybackState) -> View {
+    let (label, bg, fg) = match state {
+        PlaybackState::Playing => (
+            "Playing",
+            theme().primary_container,
+            theme().on_primary_container,
+        ),
+        PlaybackState::Paused => (
+            "Paused",
+            theme().secondary_container,
+            theme().on_secondary_container,
+        ),
+        PlaybackState::Loading => (
+            "Loading…",
+            theme().tertiary_container,
+            theme().on_tertiary_container,
+        ),
+        PlaybackState::Error => ("Error", theme().error_container, theme().on_error_container),
+        PlaybackState::Ended => (
+            "Ended",
+            theme().surface_variant,
+            theme().on_surface.with_alpha(180),
+        ),
+        PlaybackState::Stopped | PlaybackState::Idle => (
+            "Stopped",
+            theme().surface_variant,
+            theme().on_surface.with_alpha(180),
+        ),
+    };
+
+    Box(Modifier::new()
+        .padding_values(PaddingValues {
+            left: 10.0,
+            right: 10.0,
+            top: 4.0,
+            bottom: 4.0,
+        })
+        .clip_rounded(999.0)
+        .background(bg))
+    .child(Text(label).size(11.0).color(fg))
+}
+
+fn TransportBar(
+    player: AudioPlayer,
+    playlist: Rc<Signal<Vec<Entry>>>,
+    current: Rc<Signal<Option<usize>>>,
+    state: PlaybackState,
+) -> View {
+    Row(Modifier::new()
+        .fill_max_width()
+        .gap(12.0)
+        .align_items(AlignItems::CENTER))
+    .child((
+        Spacer(),
+        m3::OutlinedIconButton(
+            Icon(Symbols::skip_previous).size(22.0),
+            {
+                let player = player.clone();
+                let playlist = playlist.clone();
+                let current = current.clone();
+                move || {
+                    let list = playlist.get();
+                    if let Some(idx) = current.get() {
+                        if idx > 0 {
+                            current.set(Some(idx - 1));
+                            let _ = player.load(list[idx - 1].path.clone());
+                        }
+                    }
+                }
+            },
+            m3::IconButtonConfig {
+                container_size: Some(48.0),
+                ..Default::default()
+            },
+        ),
+        m3::FilledIconButton(
+            Icon(if state == PlaybackState::Playing {
+                Symbols::pause
+            } else {
+                Symbols::play_arrow
+            })
+            .size(30.0),
+            {
+                let player = player.clone();
+                move || {
+                    if let Err(e) = player.toggle() {
+                        log::error!("toggle failed: {e}");
+                    }
+                }
+            },
+            m3::IconButtonConfig {
+                container_size: Some(64.0),
+                ..Default::default()
+            },
+        ),
+        m3::OutlinedIconButton(
+            Icon(Symbols::skip_next).size(22.0),
+            {
+                let player = player.clone();
+                let playlist = playlist.clone();
+                let current = current.clone();
+                move || {
+                    let list = playlist.get();
+                    if let Some(idx) = current.get() {
+                        if idx + 1 < list.len() {
+                            current.set(Some(idx + 1));
+                            let _ = player.load(list[idx + 1].path.clone());
+                        }
+                    }
+                }
+            },
+            m3::IconButtonConfig {
+                container_size: Some(48.0),
+                ..Default::default()
+            },
+        ),
+        Spacer(),
+        m3::IconButton(
+            Icon(Symbols::stop)
+                .size(20.0)
+                .color(theme().on_surface.with_alpha(180)),
+            {
+                let player = player.clone();
+                move || {
+                    if let Err(e) = player.stop() {
+                        log::error!("stop failed: {e}");
+                    }
+                }
+            },
+            m3::IconButtonConfig {
+                container_size: Some(40.0),
+                ..Default::default()
+            },
+        ),
+    ))
+}
+
+fn VolumeRow(player: AudioPlayer, volume: Rc<Signal<f32>>) -> View {
+    let v = volume.get();
+    let icon = if v <= 0.001 {
+        Symbols::volume_off
+    } else if v < 0.6 {
+        Symbols::volume_down
+    } else {
+        Symbols::volume_up
+    };
+
+    Row(Modifier::new()
+        .fill_max_width()
+        .padding_values(PaddingValues {
+            left: 4.0,
+            right: 4.0,
+            top: 0.0,
+            bottom: 0.0,
+        })
+        .gap(10.0)
+        .align_items(AlignItems::CENTER))
+    .child((
+        Icon(icon)
+            .size(18.0)
+            .color(theme().on_surface.with_alpha(170)),
+        m3::Slider(
+            v,
+            (0.0, 1.5),
+            None,
+            {
+                let volume = volume.clone();
+                let player = player.clone();
+                move |v| {
+                    volume.set(v);
+                    let _ = player.set_volume(v);
+                }
+            },
+            m3::SliderConfig {
+                modifier: Modifier::new().weight(1.0),
+                ..Default::default()
+            },
+        ),
+        Text(format!("{:.0}%", v * 100.0))
+            .size(12.0)
+            .color(theme().on_surface.with_alpha(170))
+            .modifier(Modifier::new().width(40.0)),
+    ))
+}
+
+fn PlaylistHeader(count: usize) -> View {
+    Row(Modifier::new()
+        .fill_max_width()
+        .gap(8.0)
+        .align_items(AlignItems::CENTER))
+    .child((
+        Text("Playlist")
+            .size(16.0)
+            .color(theme().on_surface.with_alpha(220)),
+        Box(Modifier::new()
+            .padding_values(PaddingValues {
+                left: 8.0,
+                right: 8.0,
+                top: 2.0,
+                bottom: 2.0,
+            })
+            .clip_rounded(999.0)
+            .background(theme().secondary_container))
+        .child(
+            Text(count.to_string())
+                .size(11.0)
+                .color(theme().on_secondary_container),
+        ),
+        Spacer(),
+    ))
+}
+
+fn EmptyPlaylist(pending: PendingFiles) -> View {
+    Column(
+        Modifier::new()
+            .fill_max_width()
+            .weight(1.0)
+            .padding(32.0)
+            .gap(12.0),
+    )
+    .child((
+        Spacer(),
+        Row(Modifier::new().fill_max_width()).child((
+            Spacer(),
+            Icon(Symbols::library_music)
+                .size(48.0)
+                .color(theme().on_surface.with_alpha(100)),
+            Spacer(),
+        )),
+        Row(Modifier::new().fill_max_width()).child((
+            Spacer(),
+            Text("No tracks yet")
+                .size(16.0)
+                .color(theme().on_surface.with_alpha(200)),
+            Spacer(),
+        )),
+        Row(Modifier::new().fill_max_width()).child((
+            Spacer(),
+            Text("Tap + to add audio files")
+                .size(13.0)
+                .color(theme().on_surface.with_alpha(150)),
+            Spacer(),
+        )),
+        Row(Modifier::new().fill_max_width()).child((
+            Spacer(),
+            m3::FilledTonalButton(
+                Modifier::new(),
+                move || {
+                    let pending = pending.clone();
+                    player_platform::pick_audio_files_async(move |files| {
+                        if !files.is_empty() {
+                            pending.lock().unwrap().extend(files);
+                        }
+                    });
+                },
+                m3::ButtonConfig::default(),
+                || Row(Modifier::new().gap(8.0)).child((Icon(Symbols::add), Text("Add files"))),
+            ),
+            Spacer(),
+        )),
+        Spacer(),
+    ))
+}
+
+fn PlaylistList(
+    playlist: Rc<Signal<Vec<Entry>>>,
+    current: Rc<Signal<Option<usize>>>,
+    player: AudioPlayer,
+) -> View {
+    let list = playlist.get();
+
+    LazyColumn(
+        list,
+        68.0f32,
+        |entry: &Entry| {
+            use std::hash::{Hash, Hasher};
+            let mut s = std::collections::hash_map::DefaultHasher::new();
+            entry.path.hash(&mut s);
+            s.finish()
         },
-        m3::ScaffoldConfig {
-            top_bar: Some(top_bar),
+        {
+            let current = current.clone();
+            let player = player.clone();
+            move |entry: Entry, idx: usize| TrackRow(entry, idx, current.clone(), player.clone())
+        },
+        LazyColumnConfig {
+            modifier: Modifier::new().fill_max_width().weight(1.0),
             ..Default::default()
         },
     )
+}
+
+fn TrackRow(
+    entry: Entry,
+    idx: usize,
+    current: Rc<Signal<Option<usize>>>,
+    player: AudioPlayer,
+) -> View {
+    let is_current = current.get() == Some(idx);
+    let row_path = entry.path.clone();
+
+    let leading_bg = if is_current {
+        theme().primary_container
+    } else {
+        theme().surface_variant.with_alpha(80)
+    };
+    let leading_fg = if is_current {
+        theme().on_primary_container
+    } else {
+        theme().on_surface.with_alpha(140)
+    };
+
+    Column(Modifier::new().fill_max_width()).child((
+        Row(Modifier::new()
+            .fill_max_width()
+            .padding(10.0)
+            .clip_rounded(14.0)
+            .background(if is_current {
+                theme().primary_container.with_alpha(60)
+            } else {
+                theme().surface.with_alpha(0)
+            })
+            .on_click({
+                let player = player.clone();
+                let current = current.clone();
+                move || {
+                    current.set(Some(idx));
+                    let _ = player.load(row_path.clone());
+                }
+            })
+            .gap(12.0)
+            .align_items(AlignItems::CENTER))
+        .child((
+            Box(Modifier::new()
+                .width(40.0)
+                .height(40.0)
+                .clip_rounded(10.0)
+                .background(leading_bg)
+                .align_items(AlignItems::CENTER)
+                .justify_content(JustifyContent::CENTER))
+            .child(if is_current {
+                Icon(Symbols::graphic_eq).size(18.0).color(leading_fg)
+            } else {
+                Text(format!("{}", idx + 1)).size(13.0).color(leading_fg)
+            }),
+            Column(Modifier::new().weight(1.0).gap(2.0)).child((
+                Text(entry.display_title())
+                    .size(14.0)
+                    .color(if is_current {
+                        theme().primary
+                    } else {
+                        theme().on_surface
+                    })
+                    .single_line()
+                    .overflow_ellipsize(),
+                Text(
+                    entry
+                        .meta
+                        .artist
+                        .clone()
+                        .unwrap_or_else(|| "Unknown artist".into()),
+                )
+                .size(12.0)
+                .color(theme().on_surface.with_alpha(150))
+                .single_line()
+                .overflow_ellipsize(),
+            )),
+            Text(
+                entry
+                    .meta
+                    .duration
+                    .map(format_duration)
+                    .unwrap_or_else(|| "--:--".into()),
+            )
+            .size(12.0)
+            .color(theme().on_surface.with_alpha(150)),
+        )),
+        m3::HorizontalDivider(m3::DividerConfig {
+            modifier: Modifier::new()
+                .fill_max_width()
+                .padding_values(PaddingValues {
+                    left: 62.0,
+                    right: 0.0,
+                    top: 0.0,
+                    bottom: 0.0,
+                }),
+            ..Default::default()
+        }),
+    ))
 }
 
 fn progress_ratio(position: Duration, duration: Option<Duration>) -> f32 {
