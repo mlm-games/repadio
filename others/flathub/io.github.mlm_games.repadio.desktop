@@ -1,13 +1,13 @@
 [Desktop Entry]
 Type=Application
 Version=1.5
-Name=Repose Audio
+Name=Repadio
 Comment=Audio player built with Repose — Symphonia + CPAL in pure Rust
 Categories=Audio;AudioVideo;Player;
 Keywords=audio;player;music;repose;symphonia;cpal;
-Exec=repose-audio %F
-Icon=io.github.mlm_games.repose-audio-player
+Exec=repadio %F
+Icon=io.github.mlm_games.repadio
 Terminal=false
 StartupNotify=true
-StartupWMClass=repose-audio
+StartupWMClass=repadio
 MimeType=audio/mpeg;audio/flac;audio/ogg;audio/x-wav;audio/mp4;audio/aac;

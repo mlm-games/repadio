@@ -34,7 +34,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p others/snap/snap/gui
-          cp others/flathub/io.github.mlm_games.repose-audio-player.desktop others/snap/snap/gui/
+          cp others/flathub/io.github.mlm_games.repadio.desktop others/snap/snap/gui/
           cp others/packaging/icon.png others/snap/snap/gui/icon.png
           sed -i "s/version: '.*'/version: '${{ inputs.version_name }}'/" others/snap/snapcraft.yaml
 
@@ -47,5 +47,5 @@ jobs:
         uses: snapcore/action-publish@v1
         with:
           store_login: ${{ secrets.SNAP_STORE_LOGIN }}
-          snap: repose-audio-player_*.snap
+          snap: repadio_*.snap
           release: stable

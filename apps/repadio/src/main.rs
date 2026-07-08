@@ -84,7 +84,7 @@ pub async fn wasm_main() {
     let resume_player = player.clone();
     let canvas = web_sys::window()
         .and_then(|w| w.document())
-        .and_then(|d| d.get_element_by_id("repose_audio_canvas"))
+        .and_then(|d| d.get_element_by_id("repadio_canvas"))
         .or_else(|| {
             // Fallback: attach to body if canvas not found
             web_sys::window()
@@ -191,7 +191,7 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
         .unwrap_or_else(|| progress_ratio(snap.position, snap.duration));
 
     let top_bar = m3::TopAppBar(
-        Text("Repose Audio"),
+        Text("Repadio"),
         Some(Text("Symphonia + CPAL — pure Rust")),
         None,
         vec![],

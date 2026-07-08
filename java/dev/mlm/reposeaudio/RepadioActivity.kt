@@ -1,4 +1,4 @@
-package org.mlm.reposeaudio
+package org.mlm.repadio
 
 import android.app.NativeActivity
 import android.content.Intent
@@ -7,7 +7,7 @@ import android.util.Log
 import java.io.File
 import java.io.IOException
 
-class ReposeAudioActivity : NativeActivity() {
+class RepadioActivity : NativeActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         intentToBytes(intent)?.let { savePendingIntent(it) }
         super.onCreate(savedInstanceState)
@@ -44,7 +44,7 @@ class ReposeAudioActivity : NativeActivity() {
     }
 
     companion object {
-        private const val TAG = "ReposeAudio"
+        private const val TAG = "Repadio"
         private const val PENDING_INTENT_FILE = "pending_intent"
 
         @JvmStatic private external fun nativeOnWindowInsets(

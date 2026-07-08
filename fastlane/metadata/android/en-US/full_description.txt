@@ -1,4 +1,4 @@
-Repose Audio is a cross-platform audio player built as a reference example for the Repose GUI framework.
+Repadio is a cross-platform audio player built as a reference example for the Repose GUI framework.
 
 Features:
 • Audio decoding via Symphonia (MP3, FLAC, OGG, WAV, AAC, and more)

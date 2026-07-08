@@ -1,16 +1,16 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.mlm_games.repose-audio-player</id>
+  <id>io.github.mlm_games.repadio</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>LGPL-2.1</project_license>
   <developer id="io.github.mlm_games">
     <name>MLM Games</name>
   </developer>
-  <name>Repose Audio</name>
+  <name>Repadio</name>
   <summary>Pure-Rust audio player built with Symphonia and CPAL on the Repose GUI framework</summary>
   <description>
     <p>
-      Repose Audio is a cross-platform audio player built as a reference example
+      Repadio is a cross-platform audio player built as a reference example
       for the Repose GUI framework.
     </p>
     <ul>
@@ -35,7 +35,7 @@
     <keyword>symphonia</keyword>
     <keyword>cpal</keyword>
   </keywords>
-  <icon type="stock" width="512" height="512">io.github.mlm_games.repose-audio-player</icon>
+  <icon type="stock" width="512" height="512">io.github.mlm_games.repadio</icon>
   <url type="homepage">https://github.com/mlm-games/repose-audio-player</url>
   <url type="bugtracker">https://github.com/mlm-games/repose-audio-player/issues</url>
   <url type="donation">https://github.com/sponsors/mlm-games</url>
@@ -45,7 +45,7 @@
     </screenshot>
   </screenshots>
   <provides>
-    <binary>repose-audio</binary>
+    <binary>repadio</binary>
     <mediatype>audio/mpeg</mediatype>
   </provides>
   <requires>

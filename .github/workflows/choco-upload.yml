@@ -35,24 +35,24 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
             <metadata>
-              <id>repose-audio-player</id>
+              <id>repadio</id>
               <version>$ver</version>
-              <title>Repose Audio</title>
+              <title>Repadio</title>
               <authors>MLM Games</authors>
               <description>Pure-Rust audio player built with Symphonia and CPAL on the Repose GUI framework</description>
-              <projectUrl>https://github.com/mlm-games/repose-audio-player</projectUrl>
+              <projectUrl>https://github.com/mlm-games/repadio</projectUrl>
               <licenseUrl>https://www.gnu.org/licenses/lgpl-2.1.txt</licenseUrl>
               <tags>audio player music repose symphonia cpal rust</tags>
             </metadata>
           </package>
-          "@ | Set-Content choco-package/repose-audio-player.nuspec
+          "@ | Set-Content choco-package/repadio.nuspec
 
           @"
           `$ErrorActionPreference = 'Stop'
           `$toolsDir = Split-Path -Parent `$MyInvocation.MyCommand.Definition
           `$packageArgs = @{
-            packageName   = 'repose-audio-player'
-            url64         = "https://github.com/mlm-games/repose-audio-player/releases/download/v$ver/repose-audio-player-$ver-x86_64-pc-windows-gnu.zip"
+            packageName   = 'repadio'
+            url64         = "https://github.com/mlm-games/repadio/releases/download/v$ver/repadio-$ver-x86_64-pc-windows-gnu.zip"
             checksum64    = '${{ env.CHECKSUM }}'
             checksumType64 = 'sha256'
           }
@@ -62,5 +62,5 @@ jobs:
       - name: Pack and push
         shell: pwsh
         run: |
-          choco pack choco-package/repose-audio-player.nuspec
-          choco push repose-audio-player.${{ inputs.version_name }}.nupkg --source https://push.chocolatey.org/ --api-key ${{ secrets.CHOCO_API_KEY }}
+          choco pack choco-package/repadio.nuspec
+          choco push repadio.${{ inputs.version_name }}.nupkg --source https://push.chocolatey.org/ --api-key ${{ secrets.CHOCO_API_KEY }}

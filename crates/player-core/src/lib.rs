@@ -140,7 +140,7 @@ impl AudioPlayer {
 
         #[cfg(not(target_arch = "wasm32"))]
         std::thread::Builder::new()
-            .name("repose-audio-player".into())
+            .name("repadio".into())
             .spawn(move || {
                 if let Err(err) = audio_thread(rx, thread_shared.clone()) {
                     thread_shared.is_playing.store(false, Ordering::Release);

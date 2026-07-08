@@ -1,20 +1,20 @@
 [package]
-name = "repose-audio"
+name = "repadio"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
 
 [package.metadata.android]
-package = "org.mlm.reposeaudio"
-apk_name = "repose-audio"
+package = "org.mlm.repadio"
+apk_name = "repadio"
 build_targets = ["aarch64-linux-android", "armv7-linux-androideabi", "x86_64-linux-android", "i686-linux-android"]
 split_per_abi = true
 resources = "others/packaging/res"
 java_sources = ["java/"]
 
 [package.metadata.android.application]
-label = "Repose Audio"
+label = "Repadio"
 fullscreen = false
 icon = "@drawable/ic_launcher_monochrome"
 
@@ -26,7 +26,7 @@ target_sdk_version = 36
 name = "android.permission.INTERNET"
 
 [[package.metadata.android.application.activity]]
-name = "org.mlm.reposeaudio.ReposeAudioActivity"
+name = "org.mlm.repadio.RepadioActivity"
 exported = true
 launch_mode = "singleTask"
 
