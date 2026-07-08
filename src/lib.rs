@@ -43,6 +43,7 @@ impl Entry {
 
 type PendingFiles = Arc<Mutex<Vec<PathBuf>>>;
 
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 pub fn run_desktop() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -71,14 +72,14 @@ pub async fn wasm_main() {
     let player = AudioPlayer::spawn().expect("failed to spawn audio player");
     let pending: PendingFiles = Arc::new(Mutex::new(Vec::new()));
 
-    let resume_player = player.clone();
+    let _resume_player = player.clone();
     let canvas = web_sys::window()
         .and_then(|w| w.document())
         .and_then(|d| d.get_element_by_id("repadio_canvas"))
         .or_else(|| {
             web_sys::window()
                 .and_then(|w| w.document())
-                .and_then(|d| d.body())
+                .and_then(|d| d.body().map(web_sys::Element::from))
         });
     if let Some(el) = canvas {
         use wasm_bindgen::JsCast;
@@ -95,29 +96,27 @@ pub async fn wasm_main() {
         closure.forget();
     }
 
-    repose_platform::run_desktop_app(move |_sched, _ctx| App(player.clone(), pending.clone()))
-        .expect("app run failed");
+    repose_platform::web::run_web_app(
+        move |_sched, _ctx| App(player.clone(), pending.clone()),
+        repose_platform::web::WebOptions::new(None),
+    )
+    .expect("app run failed");
 }
 
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
-pub extern "C" fn android_main(
-    android_app: winit::platform::android::activity::AndroidApp,
-) {
+pub extern "C" fn android_main(android_app: winit::platform::android::activity::AndroidApp) {
     android_logger::init_once(
         android_logger::Config::default().with_max_level(log::LevelFilter::Info),
     );
     rlobkit_dialogs::init();
     rlobkit_dialogs::init_shared_pending_state();
     player_platform::init();
-    if let Err(err) = repose_platform::android::run_android_app(
-        android_app,
-        |_sched, _ctx| {
-            let player = AudioPlayer::spawn().expect("failed to spawn audio player");
-            let pending: PendingFiles = Arc::new(Mutex::new(Vec::new()));
-            App(player, pending)
-        },
-    ) {
+    if let Err(err) = repose_platform::android::run_android_app(android_app, |_sched, _ctx| {
+        let player = AudioPlayer::spawn().expect("failed to spawn audio player");
+        let pending: PendingFiles = Arc::new(Mutex::new(Vec::new()));
+        App(player, pending)
+    }) {
         log::error!("Repadio failed: {err:?}");
     }
 }
@@ -315,10 +314,10 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
                             }
                         },
                         m3::ButtonConfig::default(),
-                        || Row(Modifier::new().gap(8.0)).child((
-                            Icon(Symbols::skip_previous),
-                            Text("Prev"),
-                        )),
+                        || {
+                            Row(Modifier::new().gap(8.0))
+                                .child((Icon(Symbols::skip_previous), Text("Prev")))
+                        },
                     ),
                     m3::Button(
                         Modifier::new(),
@@ -357,10 +356,10 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
                             }
                         },
                         m3::ButtonConfig::default(),
-                        || Row(Modifier::new().gap(8.0)).child((
-                            Text("Next"),
-                            Icon(Symbols::skip_next),
-                        )),
+                        || {
+                            Row(Modifier::new().gap(8.0))
+                                .child((Text("Next"), Icon(Symbols::skip_next)))
+                        },
                     ),
                     m3::OutlinedButton(
                         Modifier::new(),
@@ -373,10 +372,7 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
                             }
                         },
                         m3::ButtonConfig::default(),
-                        || Row(Modifier::new().gap(8.0)).child((
-                            Icon(Symbols::stop),
-                            Text("Stop"),
-                        )),
+                        || Row(Modifier::new().gap(8.0)).child((Icon(Symbols::stop), Text("Stop"))),
                     ),
                     Spacer(),
                     m3::FilledTonalButton(
@@ -393,10 +389,10 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
                             }
                         },
                         m3::ButtonConfig::default(),
-                        || Row(Modifier::new().gap(8.0)).child((
-                            Icon(Symbols::add),
-                            Text("Add files"),
-                        )),
+                        || {
+                            Row(Modifier::new().gap(8.0))
+                                .child((Icon(Symbols::add), Text("Add files")))
+                        },
                     ),
                 )),
                 Row(Modifier::new().fill_max_width().gap(12.0)).child((

@@ -95,7 +95,7 @@ pub mod wasm_persist {
 
     /// Read a string from OPFS. Returns `None` if the key doesn't exist.
     /// No-op outside WASM.
-    pub async fn read(_key: &str) -> Option<String> {
+    pub async fn read(key: &str) -> Option<String> {
         #[cfg(target_arch = "wasm32")]
         {
             opfs::read(key)
@@ -104,7 +104,10 @@ pub mod wasm_persist {
                 .and_then(|d| String::from_utf8(d.to_vec()).ok())
         }
         #[cfg(not(target_arch = "wasm32"))]
-        None
+        {
+            let _ = key;
+            None
+        }
     }
 
     /// Write a string to OPFS.

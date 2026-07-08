@@ -5,9 +5,11 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
-    thread,
     time::Duration,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::thread;
 
 use anyhow::{Context, Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -296,11 +298,14 @@ fn apply_revision(meta: &mut TrackMeta, rev: &MetadataRevision) {
 /// samples from the same bounded queue as on desktop.
 #[cfg(target_arch = "wasm32")]
 fn audio_thread_wasm(cmd_rx: Receiver<Command>, shared: Arc<Shared>) -> Result<()> {
+    #[cfg(target_feature = "atomics")]
     let host = cpal::available_hosts()
         .iter()
         .find(|id| **id == cpal::HostId::AudioWorklet)
         .and_then(|id| cpal::host_from_id(*id).ok())
         .unwrap_or_else(cpal::default_host);
+    #[cfg(not(target_feature = "atomics"))]
+    let host = cpal::default_host();
 
     let device = host
         .default_output_device()
@@ -442,7 +447,7 @@ async fn audio_thread_wasm_loop(
         JsFuture::from(Promise::new(&mut |resolve, _| {
             web_sys::window()
                 .unwrap()
-                .set_timeout_with_callback_and_timeout_and_arguments_0(resolve, 5)
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 5)
                 .unwrap();
         }))
         .await
