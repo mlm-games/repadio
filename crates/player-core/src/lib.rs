@@ -99,8 +99,18 @@ enum Command {
 
 #[derive(Clone)]
 pub struct AudioPlayer {
+    inner: Arc<AudioPlayerInner>,
+}
+
+struct AudioPlayerInner {
     tx: Sender<Command>,
     shared: Arc<Shared>,
+}
+
+impl Drop for AudioPlayerInner {
+    fn drop(&mut self) {
+        let _ = self.tx.send(Command::Shutdown);
+    }
 }
 
 struct Shared {
@@ -141,22 +151,44 @@ impl AudioPlayer {
         let thread_shared = shared.clone();
 
         #[cfg(not(target_arch = "wasm32"))]
-        std::thread::Builder::new()
-            .name("repadio".into())
-            .spawn(move || {
-                if let Err(err) = audio_thread(rx, thread_shared.clone()) {
-                    thread_shared.is_playing.store(false, Ordering::Release);
-                    let mut s = thread_shared.status.lock().unwrap();
-                    s.state = PlaybackState::Error;
-                    s.error = Some(err.to_string());
-                }
-            })
-            .context("failed to spawn audio thread")?;
+        {
+            let (stream, sample_tx, flush_rx, out_channels, out_sample_rate) =
+                create_cpal_stream(&shared)?;
+
+            std::thread::Builder::new()
+                .name("repadio-audio".into())
+                .spawn({
+                    let err_shared = thread_shared.clone();
+
+                    move || {
+                        let stream = stream;
+
+                        let result = run_command_loop(
+                            &rx,
+                            &sample_tx,
+                            &flush_rx,
+                            &thread_shared,
+                            out_channels,
+                            out_sample_rate,
+                        );
+
+                        drop(stream);
+
+                        if let Err(err) = result {
+                            set_error(err_shared.as_ref(), &err);
+                            log::error!("audio thread: {err}");
+                        }
+                    }
+                })
+                .context("failed to spawn audio thread")?;
+        }
 
         #[cfg(target_arch = "wasm32")]
         audio_thread_wasm(rx, thread_shared).context("failed to start WASM audio")?;
 
-        Ok(Self { tx, shared })
+        Ok(Self {
+            inner: Arc::new(AudioPlayerInner { tx, shared }),
+        })
     }
 
     /// MUST be called from a user-gesture handler on WASM (click/touch)
@@ -169,7 +201,8 @@ impl AudioPlayer {
     }
 
     fn send(&self, cmd: Command) -> Result<()> {
-        self.tx
+        self.inner
+            .tx
             .send(cmd)
             .map_err(|_| anyhow!("audio thread is not running"))
     }
@@ -198,33 +231,32 @@ impl AudioPlayer {
     }
 
     /// Current playback position derived from output frames.
-    /// This is the master clock — video sync will read this.
+    /// This is the master clock -> video sync will read this.
     pub fn position(&self) -> Duration {
-        let rate = self
-            .shared
+        let shared = &self.inner.shared;
+
+        let rate = shared
             .output_sample_rate
             .load(Ordering::Acquire)
             .max(1);
-        let frames = self.shared.base_frames.load(Ordering::Acquire)
-            + self.shared.played_frames.load(Ordering::Acquire);
+
+        let frames = shared.base_frames.load(Ordering::Acquire)
+            + shared.played_frames.load(Ordering::Acquire);
+
         Duration::from_secs_f64(frames as f64 / rate as f64)
     }
 
     pub fn is_playing(&self) -> bool {
-        self.shared.is_playing.load(Ordering::Acquire)
+        self.inner.shared.is_playing.load(Ordering::Acquire)
     }
 
     pub fn snapshot(&self) -> PlayerSnapshot {
-        let mut snap = self.shared.status.lock().unwrap().clone();
-        snap.position = self.position();
-        snap.volume = f32::from_bits(self.shared.volume_bits.load(Ordering::Acquire));
-        snap
-    }
-}
+        let shared = &self.inner.shared;
 
-impl Drop for AudioPlayer {
-    fn drop(&mut self) {
-        let _ = self.tx.send(Command::Shutdown);
+        let mut snap = shared.status.lock().unwrap().clone();
+        snap.position = self.position();
+        snap.volume = f32::from_bits(shared.volume_bits.load(Ordering::Acquire));
+        snap
     }
 }
 
@@ -381,7 +413,7 @@ fn audio_thread_wasm(cmd_rx: Receiver<Command>, shared: Arc<Shared>) -> Result<(
     Ok(())
 }
 
-/// WASM decode loop — async counterpart of `audio_thread`.
+/// WASM decode loop -> async counterpart of `audio_thread`.
 /// `wasm_bindgen_futures::spawn_local` runs this cooperatively; we poll
 /// commands with `try_recv` (non-blocking) and decode audio whenever a
 /// `Load` arrives.  File reads and Symphonia decoding block the main
@@ -400,7 +432,7 @@ async fn audio_thread_wasm_loop(
     use wasm_bindgen_futures::JsFuture;
 
     loop {
-        // Non-blocking command poll — we must not stall the event loop.
+        // Non-blocking command poll -> we must not stall the event loop.
         match cmd_rx.try_recv() {
             Ok(Command::Load(path)) => {
                 flush_audio_queue(&flush_rx);
@@ -424,6 +456,7 @@ async fn audio_thread_wasm_loop(
             Ok(cmd) => match apply_command(cmd, &shared, &flush_rx) {
                 CommandAction::Continue => {}
                 CommandAction::Seek(_) => {}
+                CommandAction::Stop => {}
                 CommandAction::Load(path) => {
                     flush_audio_queue(&flush_rx);
                     let _ = decode_file_to_queue(
@@ -456,7 +489,9 @@ async fn audio_thread_wasm_loop(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn audio_thread(cmd_rx: Receiver<Command>, shared: Arc<Shared>) -> Result<()> {
+fn create_cpal_stream(
+    shared: &Arc<Shared>,
+) -> Result<(cpal::Stream, Sender<f32>, Receiver<f32>, usize, u32)> {
     let host = cpal::default_host();
     let device = host
         .default_output_device()
@@ -507,14 +542,33 @@ fn audio_thread(cmd_rx: Receiver<Command>, shared: Arc<Shared>) -> Result<()> {
 
     stream.play().context("failed to start CPAL stream")?;
 
+    Ok((stream, sample_tx, flush_rx, out_channels, out_sample_rate))
+}
+
+fn set_error(shared: &Shared, err: &(impl std::fmt::Display + ?Sized)) {
+    shared.is_playing.store(false, Ordering::Release);
+    let mut s = shared.status.lock().unwrap();
+    s.state = PlaybackState::Error;
+    s.error = Some(err.to_string());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn run_command_loop(
+    cmd_rx: &Receiver<Command>,
+    sample_tx: &Sender<f32>,
+    flush_rx: &Receiver<f32>,
+    shared: &Arc<Shared>,
+    out_channels: usize,
+    out_sample_rate: u32,
+) -> Result<()> {
     loop {
         match cmd_rx.recv() {
             Ok(Command::Load(path)) => {
                 flush_audio_queue(&flush_rx);
 
                 let mut next = Some(path);
-                while let Some(path) = next.take() {
-                    next = match decode_file_to_queue(
+                'decode: while let Some(path) = next.take() {
+                    match decode_file_to_queue(
                         path,
                         &cmd_rx,
                         &sample_tx,
@@ -522,20 +576,25 @@ fn audio_thread(cmd_rx: Receiver<Command>, shared: Arc<Shared>) -> Result<()> {
                         shared.clone(),
                         out_channels,
                         out_sample_rate,
-                    )? {
-                        DecodeOutcome::Idle => None,
-                        DecodeOutcome::Load(path) => Some(path),
-                        DecodeOutcome::Shutdown => return Ok(()),
-                    };
+                    ) {
+                        Ok(DecodeOutcome::Idle) => next = None,
+                        Ok(DecodeOutcome::Load(path)) => next = Some(path),
+                        Ok(DecodeOutcome::Shutdown) => return Ok(()),
+                        Err(err) => {
+                            log::error!("decode error: {err}");
+                            set_error(shared.as_ref(), &err);
+                            break 'decode;
+                        }
+                    }
                 }
             }
             Ok(cmd) => match apply_command(cmd, &shared, &flush_rx) {
                 CommandAction::Continue => {}
-                // Seek with nothing loaded is a no-op.
                 CommandAction::Seek(_) => {}
+                CommandAction::Stop => {}
                 CommandAction::Load(path) => {
                     flush_audio_queue(&flush_rx);
-                    let _ = decode_file_to_queue(
+                    if let Err(err) = decode_file_to_queue(
                         path,
                         &cmd_rx,
                         &sample_tx,
@@ -543,7 +602,10 @@ fn audio_thread(cmd_rx: Receiver<Command>, shared: Arc<Shared>) -> Result<()> {
                         shared.clone(),
                         out_channels,
                         out_sample_rate,
-                    )?;
+                    ) {
+                        log::error!("decode error: {err}");
+                        set_error(shared.as_ref(), &err);
+                    }
                 }
                 CommandAction::Shutdown => return Ok(()),
             },
@@ -749,6 +811,7 @@ fn decode_file_to_queue(
             CommandAction::Continue => {}
             CommandAction::Load(path) => return Ok(DecodeOutcome::Load(path)),
             CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
+            CommandAction::Stop => return Ok(DecodeOutcome::Idle),
             CommandAction::Seek(target) => {
                 perform_seek(
                     &mut *format,
@@ -765,21 +828,8 @@ fn decode_file_to_queue(
 
         let packet = match format.next_packet() {
             Ok(Some(packet)) => packet,
-            Ok(None) => {
-                shared.is_playing.store(false, Ordering::Release);
-                let mut s = shared.status.lock().unwrap();
-                if s.state != PlaybackState::Stopped {
-                    s.state = PlaybackState::Ended;
-                }
-                return Ok(DecodeOutcome::Idle);
-            }
-            Err(SymphoniaError::IoError(_)) => {
-                shared.is_playing.store(false, Ordering::Release);
-                let mut s = shared.status.lock().unwrap();
-                if s.state != PlaybackState::Stopped {
-                    s.state = PlaybackState::Ended;
-                }
-                return Ok(DecodeOutcome::Idle);
+            Ok(None) | Err(SymphoniaError::IoError(_)) => {
+                return Ok(wait_until_queue_drained(cmd_rx, &shared, flush_rx));
             }
             Err(SymphoniaError::ResetRequired) => {
                 decoder.reset();
@@ -836,6 +886,7 @@ fn decode_file_to_queue(
                             CommandAction::Continue => {}
                             CommandAction::Load(path) => return Ok(DecodeOutcome::Load(path)),
                             CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
+                            CommandAction::Stop => return Ok(DecodeOutcome::Idle),
                             CommandAction::Seek(target) => {
                                 perform_seek(
                                     &mut *format,
@@ -911,6 +962,7 @@ enum CommandAction {
     Continue,
     Load(PathBuf),
     Seek(Duration),
+    Stop,
     Shutdown,
 }
 
@@ -974,7 +1026,7 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>, flush_rx: &Receiver<f32>) -
             let mut s = shared.status.lock().unwrap();
             s.state = PlaybackState::Stopped;
             s.position = Duration::ZERO;
-            CommandAction::Continue
+            CommandAction::Stop
         }
 
         Command::SetVolume(v) => {
@@ -991,6 +1043,39 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>, flush_rx: &Receiver<f32>) -
 
 fn flush_audio_queue(rx: &Receiver<f32>) {
     while rx.try_recv().is_ok() {}
+}
+
+fn wait_until_queue_drained(
+    cmd_rx: &Receiver<Command>,
+    shared: &Arc<Shared>,
+    flush_rx: &Receiver<f32>,
+) -> DecodeOutcome {
+    loop {
+        match drain_commands(cmd_rx, shared, flush_rx) {
+            CommandAction::Continue => {}
+            CommandAction::Load(path) => return DecodeOutcome::Load(path),
+            CommandAction::Seek(_) => return DecodeOutcome::Idle,
+            CommandAction::Stop => return DecodeOutcome::Idle,
+            CommandAction::Shutdown => return DecodeOutcome::Shutdown,
+        }
+
+        if flush_rx.is_empty() {
+            shared.is_playing.store(false, Ordering::Release);
+
+            let mut s = shared.status.lock().unwrap();
+            if s.state != PlaybackState::Stopped {
+                s.state = PlaybackState::Ended;
+            }
+
+            return DecodeOutcome::Idle;
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        thread::sleep(Duration::from_millis(10));
+
+        #[cfg(target_arch = "wasm32")]
+        std::thread::yield_now();
+    }
 }
 
 fn convert_channels_and_rate(
