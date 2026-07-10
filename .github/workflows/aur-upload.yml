@@ -41,8 +41,8 @@ jobs:
           license=('LGPL-2.1')
           provides=('${PKG}')
           conflicts=('${PKG}')
-          source_x86_64=("https://github.com/mlm-games/repadio/releases/download/v${PKGVER}/${PKG}-${PKGVER}-x86_64-unknown-linux-gnu.tar.gz")
-          source_aarch64=("https://github.com/mlm-games/repadio/releases/download/v${PKGVER}/${PKG}-${PKGVER}-aarch64-unknown-linux-gnu.tar.gz")
+          source_x86_64=("https://github.com/mlm-games/repadio/releases/download/v${VER}/${PKG}-${VER}-x86_64-unknown-linux-gnu.tar.gz")
+          source_aarch64=("https://github.com/mlm-games/repadio/releases/download/v${VER}/${PKG}-${VER}-aarch64-unknown-linux-gnu.tar.gz")
           sha256sums_x86_64=('${SHA256_X86_64}')
           sha256sums_aarch64=('${SHA256_AARCH64}')
 

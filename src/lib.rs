@@ -31,6 +31,7 @@ material_symbols! {
     close          : '\u{E5CD}',
     graphic_eq     : '\u{E1B8}',
 }
+use repose_ui::lazy_states::LazyColumnState;
 use repose_ui::{Box, Column, LazyColumn, LazyColumnConfig, Row, Spacer, Text, ViewExt};
 
 #[derive(Clone)]
@@ -136,6 +137,8 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
     let current = remember(|| signal(None::<usize>));
     let volume = remember(|| signal(1.0f32));
     let advance_armed = remember(|| signal(true));
+    let pending_advance = remember(|| signal(false));
+    let ended_index = remember(|| signal(None::<usize>));
     let scrubbing = remember(|| signal(None::<f32>));
     let dismissed_error = remember(|| signal(None::<String>));
     {
@@ -150,23 +153,43 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
             playlist.set(list.clone());
             if was_empty && !list.is_empty() {
                 current.set(Some(0));
-                let _ = player.load(list[0].path.clone());
+                if let Err(e) = player.load(list[0].path.clone()) {
+                    log::error!("load first track failed: {e}");
+                }
                 advance_armed.set(true);
             }
         }
     }
 
     let snap = player.snapshot();
-    if snap.state == PlaybackState::Ended && advance_armed.get() {
-        let list = playlist.get();
-        if let Some(idx) = current.get() {
-            if idx + 1 < list.len() {
-                advance_armed.set(false);
-                current.set(Some(idx + 1));
-                let _ = player.load(list[idx + 1].path.clone());
+
+    if pending_advance.get() {
+        pending_advance.set(false);
+        if let Some(prev_idx) = ended_index.get() {
+            ended_index.set(None);
+            if snap.state == PlaybackState::Ended {
+                let list = playlist.get();
+                let target = match current.get() {
+                    Some(c) if c != prev_idx => c,
+                    _ => prev_idx + 1,
+                };
+                if target < list.len() {
+                    current.set(Some(target));
+                    if let Err(e) = player.load(list[target].path.clone()) {
+                        log::error!("advance load failed: {e}");
+                    }
+                }
             }
         }
     }
+
+    // Schedule advance for NEXT frame if track just ended
+    if snap.state == PlaybackState::Ended && advance_armed.get() {
+        advance_armed.set(false);
+        ended_index.set(current.get());
+        pending_advance.set(true);
+    }
+
     if matches!(snap.state, PlaybackState::Playing | PlaybackState::Loading) {
         advance_armed.set(true);
     }
@@ -464,10 +487,12 @@ fn TransportBar(
                 let current = current.clone();
                 move || {
                     let list = playlist.get();
-                    if let Some(idx) = current.get() {
-                        if idx > 0 {
-                            current.set(Some(idx - 1));
-                            let _ = player.load(list[idx - 1].path.clone());
+                    if let Some(idx) = current.get()
+                        && idx > 0
+                    {
+                        current.set(Some(idx - 1));
+                        if let Err(e) = player.load(list[idx - 1].path.clone()) {
+                            log::error!("load previous failed: {e}");
                         }
                     }
                 }
@@ -505,10 +530,12 @@ fn TransportBar(
                 let current = current.clone();
                 move || {
                     let list = playlist.get();
-                    if let Some(idx) = current.get() {
-                        if idx + 1 < list.len() {
-                            current.set(Some(idx + 1));
-                            let _ = player.load(list[idx + 1].path.clone());
+                    if let Some(idx) = current.get()
+                        && idx + 1 < list.len()
+                    {
+                        current.set(Some(idx + 1));
+                        if let Err(e) = player.load(list[idx + 1].path.clone()) {
+                            log::error!("load next failed: {e}");
                         }
                     }
                 }
@@ -572,7 +599,9 @@ fn VolumeRow(player: AudioPlayer, volume: Rc<Signal<f32>>) -> View {
                 let player = player.clone();
                 move |v| {
                     volume.set(v);
-                    let _ = player.set_volume(v);
+                    if let Err(e) = player.set_volume(v) {
+                        log::error!("set volume failed: {e}");
+                    }
                 }
             },
             m3::SliderConfig {
@@ -672,15 +701,19 @@ fn PlaylistList(
     player: AudioPlayer,
 ) -> View {
     let list = playlist.get();
+    let lazy_state: Rc<LazyColumnState> = remember(LazyColumnState::new);
 
     LazyColumn(
         list,
         68.0f32,
         |entry: &Entry| {
-            use std::hash::{Hash, Hasher};
-            let mut s = std::collections::hash_map::DefaultHasher::new();
-            entry.path.hash(&mut s);
-            s.finish()
+            let s = entry.path.to_string_lossy();
+            let mut h: u64 = 14695981039346656037;
+            for b in s.bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(1099511628211);
+            }
+            h
         },
         {
             let current = current.clone();
@@ -688,6 +721,7 @@ fn PlaylistList(
             move |entry: Entry, idx: usize| TrackRow(entry, idx, current.clone(), player.clone())
         },
         LazyColumnConfig {
+            state: lazy_state.clone(),
             modifier: Modifier::new().fill_max_width().weight(1.0),
             ..Default::default()
         },
@@ -729,7 +763,9 @@ fn TrackRow(
                 let current = current.clone();
                 move || {
                     current.set(Some(idx));
-                    let _ = player.load(row_path.clone());
+                    if let Err(e) = player.load(row_path.clone()) {
+                        log::error!("load track failed: {e}");
+                    }
                 }
             })
             .gap(12.0)
@@ -804,5 +840,12 @@ fn progress_ratio(position: Duration, duration: Option<Duration>) -> f32 {
 
 fn format_duration(d: Duration) -> String {
     let total = d.as_secs();
-    format!("{:02}:{:02}", total / 60, total % 60)
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    let s = total % 60;
+    if h > 0 {
+        format!("{h}:{:02}:{:02}", m, s)
+    } else {
+        format!("{:02}:{:02}", m, s)
+    }
 }

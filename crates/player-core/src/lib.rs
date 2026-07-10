@@ -15,8 +15,6 @@ use anyhow::{Context, Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
 
-#[cfg(target_arch = "wasm32")]
-use std::sync::OnceLock;
 use symphonia::{
     core::{
         codecs::{
@@ -109,7 +107,7 @@ struct AudioPlayerInner {
 
 impl Drop for AudioPlayerInner {
     fn drop(&mut self) {
-        let _ = self.tx.send(Command::Shutdown);
+        self.tx.send(Command::Shutdown).ok();
     }
 }
 
@@ -122,19 +120,16 @@ struct Shared {
     base_frames: AtomicU64,
     output_sample_rate: AtomicU32,
     volume_bits: AtomicU32,
+    /// Incremented on every load/seek/stop. Callbacks discard samples from
+    /// an old generation to prevent stale audio leaking after a discontinuity.
+    generation: AtomicU64,
 }
 
-/// WASM: CPAL streams must outlive the event loop and are not `Send`.
-/// Wrapping makes them storable in a static.
+/// WASM: CPAL streams are not `Send`/`Sync`, so use thread-local storage.
 #[cfg(target_arch = "wasm32")]
-struct SyncStream(cpal::Stream);
-#[cfg(target_arch = "wasm32")]
-unsafe impl Send for SyncStream {}
-#[cfg(target_arch = "wasm32")]
-unsafe impl Sync for SyncStream {}
-
-#[cfg(target_arch = "wasm32")]
-static AUDIO_STREAM: OnceLock<SyncStream> = OnceLock::new();
+thread_local! {
+    static AUDIO_STREAM: std::cell::OnceCell<cpal::Stream> = const { std::cell::OnceCell::new() };
+}
 
 impl AudioPlayer {
     pub fn spawn() -> Result<Self> {
@@ -145,6 +140,7 @@ impl AudioPlayer {
             base_frames: AtomicU64::new(0),
             output_sample_rate: AtomicU32::new(48_000),
             volume_bits: AtomicU32::new(1.0f32.to_bits()),
+            generation: AtomicU64::new(0),
         });
 
         let (tx, rx) = unbounded();
@@ -195,9 +191,11 @@ impl AudioPlayer {
     /// to satisfy browser autoplay policy. No-op on desktop.
     pub fn resume_audio() {
         #[cfg(target_arch = "wasm32")]
-        if let Some(stream) = AUDIO_STREAM.get() {
-            let _ = stream.0.play();
-        }
+        AUDIO_STREAM.with(|cell| {
+            if let Some(stream) = cell.get() {
+                let _ = stream.play();
+            }
+        });
     }
 
     fn send(&self, cmd: Command) -> Result<()> {
@@ -222,12 +220,25 @@ impl AudioPlayer {
     pub fn stop(&self) -> Result<()> {
         self.send(Command::Stop)
     }
-    /// NEW: seek to an absolute position in the current track.
     pub fn seek(&self, position: Duration) -> Result<()> {
+        // Optimistically update the position clock so the UI doesn't flicker
+        // back to the old position while the audio thread processes the seek.
+        let shared = &self.inner.shared;
+        let rate = shared.output_sample_rate.load(Ordering::Acquire).max(1);
+        let base = (position.as_secs_f64() * rate as f64) as u64;
+        shared.base_frames.store(base, Ordering::Release);
+        shared.played_frames.store(0, Ordering::Release);
         self.send(Command::Seek(position))
     }
     pub fn set_volume(&self, volume: f32) -> Result<()> {
-        self.send(Command::SetVolume(volume.clamp(0.0, 2.0)))
+        let v = volume.clamp(0.0, 2.0);
+        let shared = &self.inner.shared;
+        shared.volume_bits.store(v.to_bits(), Ordering::Release);
+        {
+            let mut s = shared.status.lock().unwrap();
+            s.volume = v;
+        }
+        self.send(Command::SetVolume(v))
     }
 
     /// Current playback position derived from output frames.
@@ -235,10 +246,7 @@ impl AudioPlayer {
     pub fn position(&self) -> Duration {
         let shared = &self.inner.shared;
 
-        let rate = shared
-            .output_sample_rate
-            .load(Ordering::Acquire)
-            .max(1);
+        let rate = shared.output_sample_rate.load(Ordering::Acquire).max(1);
 
         let frames = shared.base_frames.load(Ordering::Acquire)
             + shared.played_frames.load(Ordering::Acquire);
@@ -270,7 +278,7 @@ pub fn probe_track_meta(path: &Path) -> TrackMeta {
 
     let mut hint = Hint::new();
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        hint.with_extension(ext);
+        hint.with_extension(&ext.to_lowercase());
     }
 
     let Ok(mut reader) = get_probe().probe(
@@ -286,14 +294,12 @@ pub fn probe_track_meta(path: &Path) -> TrackMeta {
         apply_revision(&mut meta, rev);
     }
 
-    if let Some(track) = reader.first_track_known_codec(TrackType::Audio) {
-        if let Some(CodecParameters::Audio(params)) = &track.codec_params {
-            if let (Some(frames), Some(rate)) = (track.num_frames, params.sample_rate) {
-                if rate > 0 {
-                    meta.duration = Some(Duration::from_secs_f64(frames as f64 / rate as f64));
-                }
-            }
-        }
+    if let Some(track) = reader.first_track_known_codec(TrackType::Audio)
+        && let Some(CodecParameters::Audio(params)) = &track.codec_params
+        && let (Some(frames), Some(rate)) = (track.num_frames, params.sample_rate)
+        && rate > 0
+    {
+        meta.duration = Some(Duration::from_secs_f64(frames as f64 / rate as f64));
     }
 
     meta
@@ -314,10 +320,10 @@ fn apply_revision(meta: &mut TrackMeta, rev: &MetadataRevision) {
             _ => {}
         }
     }
-    if meta.art.is_none() {
-        if let Some(visual) = rev.media.visuals.first() {
-            meta.art = Some(Arc::new(visual.data.to_vec()));
-        }
+    if meta.art.is_none()
+        && let Some(visual) = rev.media.visuals.first()
+    {
+        meta.art = Some(Arc::new(visual.data.to_vec()));
     }
 }
 
@@ -366,19 +372,19 @@ fn audio_thread_wasm(cmd_rx: Receiver<Command>, shared: Arc<Shared>) -> Result<(
 
     let stream = match sample_format {
         cpal::SampleFormat::F32 => device.build_output_stream(
-            config.clone(),
+            config,
             make_f32_callback(sample_rx, shared.clone(), out_channels),
             err_fn,
             None,
         )?,
         cpal::SampleFormat::I16 => device.build_output_stream(
-            config.clone(),
+            config,
             make_i16_callback(sample_rx, shared.clone(), out_channels),
             err_fn,
             None,
         )?,
         cpal::SampleFormat::U16 => device.build_output_stream(
-            config.clone(),
+            config,
             make_u16_callback(sample_rx, shared.clone(), out_channels),
             err_fn,
             None,
@@ -386,9 +392,10 @@ fn audio_thread_wasm(cmd_rx: Receiver<Command>, shared: Arc<Shared>) -> Result<(
         other => return Err(anyhow!("unsupported output sample format: {other:?}")),
     };
 
-    AUDIO_STREAM
-        .set(SyncStream(stream))
-        .map_err(|_| anyhow!("audio stream already initialized"))?;
+    AUDIO_STREAM.with(|cell| {
+        cell.set(stream)
+            .map_err(|_| anyhow!("audio stream already initialized"))
+    })?;
 
     // Drive command/decode processing on the browser event loop so
     // blocking I/O (file reads, symphonia decode) doesn't freeze the UI.
@@ -435,9 +442,9 @@ async fn audio_thread_wasm_loop(
         // Non-blocking command poll -> we must not stall the event loop.
         match cmd_rx.try_recv() {
             Ok(Command::Load(path)) => {
-                flush_audio_queue(&flush_rx);
                 let mut next = Some(path);
                 while let Some(path) = next.take() {
+                    let err_shared = shared.clone();
                     next = match decode_file_to_queue(
                         path,
                         &cmd_rx,
@@ -446,10 +453,15 @@ async fn audio_thread_wasm_loop(
                         shared.clone(),
                         out_channels,
                         out_sample_rate,
-                    )? {
-                        DecodeOutcome::Idle => None,
-                        DecodeOutcome::Load(path) => Some(path),
-                        DecodeOutcome::Shutdown => return Ok(()),
+                    ) {
+                        Ok(DecodeOutcome::Idle) => None,
+                        Ok(DecodeOutcome::Load(path)) => Some(path),
+                        Ok(DecodeOutcome::Shutdown) => return Ok(()),
+                        Err(err) => {
+                            log::error!("decode error: {err}");
+                            set_error(err_shared.as_ref(), &err);
+                            None
+                        }
                     };
                 }
             }
@@ -458,8 +470,8 @@ async fn audio_thread_wasm_loop(
                 CommandAction::Seek(_) => {}
                 CommandAction::Stop => {}
                 CommandAction::Load(path) => {
-                    flush_audio_queue(&flush_rx);
-                    let _ = decode_file_to_queue(
+                    let err_shared = shared.clone();
+                    if let Err(err) = decode_file_to_queue(
                         path,
                         &cmd_rx,
                         &sample_tx,
@@ -467,7 +479,10 @@ async fn audio_thread_wasm_loop(
                         shared.clone(),
                         out_channels,
                         out_sample_rate,
-                    )?;
+                    ) {
+                        log::error!("decode error: {err}");
+                        set_error(err_shared.as_ref(), &err);
+                    }
                 }
                 CommandAction::Shutdown => return Ok(()),
             },
@@ -489,6 +504,7 @@ async fn audio_thread_wasm_loop(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::type_complexity)]
 fn create_cpal_stream(
     shared: &Arc<Shared>,
 ) -> Result<(cpal::Stream, Sender<f32>, Receiver<f32>, usize, u32)> {
@@ -520,19 +536,19 @@ fn create_cpal_stream(
 
     let stream = match sample_format {
         cpal::SampleFormat::F32 => device.build_output_stream(
-            config.clone(),
+            config,
             make_f32_callback(sample_rx, shared.clone(), out_channels),
             err_fn,
             None,
         )?,
         cpal::SampleFormat::I16 => device.build_output_stream(
-            config.clone(),
+            config,
             make_i16_callback(sample_rx, shared.clone(), out_channels),
             err_fn,
             None,
         )?,
         cpal::SampleFormat::U16 => device.build_output_stream(
-            config.clone(),
+            config,
             make_u16_callback(sample_rx, shared.clone(), out_channels),
             err_fn,
             None,
@@ -564,15 +580,14 @@ fn run_command_loop(
     loop {
         match cmd_rx.recv() {
             Ok(Command::Load(path)) => {
-                flush_audio_queue(&flush_rx);
-
+                log::info!("audio thread processing load: {}", path.display());
                 let mut next = Some(path);
                 'decode: while let Some(path) = next.take() {
                     match decode_file_to_queue(
                         path,
-                        &cmd_rx,
-                        &sample_tx,
-                        &flush_rx,
+                        cmd_rx,
+                        sample_tx,
+                        flush_rx,
                         shared.clone(),
                         out_channels,
                         out_sample_rate,
@@ -588,17 +603,16 @@ fn run_command_loop(
                     }
                 }
             }
-            Ok(cmd) => match apply_command(cmd, &shared, &flush_rx) {
+            Ok(cmd) => match apply_command(cmd, shared, flush_rx) {
                 CommandAction::Continue => {}
                 CommandAction::Seek(_) => {}
                 CommandAction::Stop => {}
                 CommandAction::Load(path) => {
-                    flush_audio_queue(&flush_rx);
                     if let Err(err) = decode_file_to_queue(
                         path,
-                        &cmd_rx,
-                        &sample_tx,
-                        &flush_rx,
+                        cmd_rx,
+                        sample_tx,
+                        flush_rx,
                         shared.clone(),
                         out_channels,
                         out_sample_rate,
@@ -623,28 +637,22 @@ fn make_f32_callback(
         let playing = shared.is_playing.load(Ordering::Acquire);
         let volume = f32::from_bits(shared.volume_bits.load(Ordering::Acquire));
 
-        let mut consumed = 0u64;
-        for sample in data.iter_mut() {
-            *sample = if playing {
-                match rx.try_recv() {
-                    Ok(s) => {
-                        consumed += 1;
-                        s * volume
-                    }
-                    Err(_) => 0.0,
+        let mut consumed = 0usize;
+        if playing {
+            while consumed + channels <= data.len() && rx.len() >= channels {
+                for sample in data[consumed..consumed + channels].iter_mut() {
+                    *sample = rx.recv().unwrap() * volume;
                 }
-            } else {
-                0.0
-            };
+                consumed += channels;
+            }
+        }
+        for sample in data[consumed..].iter_mut() {
+            *sample = 0.0;
         }
 
-        if playing {
-            // Only count frames actually consumed → position doesn't
-            // drift ahead during underruns.
-            shared
-                .played_frames
-                .fetch_add(consumed / channels.max(1) as u64, Ordering::AcqRel);
-        }
+        shared
+            .played_frames
+            .fetch_add((consumed / channels.max(1)) as u64, Ordering::AcqRel);
     }
 }
 
@@ -657,27 +665,23 @@ fn make_i16_callback(
         let playing = shared.is_playing.load(Ordering::Acquire);
         let volume = f32::from_bits(shared.volume_bits.load(Ordering::Acquire));
 
-        let mut consumed = 0u64;
-        for sample in data.iter_mut() {
-            let s = if playing {
-                match rx.try_recv() {
-                    Ok(s) => {
-                        consumed += 1;
-                        s * volume
-                    }
-                    Err(_) => 0.0,
+        let mut consumed = 0usize;
+        if playing {
+            while consumed + channels <= data.len() && rx.len() >= channels {
+                for sample in data[consumed..consumed + channels].iter_mut() {
+                    let s = (rx.recv().unwrap() * volume).clamp(-1.0, 1.0);
+                    *sample = (s * i16::MAX as f32) as i16;
                 }
-            } else {
-                0.0
-            };
-            *sample = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
+                consumed += channels;
+            }
+        }
+        for sample in data[consumed..].iter_mut() {
+            *sample = 0;
         }
 
-        if playing {
-            shared
-                .played_frames
-                .fetch_add(consumed / channels.max(1) as u64, Ordering::AcqRel);
-        }
+        shared
+            .played_frames
+            .fetch_add((consumed / channels.max(1)) as u64, Ordering::AcqRel);
     }
 }
 
@@ -690,28 +694,23 @@ fn make_u16_callback(
         let playing = shared.is_playing.load(Ordering::Acquire);
         let volume = f32::from_bits(shared.volume_bits.load(Ordering::Acquire));
 
-        let mut consumed = 0u64;
-        for sample in data.iter_mut() {
-            let s = if playing {
-                match rx.try_recv() {
-                    Ok(s) => {
-                        consumed += 1;
-                        s * volume
-                    }
-                    Err(_) => 0.0,
+        let mut consumed = 0usize;
+        if playing {
+            while consumed + channels <= data.len() && rx.len() >= channels {
+                for sample in data[consumed..consumed + channels].iter_mut() {
+                    let s = (rx.recv().unwrap() * volume).clamp(-1.0, 1.0) * 0.5 + 0.5;
+                    *sample = (s * u16::MAX as f32) as u16;
                 }
-            } else {
-                0.0
-            };
-            let normalized = s.clamp(-1.0, 1.0) * 0.5 + 0.5;
-            *sample = (normalized * u16::MAX as f32) as u16;
+                consumed += channels;
+            }
+        }
+        for sample in data[consumed..].iter_mut() {
+            *sample = u16::MAX / 2;
         }
 
-        if playing {
-            shared
-                .played_frames
-                .fetch_add(consumed / channels.max(1) as u64, Ordering::AcqRel);
-        }
+        shared
+            .played_frames
+            .fetch_add((consumed / channels.max(1)) as u64, Ordering::AcqRel);
     }
 }
 
@@ -730,6 +729,8 @@ fn decode_file_to_queue(
     out_channels: usize,
     out_rate: u32,
 ) -> Result<DecodeOutcome> {
+    reset_audio_queue_and_clock(&shared, flush_rx);
+
     {
         let mut s = shared.status.lock().unwrap();
         s.state = PlaybackState::Loading;
@@ -743,8 +744,6 @@ fn decode_file_to_queue(
         s.error = None;
     }
 
-    shared.played_frames.store(0, Ordering::Release);
-    shared.base_frames.store(0, Ordering::Release);
     shared.is_playing.store(true, Ordering::Release);
 
     let src = File::open(&path).with_context(|| format!("failed to open {}", path.display()))?;
@@ -752,7 +751,7 @@ fn decode_file_to_queue(
 
     let mut hint = Hint::new();
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        hint.with_extension(ext);
+        hint.with_extension(&ext.to_lowercase());
     }
 
     let mut format = get_probe()
@@ -869,8 +868,8 @@ fn decode_file_to_queue(
         let in_channels = spec.channels().count().max(1);
         let in_rate = spec.rate().max(1);
 
-        let mut f32_samples = Vec::new();
-        decoded.copy_to_vec_interleaved::<f32>(&mut f32_samples);
+        let mut f32_samples = vec![0.0; decoded.samples_interleaved()];
+        decoded.copy_to_slice_interleaved(&mut f32_samples);
 
         let converted =
             convert_channels_and_rate(&f32_samples, in_channels, in_rate, out_channels, out_rate);
@@ -916,7 +915,6 @@ fn decode_file_to_queue(
     }
 }
 
-/// NEW: execute a seek against the open demuxer.
 #[allow(clippy::too_many_arguments)]
 fn perform_seek(
     format: &mut dyn symphonia::core::formats::FormatReader,
@@ -944,12 +942,10 @@ fn perform_seek(
     ) {
         Ok(_seeked_to) => {
             decoder.reset();
-            // Drop already-queued (pre-seek) audio.
-            flush_audio_queue(flush_rx);
-            // Re-base the position clock at the seek target.
+            reset_audio_queue_and_clock(shared, flush_rx);
             let base = (clamped.as_secs_f64() * out_rate as f64) as u64;
             shared.base_frames.store(base, Ordering::Release);
-            shared.played_frames.store(0, Ordering::Release);
+            shared.is_playing.store(true, Ordering::Release);
         }
         Err(err) => {
             let mut s = shared.status.lock().unwrap();
@@ -986,13 +982,21 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>, flush_rx: &Receiver<f32>) -
         Command::Seek(pos) => CommandAction::Seek(pos),
 
         Command::Play => {
-            shared.is_playing.store(true, Ordering::Release);
             let mut s = shared.status.lock().unwrap();
-            if matches!(
-                s.state,
-                PlaybackState::Paused | PlaybackState::Stopped | PlaybackState::Ended
-            ) {
-                s.state = PlaybackState::Playing;
+            match s.state {
+                PlaybackState::Paused => {
+                    shared.is_playing.store(true, Ordering::Release);
+                    s.state = PlaybackState::Playing;
+                }
+                PlaybackState::Stopped | PlaybackState::Ended => {
+                    if let Some(path) = s.path.clone() {
+                        return CommandAction::Load(path);
+                    }
+                }
+                PlaybackState::Idle
+                | PlaybackState::Loading
+                | PlaybackState::Playing
+                | PlaybackState::Error => {}
             }
             CommandAction::Continue
         }
@@ -1007,22 +1011,31 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>, flush_rx: &Receiver<f32>) -
         }
 
         Command::Toggle => {
-            let now_playing = shared.is_playing.load(Ordering::Acquire);
-            shared.is_playing.store(!now_playing, Ordering::Release);
             let mut s = shared.status.lock().unwrap();
-            s.state = if now_playing {
-                PlaybackState::Paused
-            } else {
-                PlaybackState::Playing
-            };
+            match s.state {
+                PlaybackState::Idle | PlaybackState::Loading | PlaybackState::Error => {
+                    return CommandAction::Continue;
+                }
+                PlaybackState::Stopped | PlaybackState::Ended => {
+                    if let Some(path) = s.path.clone() {
+                        return CommandAction::Load(path);
+                    }
+                    return CommandAction::Continue;
+                }
+                PlaybackState::Playing => {
+                    shared.is_playing.store(false, Ordering::Release);
+                    s.state = PlaybackState::Paused;
+                }
+                PlaybackState::Paused => {
+                    shared.is_playing.store(true, Ordering::Release);
+                    s.state = PlaybackState::Playing;
+                }
+            }
             CommandAction::Continue
         }
 
         Command::Stop => {
-            shared.is_playing.store(false, Ordering::Release);
-            shared.played_frames.store(0, Ordering::Release);
-            shared.base_frames.store(0, Ordering::Release);
-            flush_audio_queue(flush_rx);
+            reset_audio_queue_and_clock(shared, flush_rx);
             let mut s = shared.status.lock().unwrap();
             s.state = PlaybackState::Stopped;
             s.position = Duration::ZERO;
@@ -1043,6 +1056,14 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>, flush_rx: &Receiver<f32>) -
 
 fn flush_audio_queue(rx: &Receiver<f32>) {
     while rx.try_recv().is_ok() {}
+}
+
+fn reset_audio_queue_and_clock(shared: &Shared, flush_rx: &Receiver<f32>) {
+    shared.is_playing.store(false, Ordering::Release);
+    flush_audio_queue(flush_rx);
+    shared.played_frames.store(0, Ordering::Release);
+    shared.base_frames.store(0, Ordering::Release);
+    shared.generation.fetch_add(1, Ordering::Release);
 }
 
 fn wait_until_queue_drained(
@@ -1096,7 +1117,7 @@ fn convert_channels_and_rate(
     let out_frames = if in_rate == out_rate {
         in_frames
     } else {
-        ((in_frames as u64 * out_rate as u64 + in_rate as u64 - 1) / in_rate as u64) as usize
+        (in_frames as u64 * out_rate as u64).div_ceil(in_rate as u64) as usize
     };
 
     let mut out = Vec::with_capacity(out_frames * out_channels);

@@ -43,6 +43,7 @@ name = "repadio"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 publish = false
 default-run = "repadio-desktop"
 

@@ -10,7 +10,7 @@ grade: stable
 confinement: strict
 icon: snap/gui/icon.png
 title: Repadio
-license: LGPL-2.1
+license: LGPL-2.1-or-later
 platforms:
   amd64:
   arm64:
@@ -22,6 +22,7 @@ apps:
       - home
       - network
       - removable-media
+      - audio-playback
       - unity7
       - desktop
       - desktop-legacy
