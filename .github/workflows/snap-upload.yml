@@ -13,7 +13,7 @@ jobs:
   snap:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download Linux binary
         uses: robinraju/release-downloader@v1

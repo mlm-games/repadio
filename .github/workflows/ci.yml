@@ -28,7 +28,7 @@ jobs:
           - os: macos-latest
           - os: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -94,7 +94,7 @@ jobs:
             abi: x86
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-java@v5
         with:
@@ -102,7 +102,7 @@ jobs:
           distribution: ${{ env.JAVA_DISTRIBUTION }}
 
       - name: Set up Android SDK/NDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Install Android platforms and NDK
         run: |
@@ -132,7 +132,7 @@ jobs:
           cp "$(ls -1t "$OUT_DIR"/*.apk | head -n1)" "artifacts/app-${{ matrix.abi }}.apk"
 
       - name: Upload Android APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: android-${{ matrix.abi }}
           path: artifacts/*.apk

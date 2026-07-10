@@ -10,7 +10,7 @@ jobs:
   choco:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download Windows binary
         uses: robinraju/release-downloader@v1
