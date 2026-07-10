@@ -367,6 +367,7 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
                         pending.files.lock().unwrap().extend(sources);
                         pending.needs_wake.store(true, Ordering::Release);
                         request_frame();
+                        #[cfg(not(target_arch = "wasm32"))]
                         repose_platform::wake_event_loop();
                     }
                 });
@@ -837,6 +838,7 @@ fn EmptyPlaylist(pending: PendingFiles) -> View {
                                 pending.files.lock().unwrap().extend(sources);
                                 pending.needs_wake.store(true, Ordering::Release);
                                 request_frame();
+                                #[cfg(not(target_arch = "wasm32"))]
                                 repose_platform::wake_event_loop();
                             }
                         });
