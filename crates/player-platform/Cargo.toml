@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 log.workspace = true
 rlobkit-dialogs.workspace = true
+futures-lite.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen.workspace = true

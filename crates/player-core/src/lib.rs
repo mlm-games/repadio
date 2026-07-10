@@ -46,7 +46,7 @@ pub enum PlaybackState {
 /// Abstracts over native filesystem paths and in-memory byte buffers so
 /// the same pipeline works on desktop, WASM (browser blobs / OPFS), and
 /// Android (content:// URIs).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MediaSource {
     Path(PathBuf),
     Bytes { name: String, bytes: Arc<[u8]> },
@@ -61,6 +61,17 @@ impl From<PathBuf> for MediaSource {
 impl From<&Path> for MediaSource {
     fn from(p: &Path) -> Self {
         MediaSource::Path(p.to_path_buf())
+    }
+}
+
+impl MediaSource {
+    /// A human-readable unique identifier for the source file
+    /// (file name for paths, the `name` field for byte blobs).
+    pub fn display_name(&self) -> String {
+        match self {
+            MediaSource::Path(p) => p.to_string_lossy().to_string(),
+            MediaSource::Bytes { name, .. } => name.clone(),
+        }
     }
 }
 
@@ -82,7 +93,7 @@ pub struct PlayerSnapshot {
     pub artist: Option<String>,
     pub album: Option<String>,
     pub art: Option<Arc<Vec<u8>>>,
-    pub path: Option<PathBuf>,
+    pub source: Option<MediaSource>,
     pub position: Duration,
     pub duration: Option<Duration>,
     pub volume: f32,
@@ -97,7 +108,7 @@ impl Default for PlayerSnapshot {
             artist: None,
             album: None,
             art: None,
-            path: None,
+            source: None,
             position: Duration::ZERO,
             duration: None,
             volume: 1.0,
@@ -152,7 +163,7 @@ struct Shared {
     seek_serial: AtomicU64,
 }
 
-/// WASM: CPAL streams are not `Send`/`Sync`, so use thread-local storage.
+// CPAL streams are not `Send`/`Sync`, so need thread-local storage for wasm.
 #[cfg(target_arch = "wasm32")]
 thread_local! {
     static AUDIO_STREAM: std::cell::OnceCell<cpal::Stream> = const { std::cell::OnceCell::new() };
@@ -802,6 +813,7 @@ fn decode_file_to_queue(
     {
         let mut s = lock_status(&shared);
         s.state = PlaybackState::Loading;
+        s.source = Some(source.clone());
         s.title = display_name;
         s.artist = None;
         s.album = None;
@@ -1096,8 +1108,8 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>, flush_rx: &Receiver<f32>) -
                     s.state = PlaybackState::Playing;
                 }
                 PlaybackState::Stopped | PlaybackState::Ended => {
-                    if let Some(path) = s.path.clone() {
-                        return CommandAction::Load(MediaSource::Path(path));
+                    if let Some(source) = s.source.clone() {
+                        return CommandAction::Load(source);
                     }
                 }
                 PlaybackState::Idle
@@ -1124,8 +1136,8 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>, flush_rx: &Receiver<f32>) -
                     return CommandAction::Continue;
                 }
                 PlaybackState::Stopped | PlaybackState::Ended => {
-                    if let Some(path) = s.path.clone() {
-                        return CommandAction::Load(MediaSource::Path(path));
+                    if let Some(source) = s.source.clone() {
+                        return CommandAction::Load(source);
                     }
                     return CommandAction::Continue;
                 }

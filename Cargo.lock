@@ -2806,6 +2806,7 @@ dependencies = [
 name = "player-platform"
 version = "0.1.0"
 dependencies = [
+ "futures-lite",
  "js-sys",
  "log",
  "opfs",

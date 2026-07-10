@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-use player_core::{AudioPlayer, PlaybackState, TrackMeta, probe_track_meta};
+use player_core::{AudioPlayer, MediaSource, PlaybackState, TrackMeta, probe_track_meta};
 use repose_core::modifier::PaddingValues;
 use repose_core::prelude::*;
 use repose_material::material3 as m3;
@@ -39,23 +39,30 @@ use repose_ui::{Box, Column, LazyColumn, LazyColumnConfig, Row, Spacer, Text, Vi
 
 #[derive(Clone)]
 struct Entry {
-    path: PathBuf,
+    source: MediaSource,
     meta: TrackMeta,
 }
 
 impl Entry {
     fn display_title(&self) -> String {
-        self.meta.title.clone().unwrap_or_else(|| {
-            self.path
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "Unknown".into())
-        })
+        self.meta
+            .title
+            .clone()
+            .unwrap_or_else(|| match &self.source {
+                MediaSource::Path(p) => p
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "Unknown".into()),
+                MediaSource::Bytes { name, .. } => std::path::Path::new(name)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| name.clone()),
+            })
     }
 }
 
 struct PendingState {
-    files: Mutex<Vec<PathBuf>>,
+    files: Mutex<Vec<MediaSource>>,
     probed_meta: Mutex<Vec<(PathBuf, TrackMeta)>>,
     needs_wake: AtomicBool,
 }
@@ -70,7 +77,12 @@ pub fn run_desktop() -> anyhow::Result<()> {
 
     let player = AudioPlayer::spawn()?;
     let pending: PendingFiles = Arc::new(PendingState {
-        files: Mutex::new(std::env::args().skip(1).map(PathBuf::from).collect()),
+        files: Mutex::new(
+            std::env::args()
+                .skip(1)
+                .map(|p| MediaSource::Path(PathBuf::from(p)))
+                .collect(),
+        ),
         probed_meta: Mutex::new(Vec::new()),
         needs_wake: AtomicBool::new(false),
     });
@@ -171,48 +183,58 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
         if !probed.is_empty() {
             let mut list = playlist.get();
             for (path, meta) in probed {
-                if let Some(entry) = list.iter_mut().find(|e| e.path == path) {
+                if let Some(entry) = list
+                    .iter_mut()
+                    .find(|e| e.source == MediaSource::Path(path.clone()))
+                {
                     entry.meta = meta;
                 }
             }
             playlist.set(list);
         }
 
-        let new_files: Vec<PathBuf> = pending.files.lock().unwrap().drain(..).collect();
+        let new_files: Vec<MediaSource> = pending.files.lock().unwrap().drain(..).collect();
         if !new_files.is_empty() {
             let mut list = playlist.get();
             let was_empty = list.is_empty();
-            for path in &new_files {
-                // Add immediately with filename only — no blocking probe.
+            for source in &new_files {
                 list.push(Entry {
-                    path: path.clone(),
+                    source: source.clone(),
                     meta: TrackMeta::default(),
                 });
             }
             playlist.set(list.clone());
             if was_empty && !list.is_empty() {
                 current.set(Some(0));
-                if let Err(e) = player.load(list[0].path.clone()) {
+                if let Err(e) = player.load(list[0].source.clone()) {
                     log::error!("load first track failed: {e}");
                 }
                 advance_armed.set(true);
             }
 
-            // Spawn background metadata probes.
+            // Spawn background metadata probes (desktop only: needs real paths).
             let pending = pending.clone();
-            let probe_paths: Vec<PathBuf> = new_files.clone();
+            let probe_paths: Vec<PathBuf> = new_files
+                .iter()
+                .filter_map(|s| match s {
+                    MediaSource::Path(p) => Some(p.clone()),
+                    MediaSource::Bytes { .. } => None,
+                })
+                .collect();
             #[cfg(not(target_arch = "wasm32"))]
-            std::thread::spawn(move || {
-                for path in &probe_paths {
-                    let meta = probe_track_meta(path);
-                    pending
-                        .probed_meta
-                        .lock()
-                        .unwrap()
-                        .push((path.clone(), meta));
-                    pending.needs_wake.store(true, Ordering::Release);
-                }
-            });
+            if !probe_paths.is_empty() {
+                std::thread::spawn(move || {
+                    for path in &probe_paths {
+                        let meta = probe_track_meta(path);
+                        pending
+                            .probed_meta
+                            .lock()
+                            .unwrap()
+                            .push((path.clone(), meta));
+                        pending.needs_wake.store(true, Ordering::Release);
+                    }
+                });
+            }
         }
         if needs_wake || !new_files.is_empty() {
             request_frame();
@@ -239,7 +261,7 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
                 };
                 if target < list.len() {
                     current.set(Some(target));
-                    if let Err(e) = player.load(list[target].path.clone()) {
+                    if let Err(e) = player.load(list[target].source.clone()) {
                         log::error!("advance load failed: {e}");
                     }
                 }
@@ -277,9 +299,21 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
             let pending = pending.clone();
             move || {
                 let pending = pending.clone();
-                player_platform::pick_audio_files_async(move |files| {
-                    if !files.is_empty() {
-                        pending.files.lock().unwrap().extend(files);
+                player_platform::pick_audio_files_async(move |picked| {
+                    if !picked.is_empty() {
+                        let sources: Vec<MediaSource> = picked
+                            .into_iter()
+                            .map(|f| match f {
+                                player_platform::PickedFile::Path(p) => MediaSource::Path(p),
+                                player_platform::PickedFile::Bytes { name, data } => {
+                                    MediaSource::Bytes {
+                                        name,
+                                        bytes: Arc::from(data),
+                                    }
+                                }
+                            })
+                            .collect();
+                        pending.files.lock().unwrap().extend(sources);
                         pending.needs_wake.store(true, Ordering::Release);
                     }
                 });
@@ -556,7 +590,7 @@ fn TransportBar(
                         && idx > 0
                     {
                         current.set(Some(idx - 1));
-                        if let Err(e) = player.load(list[idx - 1].path.clone()) {
+                        if let Err(e) = player.load(list[idx - 1].source.clone()) {
                             log::error!("load previous failed: {e}");
                         }
                     }
@@ -599,7 +633,7 @@ fn TransportBar(
                         && idx + 1 < list.len()
                     {
                         current.set(Some(idx + 1));
-                        if let Err(e) = player.load(list[idx + 1].path.clone()) {
+                        if let Err(e) = player.load(list[idx + 1].source.clone()) {
                             log::error!("load next failed: {e}");
                         }
                     }
@@ -745,9 +779,21 @@ fn EmptyPlaylist(pending: PendingFiles) -> View {
                 Modifier::new(),
                 move || {
                     let pending = pending.clone();
-                    player_platform::pick_audio_files_async(move |files| {
-                        if !files.is_empty() {
-                            pending.files.lock().unwrap().extend(files);
+                    player_platform::pick_audio_files_async(move |picked| {
+                        if !picked.is_empty() {
+                            let sources: Vec<MediaSource> = picked
+                                .into_iter()
+                                .map(|f| match f {
+                                    player_platform::PickedFile::Path(p) => MediaSource::Path(p),
+                                    player_platform::PickedFile::Bytes { name, data } => {
+                                        MediaSource::Bytes {
+                                            name,
+                                            bytes: Arc::from(data),
+                                        }
+                                    }
+                                })
+                                .collect();
+                            pending.files.lock().unwrap().extend(sources);
                             pending.needs_wake.store(true, Ordering::Release);
                         }
                     });
@@ -773,7 +819,7 @@ fn PlaylistList(
         list,
         68.0f32,
         |entry: &Entry| {
-            let s = entry.path.to_string_lossy();
+            let s = entry.source.display_name();
             let mut h: u64 = 14695981039346656037;
             for b in s.bytes() {
                 h ^= b as u64;
@@ -801,7 +847,7 @@ fn TrackRow(
     player: AudioPlayer,
 ) -> View {
     let is_current = current.get() == Some(idx);
-    let row_path = entry.path.clone();
+    let row_source = entry.source.clone();
 
     let leading_bg = if is_current {
         theme().primary_container
@@ -829,7 +875,7 @@ fn TrackRow(
                 let current = current.clone();
                 move || {
                     current.set(Some(idx));
-                    if let Err(e) = player.load(row_path.clone()) {
+                    if let Err(e) = player.load(row_source.clone()) {
                         log::error!("load track failed: {e}");
                     }
                 }

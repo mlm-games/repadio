@@ -2,6 +2,14 @@
 
 use std::path::PathBuf;
 
+#[derive(Debug, Clone)]
+pub enum PickedFile {
+    /// Real filesystem path (desktop).
+    Path(PathBuf),
+    /// File name + raw bytes (WASM / Android). Could maybe add a Uri type when Android adds sharing.
+    Bytes { name: String, data: Vec<u8> },
+}
+
 /// Initialise platform backends. Must be called once at app startup.
 pub fn init() {
     rlobkit_dialogs::init();
@@ -16,10 +24,13 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
 ///
 /// NOTE: blocks the calling thread on desktop. On WASM the synchronous
 /// API is unavailable -> use `pick_audio_files_async` instead.
-pub fn pick_audio_files() -> Vec<PathBuf> {
+pub fn pick_audio_files() -> Vec<PickedFile> {
     #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     {
         rlobkit_dialogs::blocking_pick_files("Add audio files", AUDIO_EXTENSIONS)
+            .into_iter()
+            .map(PickedFile::Path)
+            .collect()
     }
     #[cfg(any(target_os = "android", target_arch = "wasm32"))]
     {
@@ -33,8 +44,49 @@ pub fn pick_audio_files() -> Vec<PathBuf> {
 /// user finishes selecting.
 ///
 /// On desktop this spawns a helper thread (same as before).
-pub fn pick_audio_files_async(on_done: impl FnOnce(Vec<PathBuf>) + Send + 'static) {
-    #[cfg(not(target_arch = "wasm32"))]
+pub fn pick_audio_files_async(on_done: impl FnOnce(Vec<PickedFile>) + Send + 'static) {
+    #[cfg(target_os = "android")]
+    {
+        std::thread::spawn(move || {
+            use rlobkit_dialogs::picker::OpenFileOptions;
+            use rlobkit_dialogs::{RlobKit, RlobKitMode, RlobKitType};
+
+            let exts: Vec<String> = AUDIO_EXTENSIONS.iter().map(|s| s.to_string()).collect();
+            let result =
+                futures_lite::future::block_on(RlobKit::open_file_picker(OpenFileOptions {
+                    file_type: RlobKitType::Custom {
+                        extensions: exts,
+                        mime_types: vec!["audio/*".to_string()],
+                    },
+                    mode: RlobKitMode::Multiple { limit: None },
+                    title: Some("Add audio files".to_string()),
+                    initial_directory: None,
+                }));
+
+            let files = match result {
+                Ok(Some(platform_files)) => platform_files
+                    .into_iter()
+                    .filter_map(|f| {
+                        let name = f.name().to_string();
+                        match f.read_bytes().ok() {
+                            Some(data) => Some(PickedFile::Bytes {
+                                name,
+                                data: data.to_vec(),
+                            }),
+                            None => {
+                                // Fallback: use the content URI as a path.
+                                f.path().map(|p| PickedFile::Path(p.to_path_buf()))
+                            }
+                        }
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            on_done(files);
+        });
+    }
+
+    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     {
         std::thread::spawn(move || {
             let files = pick_audio_files();
@@ -60,14 +112,27 @@ pub fn pick_audio_files_async(on_done: impl FnOnce(Vec<PathBuf>) + Send + 'stati
             })
             .await;
 
-            let paths = match result {
-                Ok(Some(files)) => files
+            let files = match result {
+                Ok(Some(platform_files)) => platform_files
                     .into_iter()
-                    .filter_map(|f| f.path().map(|p| p.to_path_buf()))
+                    .filter_map(|f| {
+                        let name = f.name().to_string();
+                        // On WASM the bytes are already in memory.
+                        match f.data() {
+                            Some(data) => Some(PickedFile::Bytes {
+                                name,
+                                data: data.to_vec(),
+                            }),
+                            None => f.read_bytes().ok().map(|data| PickedFile::Bytes {
+                                name,
+                                data: data.to_vec(),
+                            }),
+                        }
+                    })
                     .collect(),
                 _ => Vec::new(),
             };
-            on_done(paths);
+            on_done(files);
         });
     }
 }
