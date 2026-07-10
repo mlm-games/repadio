@@ -380,8 +380,12 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
             Column(
                 Modifier::new()
                     .fill_max_size()
-                    .padding_values(padding)
-                    .padding(16.0)
+                    .padding_values(PaddingValues {
+                        top: 16.0,
+                        bottom: padding.bottom,
+                        left: 24.0,
+                        right: 24.0,
+                    })
                     .gap(16.0),
             )
             .child((
