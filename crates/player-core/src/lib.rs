@@ -1002,6 +1002,8 @@ fn perform_seek(
 
     let time = Time::try_from_secs_f64(clamped.as_secs_f64()).unwrap_or(Time::ZERO);
 
+    let was_playing = shared.is_playing.load(Ordering::Acquire);
+
     match format.seek(
         SeekMode::Accurate,
         SeekTo::Time {
@@ -1012,7 +1014,7 @@ fn perform_seek(
         Ok(_seeked_to) => {
             decoder.reset();
             reset_audio_queue_and_clock(shared, flush_rx);
-            shared.is_playing.store(true, Ordering::Release);
+            shared.is_playing.store(was_playing, Ordering::Release);
             // Don't overwrite a newer seek's optimistic clock rebase.
             if shared.seek_serial.load(Ordering::Acquire) == serial {
                 let base = (clamped.as_secs_f64() * out_rate as f64) as u64;
