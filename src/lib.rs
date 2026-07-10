@@ -3,7 +3,10 @@
 use std::{
     path::PathBuf,
     rc::Rc,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -51,7 +54,13 @@ impl Entry {
     }
 }
 
-type PendingFiles = Arc<Mutex<Vec<PathBuf>>>;
+struct PendingState {
+    files: Mutex<Vec<PathBuf>>,
+    probed_meta: Mutex<Vec<(PathBuf, TrackMeta)>>,
+    needs_wake: AtomicBool,
+}
+
+type PendingFiles = Arc<PendingState>;
 
 #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 pub fn run_desktop() -> anyhow::Result<()> {
@@ -60,9 +69,11 @@ pub fn run_desktop() -> anyhow::Result<()> {
     player_platform::init();
 
     let player = AudioPlayer::spawn()?;
-    let pending: PendingFiles = Arc::new(Mutex::new(
-        std::env::args().skip(1).map(PathBuf::from).collect(),
-    ));
+    let pending: PendingFiles = Arc::new(PendingState {
+        files: Mutex::new(std::env::args().skip(1).map(PathBuf::from).collect()),
+        probed_meta: Mutex::new(Vec::new()),
+        needs_wake: AtomicBool::new(false),
+    });
 
     repose_platform::run_desktop_app(move |_sched, _ctx| App(player.clone(), pending.clone()))
 }
@@ -80,7 +91,11 @@ pub async fn wasm_main() {
     player_platform::init();
 
     let player = AudioPlayer::spawn().expect("failed to spawn audio player");
-    let pending: PendingFiles = Arc::new(Mutex::new(Vec::new()));
+    let pending: PendingFiles = Arc::new(PendingState {
+        files: Mutex::new(Vec::new()),
+        probed_meta: Mutex::new(Vec::new()),
+        needs_wake: AtomicBool::new(false),
+    });
 
     let canvas = web_sys::window()
         .and_then(|w| w.document())
@@ -123,7 +138,11 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
     player_platform::init();
     if let Err(err) = repose_platform::android::run_android_app(android_app, |_sched, _ctx| {
         let player = AudioPlayer::spawn().expect("failed to spawn audio player");
-        let pending: PendingFiles = Arc::new(Mutex::new(Vec::new()));
+        let pending: PendingFiles = Arc::new(PendingState {
+            files: Mutex::new(Vec::new()),
+            probed_meta: Mutex::new(Vec::new()),
+            needs_wake: AtomicBool::new(false),
+        });
         App(player, pending)
     }) {
         log::error!("Repadio failed: {err:?}");
@@ -131,8 +150,6 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
 }
 
 fn App(player: AudioPlayer, pending: PendingFiles) -> View {
-    request_frame();
-
     let playlist = remember(|| signal(Vec::<Entry>::new()));
     let current = remember(|| signal(None::<usize>));
     let volume = remember(|| signal(1.0f32));
@@ -142,13 +159,35 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
     let scrubbing = remember(|| signal(None::<f32>));
     let dismissed_error = remember(|| signal(None::<String>));
     {
-        let new_files: Vec<PathBuf> = pending.lock().unwrap().drain(..).collect();
+        let needs_wake = pending.needs_wake.swap(false, Ordering::AcqRel);
+
+        // Drain background metadata probes and update matching entries.
+        let probed = pending
+            .probed_meta
+            .lock()
+            .unwrap()
+            .drain(..)
+            .collect::<Vec<_>>();
+        if !probed.is_empty() {
+            let mut list = playlist.get();
+            for (path, meta) in probed {
+                if let Some(entry) = list.iter_mut().find(|e| e.path == path) {
+                    entry.meta = meta;
+                }
+            }
+            playlist.set(list);
+        }
+
+        let new_files: Vec<PathBuf> = pending.files.lock().unwrap().drain(..).collect();
         if !new_files.is_empty() {
             let mut list = playlist.get();
             let was_empty = list.is_empty();
-            for path in new_files {
-                let meta = probe_track_meta(&path);
-                list.push(Entry { path, meta });
+            for path in &new_files {
+                // Add immediately with filename only — no blocking probe.
+                list.push(Entry {
+                    path: path.clone(),
+                    meta: TrackMeta::default(),
+                });
             }
             playlist.set(list.clone());
             if was_empty && !list.is_empty() {
@@ -158,10 +197,35 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
                 }
                 advance_armed.set(true);
             }
+
+            // Spawn background metadata probes.
+            let pending = pending.clone();
+            let probe_paths: Vec<PathBuf> = new_files.clone();
+            #[cfg(not(target_arch = "wasm32"))]
+            std::thread::spawn(move || {
+                for path in &probe_paths {
+                    let meta = probe_track_meta(path);
+                    pending
+                        .probed_meta
+                        .lock()
+                        .unwrap()
+                        .push((path.clone(), meta));
+                    pending.needs_wake.store(true, Ordering::Release);
+                }
+            });
+        }
+        if needs_wake || !new_files.is_empty() {
+            request_frame();
         }
     }
 
     let snap = player.snapshot();
+
+    if matches!(snap.state, PlaybackState::Playing | PlaybackState::Loading)
+        || scrubbing.get().is_some()
+    {
+        request_frame();
+    }
 
     if pending_advance.get() {
         pending_advance.set(false);
@@ -215,7 +279,8 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
                 let pending = pending.clone();
                 player_platform::pick_audio_files_async(move |files| {
                     if !files.is_empty() {
-                        pending.lock().unwrap().extend(files);
+                        pending.files.lock().unwrap().extend(files);
+                        pending.needs_wake.store(true, Ordering::Release);
                     }
                 });
             }
@@ -682,7 +747,8 @@ fn EmptyPlaylist(pending: PendingFiles) -> View {
                     let pending = pending.clone();
                     player_platform::pick_audio_files_async(move |files| {
                         if !files.is_empty() {
-                            pending.lock().unwrap().extend(files);
+                            pending.files.lock().unwrap().extend(files);
+                            pending.needs_wake.store(true, Ordering::Release);
                         }
                     });
                 },

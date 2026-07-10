@@ -1,5 +1,6 @@
 use std::{
     fs::File,
+    io::Cursor,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -39,6 +40,28 @@ pub enum PlaybackState {
     Stopped,
     Ended,
     Error,
+}
+
+/// A media source that the decoder can open.
+/// Abstracts over native filesystem paths and in-memory byte buffers so
+/// the same pipeline works on desktop, WASM (browser blobs / OPFS), and
+/// Android (content:// URIs).
+#[derive(Debug, Clone)]
+pub enum MediaSource {
+    Path(PathBuf),
+    Bytes { name: String, bytes: Arc<[u8]> },
+}
+
+impl From<PathBuf> for MediaSource {
+    fn from(p: PathBuf) -> Self {
+        MediaSource::Path(p)
+    }
+}
+
+impl From<&Path> for MediaSource {
+    fn from(p: &Path) -> Self {
+        MediaSource::Path(p.to_path_buf())
+    }
 }
 
 /// Best-effort tag metadata for a media file.
@@ -85,7 +108,7 @@ impl Default for PlayerSnapshot {
 
 #[derive(Debug)]
 enum Command {
-    Load(PathBuf),
+    Load(MediaSource),
     Play,
     Pause,
     Toggle,
@@ -205,7 +228,7 @@ impl AudioPlayer {
             .map_err(|_| anyhow!("audio thread is not running"))
     }
 
-    pub fn load(&self, path: impl Into<PathBuf>) -> Result<()> {
+    pub fn load(&self, path: impl Into<MediaSource>) -> Result<()> {
         self.send(Command::Load(path.into()))
     }
     pub fn play(&self) -> Result<()> {
@@ -268,18 +291,48 @@ impl AudioPlayer {
     }
 }
 
+/// Convert a `MediaSource` into a Symphonia `MediaSourceStream` + `Hint`.
+fn media_source_stream(src: MediaSource) -> Result<(MediaSourceStream<'static>, Hint)> {
+    match src {
+        MediaSource::Path(path) => {
+            let file =
+                File::open(&path).with_context(|| format!("failed to open {}", path.display()))?;
+            let mut hint = Hint::new();
+            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                hint.with_extension(&ext.to_lowercase());
+            }
+            Ok((
+                MediaSourceStream::new(Box::new(file), MediaSourceStreamOptions::default()),
+                hint,
+            ))
+        }
+        MediaSource::Bytes { name, bytes } => {
+            let cursor = Cursor::new(bytes.to_vec());
+            let mut hint = Hint::new();
+            if let Some(ext) = std::path::Path::new(&name)
+                .extension()
+                .and_then(|e| e.to_str())
+            {
+                hint.with_extension(&ext.to_lowercase());
+            }
+            Ok((
+                MediaSourceStream::new(Box::new(cursor), MediaSourceStreamOptions::default()),
+                hint,
+            ))
+        }
+    }
+}
+
 pub fn probe_track_meta(path: &Path) -> TrackMeta {
+    probe_media_source(MediaSource::Path(path.to_path_buf()))
+}
+
+fn probe_media_source(source: MediaSource) -> TrackMeta {
     let mut meta = TrackMeta::default();
 
-    let Ok(src) = File::open(path) else {
+    let Ok((mss, hint)) = media_source_stream(source) else {
         return meta;
     };
-    let mss = MediaSourceStream::new(Box::new(src), MediaSourceStreamOptions::default());
-
-    let mut hint = Hint::new();
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        hint.with_extension(&ext.to_lowercase());
-    }
 
     let Ok(mut reader) = get_probe().probe(
         &hint,
@@ -580,7 +633,7 @@ fn run_command_loop(
     loop {
         match cmd_rx.recv() {
             Ok(Command::Load(path)) => {
-                log::info!("audio thread processing load: {}", path.display());
+                log::info!("audio thread processing load: {:?}", path);
                 let mut next = Some(path);
                 'decode: while let Some(path) = next.take() {
                     match decode_file_to_queue(
@@ -716,12 +769,12 @@ fn make_u16_callback(
 
 enum DecodeOutcome {
     Idle,
-    Load(PathBuf),
+    Load(MediaSource),
     Shutdown,
 }
 
 fn decode_file_to_queue(
-    path: PathBuf,
+    source: MediaSource,
     cmd_rx: &Receiver<Command>,
     sample_tx: &Sender<f32>,
     flush_rx: &Receiver<f32>,
@@ -731,11 +784,15 @@ fn decode_file_to_queue(
 ) -> Result<DecodeOutcome> {
     reset_audio_queue_and_clock(&shared, flush_rx);
 
+    let display_name = match &source {
+        MediaSource::Path(p) => p.file_name().map(|v| v.to_string_lossy().to_string()),
+        MediaSource::Bytes { name, .. } => Some(name.clone()),
+    };
+
     {
         let mut s = shared.status.lock().unwrap();
         s.state = PlaybackState::Loading;
-        s.path = Some(path.clone());
-        s.title = path.file_name().map(|v| v.to_string_lossy().to_string());
+        s.title = display_name;
         s.artist = None;
         s.album = None;
         s.art = None;
@@ -746,13 +803,7 @@ fn decode_file_to_queue(
 
     shared.is_playing.store(true, Ordering::Release);
 
-    let src = File::open(&path).with_context(|| format!("failed to open {}", path.display()))?;
-    let mss = MediaSourceStream::new(Box::new(src), MediaSourceStreamOptions::default());
-
-    let mut hint = Hint::new();
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        hint.with_extension(&ext.to_lowercase());
-    }
+    let (mss, hint) = media_source_stream(source).context("failed to open media source")?;
 
     let mut format = get_probe()
         .probe(
@@ -805,6 +856,12 @@ fn decode_file_to_queue(
         .make_audio_decoder(&codec_params, &AudioDecoderOptions::default())
         .context("failed to create decoder")?;
 
+    let mut resampler = LinearResampler::new(
+        codec_params.sample_rate.unwrap_or(out_rate),
+        out_rate,
+        out_channels,
+    );
+
     loop {
         match drain_commands(cmd_rx, &shared, flush_rx) {
             CommandAction::Continue => {}
@@ -822,6 +879,7 @@ fn decode_file_to_queue(
                     flush_rx,
                     out_rate,
                 );
+                resampler.reset();
             }
         }
 
@@ -866,13 +924,10 @@ fn decode_file_to_queue(
 
         let spec = decoded.spec();
         let in_channels = spec.channels().count().max(1);
-        let in_rate = spec.rate().max(1);
-
         let mut f32_samples = vec![0.0; decoded.samples_interleaved()];
         decoded.copy_to_slice_interleaved(&mut f32_samples);
 
-        let converted =
-            convert_channels_and_rate(&f32_samples, in_channels, in_rate, out_channels, out_rate);
+        let converted = resampler.process(&f32_samples, in_channels);
 
         for mut sample in converted {
             loop {
@@ -897,6 +952,7 @@ fn decode_file_to_queue(
                                     flush_rx,
                                     out_rate,
                                 );
+                                resampler.reset();
                                 // Drop the in-flight sample; it's pre-seek audio.
                                 break;
                             }
@@ -956,7 +1012,7 @@ fn perform_seek(
 
 enum CommandAction {
     Continue,
-    Load(PathBuf),
+    Load(MediaSource),
     Seek(Duration),
     Stop,
     Shutdown,
@@ -990,7 +1046,7 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>, flush_rx: &Receiver<f32>) -
                 }
                 PlaybackState::Stopped | PlaybackState::Ended => {
                     if let Some(path) = s.path.clone() {
-                        return CommandAction::Load(path);
+                        return CommandAction::Load(MediaSource::Path(path));
                     }
                 }
                 PlaybackState::Idle
@@ -1018,7 +1074,7 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>, flush_rx: &Receiver<f32>) -
                 }
                 PlaybackState::Stopped | PlaybackState::Ended => {
                     if let Some(path) = s.path.clone() {
-                        return CommandAction::Load(path);
+                        return CommandAction::Load(MediaSource::Path(path));
                     }
                     return CommandAction::Continue;
                 }
@@ -1099,54 +1155,84 @@ fn wait_until_queue_drained(
     }
 }
 
-fn convert_channels_and_rate(
-    input: &[f32],
-    in_channels: usize,
-    in_rate: u32,
+struct LinearResampler {
     out_channels: usize,
-    out_rate: u32,
-) -> Vec<f32> {
-    let in_channels = in_channels.max(1);
-    let out_channels = out_channels.max(1);
+    /// Output frames per input frame.
+    inv_ratio: f64,
+    /// Fractional read position in input frames, carried between packets.
+    pos: f64,
+    /// Last input frame (channel-mapped to out_channels) for cross-boundary
+    /// interpolation.
+    last_frame: Vec<f32>,
+    /// `true` once at least one packet has been processed.
+    has_last: bool,
+}
 
-    let in_frames = input.len() / in_channels;
-    if in_frames == 0 {
-        return Vec::new();
-    }
-
-    let out_frames = if in_rate == out_rate {
-        in_frames
-    } else {
-        (in_frames as u64 * out_rate as u64).div_ceil(in_rate as u64) as usize
-    };
-
-    let mut out = Vec::with_capacity(out_frames * out_channels);
-
-    for out_frame in 0..out_frames {
-        let src_pos = if in_rate == out_rate {
-            out_frame as f64
-        } else {
-            out_frame as f64 * in_rate as f64 / out_rate as f64
-        };
-
-        let i0 = src_pos.floor() as usize;
-        let i1 = (i0 + 1).min(in_frames - 1);
-        let frac = (src_pos - i0 as f64) as f32;
-
-        for out_ch in 0..out_channels {
-            let a = read_mapped_sample(
-                input,
-                i0.min(in_frames - 1),
-                out_ch,
-                in_channels,
-                out_channels,
-            );
-            let b = read_mapped_sample(input, i1, out_ch, in_channels, out_channels);
-            out.push(a + (b - a) * frac);
+impl LinearResampler {
+    fn new(in_rate: u32, out_rate: u32, out_channels: usize) -> Self {
+        let out_channels = out_channels.max(1);
+        Self {
+            out_channels,
+            inv_ratio: if in_rate == out_rate {
+                1.0
+            } else {
+                in_rate as f64 / out_rate as f64
+            },
+            pos: 0.0,
+            last_frame: vec![0.0; out_channels],
+            has_last: false,
         }
     }
 
-    out
+    fn process(&mut self, input: &[f32], in_channels: usize) -> Vec<f32> {
+        let in_channels = in_channels.max(1);
+        let out_channels = self.out_channels;
+
+        let in_frames = input.len() / in_channels;
+        if in_frames == 0 {
+            return Vec::new();
+        }
+
+        let mut out = Vec::new();
+
+        while self.pos < in_frames as f64 {
+            let i0 = self.pos.floor() as usize;
+            let i1_ceil = i0 + 1;
+            let frac = (self.pos - i0 as f64) as f32;
+
+            for out_ch in 0..out_channels {
+                let a = read_mapped_sample(input, i0, out_ch, in_channels, out_channels);
+                let b = if i1_ceil < in_frames {
+                    read_mapped_sample(input, i1_ceil, out_ch, in_channels, out_channels)
+                } else if self.has_last {
+                    self.last_frame[out_ch]
+                } else {
+                    a
+                };
+                out.push(a + (b - a) * frac);
+            }
+
+            self.pos += self.inv_ratio;
+        }
+
+        // Carry fractional position to the next packet.
+        self.pos -= in_frames as f64;
+
+        // Save the last frame for cross-boundary interpolation.
+        let last_idx = in_frames - 1;
+        for out_ch in 0..out_channels {
+            self.last_frame[out_ch] =
+                read_mapped_sample(input, last_idx, out_ch, in_channels, out_channels);
+        }
+        self.has_last = true;
+
+        out
+    }
+
+    fn reset(&mut self) {
+        self.pos = 0.0;
+        self.has_last = false;
+    }
 }
 
 fn read_mapped_sample(
