@@ -1,0 +1,20 @@
+- ffix wasm errs
+- proper padding
+- rm flush_rx and Justify center for row (rm spacer)
+- remove stop button (seek to 0 would be sufficient)
+- do not play on seek when paused
+- switch to rubato
+- fix android picking
+- fix wasm
+- fix web threading
+- chroe: cont ofr rlobkit impl
+- playback for chained streams like ogg, and lock_status helper for .lock().unwrap() calls
+- LinearSampler and file picker abstractions
+- fix the seek glitch (only slightly audible now), and better play state
+- fix cpal thread issue on desktop
+- rm dash
+- deps
+- use the -desktop bin seperation
+- rename to repadio
+- save the arch packaging stuff
+- init gen
