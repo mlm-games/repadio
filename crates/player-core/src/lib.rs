@@ -586,7 +586,7 @@ fn run_command_loop(
                     }
                 }
             }
-            Ok(cmd) => match apply_command(cmd, shared, flush_rx) {
+            Ok(cmd) => match apply_command(cmd, shared) {
                 CommandAction::Continue => {}
                 CommandAction::Seek(..) => {}
                 CommandAction::Load(path) => {
@@ -793,7 +793,7 @@ fn decode_file_to_queue(
     )?;
 
     loop {
-        match drain_commands(cmd_rx, &shared, flush_rx) {
+        match drain_commands(cmd_rx, &shared) {
             CommandAction::Continue => {}
             CommandAction::Load(path) => return Ok(DecodeOutcome::Load(path)),
             CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
@@ -823,7 +823,7 @@ fn decode_file_to_queue(
                             Ok(()) => break,
                             Err(TrySendError::Full(s)) => {
                                 sample = s;
-                                match drain_commands(cmd_rx, &shared, flush_rx) {
+                                match drain_commands(cmd_rx, &shared) {
                                     CommandAction::Continue => {}
                                     CommandAction::Load(p) => return Ok(DecodeOutcome::Load(p)),
                                     CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
@@ -847,7 +847,7 @@ fn decode_file_to_queue(
                             Ok(()) => break,
                             Err(TrySendError::Full(s)) => {
                                 sample = s;
-                                match drain_commands(cmd_rx, &shared, flush_rx) {
+                                match drain_commands(cmd_rx, &shared) {
                                     CommandAction::Continue => {}
                                     CommandAction::Load(p) => return Ok(DecodeOutcome::Load(p)),
                                     CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
@@ -943,7 +943,7 @@ fn decode_file_to_queue(
                     Err(TrySendError::Full(s)) => {
                         sample = s;
 
-                        match drain_commands(cmd_rx, &shared, flush_rx) {
+                        match drain_commands(cmd_rx, &shared) {
                             CommandAction::Continue => {}
                             CommandAction::Load(path) => return Ok(DecodeOutcome::Load(path)),
                             CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
@@ -1030,10 +1030,9 @@ enum CommandAction {
 fn drain_commands(
     cmd_rx: &Receiver<Command>,
     shared: &Arc<Shared>,
-    flush_rx: &Receiver<f32>,
 ) -> CommandAction {
     while let Ok(cmd) = cmd_rx.try_recv() {
-        match apply_command(cmd, shared, flush_rx) {
+        match apply_command(cmd, shared) {
             CommandAction::Continue => {}
             other => return other,
         }
@@ -1041,7 +1040,7 @@ fn drain_commands(
     CommandAction::Continue
 }
 
-fn apply_command(cmd: Command, shared: &Arc<Shared>, flush_rx: &Receiver<f32>) -> CommandAction {
+fn apply_command(cmd: Command, shared: &Arc<Shared>) -> CommandAction {
     match cmd {
         Command::Load(path) => CommandAction::Load(path),
         Command::Seek(pos, serial) => CommandAction::Seek(pos, serial),
@@ -1129,7 +1128,7 @@ fn wait_until_queue_drained(
     flush_rx: &Receiver<f32>,
 ) -> DecodeOutcome {
     loop {
-        match drain_commands(cmd_rx, shared, flush_rx) {
+        match drain_commands(cmd_rx, shared) {
             CommandAction::Continue => {}
             CommandAction::Load(path) => return DecodeOutcome::Load(path),
             CommandAction::Seek(..) => return DecodeOutcome::Idle,

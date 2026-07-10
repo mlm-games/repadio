@@ -628,9 +628,9 @@ fn TransportBar(
     Row(Modifier::new()
         .fill_max_width()
         .gap(12.0)
-        .align_items(AlignItems::CENTER))
+        .align_items(AlignItems::CENTER)
+        .justify_content(JustifyContent::CENTER))
     .child((
-        Spacer(),
         m3::OutlinedIconButton(
             Icon(Symbols::skip_previous).size(22.0),
             {
