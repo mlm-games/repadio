@@ -113,7 +113,7 @@ enum Command {
     Pause,
     Toggle,
     Stop,
-    Seek(Duration),
+    Seek(Duration, u64),
     SetVolume(f32),
     Shutdown,
 }
@@ -146,6 +146,10 @@ struct Shared {
     /// Incremented on every load/seek/stop. Callbacks discard samples from
     /// an old generation to prevent stale audio leaking after a discontinuity.
     generation: AtomicU64,
+    /// Monotonically increasing serial for seek ordering.  Bumped before
+    /// every `Command::Seek` is sent.  `perform_seek` checks this to avoid
+    /// overwriting a newer seek's optimistic clock rebase.
+    seek_serial: AtomicU64,
 }
 
 /// WASM: CPAL streams are not `Send`/`Sync`, so use thread-local storage.
@@ -164,6 +168,7 @@ impl AudioPlayer {
             output_sample_rate: AtomicU32::new(48_000),
             volume_bits: AtomicU32::new(1.0f32.to_bits()),
             generation: AtomicU64::new(0),
+            seek_serial: AtomicU64::new(0),
         });
 
         let (tx, rx) = unbounded();
@@ -251,14 +256,15 @@ impl AudioPlayer {
         let base = (position.as_secs_f64() * rate as f64) as u64;
         shared.base_frames.store(base, Ordering::Release);
         shared.played_frames.store(0, Ordering::Release);
-        self.send(Command::Seek(position))
+        let serial = shared.seek_serial.fetch_add(1, Ordering::AcqRel) + 1;
+        self.send(Command::Seek(position, serial))
     }
     pub fn set_volume(&self, volume: f32) -> Result<()> {
         let v = volume.clamp(0.0, 2.0);
         let shared = &self.inner.shared;
         shared.volume_bits.store(v.to_bits(), Ordering::Release);
         {
-            let mut s = shared.status.lock().unwrap();
+            let mut s = lock_status(shared);
             s.volume = v;
         }
         self.send(Command::SetVolume(v))
@@ -284,7 +290,7 @@ impl AudioPlayer {
     pub fn snapshot(&self) -> PlayerSnapshot {
         let shared = &self.inner.shared;
 
-        let mut snap = shared.status.lock().unwrap().clone();
+        let mut snap = lock_status(shared).clone();
         snap.position = self.position();
         snap.volume = f32::from_bits(shared.volume_bits.load(Ordering::Acquire));
         snap
@@ -520,7 +526,7 @@ async fn audio_thread_wasm_loop(
             }
             Ok(cmd) => match apply_command(cmd, &shared, &flush_rx) {
                 CommandAction::Continue => {}
-                CommandAction::Seek(_) => {}
+                CommandAction::Seek(..) => {}
                 CommandAction::Stop => {}
                 CommandAction::Load(path) => {
                     let err_shared = shared.clone();
@@ -614,9 +620,13 @@ fn create_cpal_stream(
     Ok((stream, sample_tx, flush_rx, out_channels, out_sample_rate))
 }
 
+fn lock_status(shared: &Shared) -> std::sync::MutexGuard<'_, PlayerSnapshot> {
+    shared.status.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn set_error(shared: &Shared, err: &(impl std::fmt::Display + ?Sized)) {
     shared.is_playing.store(false, Ordering::Release);
-    let mut s = shared.status.lock().unwrap();
+    let mut s = lock_status(shared);
     s.state = PlaybackState::Error;
     s.error = Some(err.to_string());
 }
@@ -658,7 +668,7 @@ fn run_command_loop(
             }
             Ok(cmd) => match apply_command(cmd, shared, flush_rx) {
                 CommandAction::Continue => {}
-                CommandAction::Seek(_) => {}
+                CommandAction::Seek(..) => {}
                 CommandAction::Stop => {}
                 CommandAction::Load(path) => {
                     if let Err(err) = decode_file_to_queue(
@@ -790,7 +800,7 @@ fn decode_file_to_queue(
     };
 
     {
-        let mut s = shared.status.lock().unwrap();
+        let mut s = lock_status(&shared);
         s.state = PlaybackState::Loading;
         s.title = display_name;
         s.artist = None;
@@ -819,7 +829,7 @@ fn decode_file_to_queue(
             apply_revision(&mut meta, rev);
         }
 
-        let mut s = shared.status.lock().unwrap();
+        let mut s = lock_status(&shared);
         if let Some(t) = meta.title {
             s.title = Some(t);
         }
@@ -833,13 +843,13 @@ fn decode_file_to_queue(
         .or_else(|| format.first_track_known_codec(TrackType::Audio))
         .context("no supported audio track")?;
 
-    let track_id = track.id;
-    let codec_params = match &track.codec_params {
+    let mut track_id = track.id;
+    let mut codec_params = match &track.codec_params {
         Some(CodecParameters::Audio(p)) => p.clone(),
         _ => anyhow::bail!("track has no audio codec parameters"),
     };
 
-    let duration = match (track.num_frames, codec_params.sample_rate) {
+    let mut duration = match (track.num_frames, codec_params.sample_rate) {
         (Some(frames), Some(rate)) if rate > 0 => {
             Some(Duration::from_secs_f64(frames as f64 / rate as f64))
         }
@@ -847,7 +857,7 @@ fn decode_file_to_queue(
     };
 
     {
-        let mut s = shared.status.lock().unwrap();
+        let mut s = lock_status(&shared);
         s.state = PlaybackState::Playing;
         s.duration = duration;
     }
@@ -868,12 +878,13 @@ fn decode_file_to_queue(
             CommandAction::Load(path) => return Ok(DecodeOutcome::Load(path)),
             CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
             CommandAction::Stop => return Ok(DecodeOutcome::Idle),
-            CommandAction::Seek(target) => {
+            CommandAction::Seek(target, serial) => {
                 perform_seek(
                     &mut *format,
                     &mut *decoder,
                     track_id,
                     target,
+                    serial,
                     duration,
                     &shared,
                     flush_rx,
@@ -885,15 +896,50 @@ fn decode_file_to_queue(
 
         let packet = match format.next_packet() {
             Ok(Some(packet)) => packet,
-            Ok(None) | Err(SymphoniaError::IoError(_)) => {
+            Ok(None) => {
                 return Ok(wait_until_queue_drained(cmd_rx, &shared, flush_rx));
             }
+            Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Ok(wait_until_queue_drained(cmd_rx, &shared, flush_rx));
+            }
+            Err(SymphoniaError::IoError(_)) => {
+                // Real I/O error, not end-of-stream.
+                let mut s = lock_status(&shared);
+                s.state = PlaybackState::Error;
+                s.error = Some("I/O error reading media".into());
+                shared.is_playing.store(false, Ordering::Release);
+                return Ok(DecodeOutcome::Idle);
+            }
             Err(SymphoniaError::ResetRequired) => {
-                decoder.reset();
+                // Chained container (e.g. concatenated OGG streams).
+                // Re-select the audio track and recreate the decoder.
+                let track = format
+                    .default_track(TrackType::Audio)
+                    .or_else(|| format.first_track_known_codec(TrackType::Audio))
+                    .context("no supported audio track after reset")?;
+                track_id = track.id;
+                codec_params = match &track.codec_params {
+                    Some(CodecParameters::Audio(p)) => p.clone(),
+                    _ => anyhow::bail!("track has no audio codec parameters after reset"),
+                };
+                duration = match (track.num_frames, codec_params.sample_rate) {
+                    (Some(frames), Some(rate)) if rate > 0 => {
+                        Some(Duration::from_secs_f64(frames as f64 / rate as f64))
+                    }
+                    _ => None,
+                };
+                decoder = get_codecs()
+                    .make_audio_decoder(&codec_params, &AudioDecoderOptions::default())
+                    .context("failed to create decoder after reset")?;
+                resampler = LinearResampler::new(
+                    codec_params.sample_rate.unwrap_or(out_rate),
+                    out_rate,
+                    out_channels,
+                );
                 continue;
             }
             Err(err) => {
-                let mut s = shared.status.lock().unwrap();
+                let mut s = lock_status(&shared);
                 s.state = PlaybackState::Error;
                 s.error = Some(err.to_string());
                 shared.is_playing.store(false, Ordering::Release);
@@ -914,7 +960,7 @@ fn decode_file_to_queue(
                 continue;
             }
             Err(err) => {
-                let mut s = shared.status.lock().unwrap();
+                let mut s = lock_status(&shared);
                 s.state = PlaybackState::Error;
                 s.error = Some(err.to_string());
                 shared.is_playing.store(false, Ordering::Release);
@@ -941,12 +987,13 @@ fn decode_file_to_queue(
                             CommandAction::Load(path) => return Ok(DecodeOutcome::Load(path)),
                             CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
                             CommandAction::Stop => return Ok(DecodeOutcome::Idle),
-                            CommandAction::Seek(target) => {
+                            CommandAction::Seek(target, serial) => {
                                 perform_seek(
                                     &mut *format,
                                     &mut *decoder,
                                     track_id,
                                     target,
+                                    serial,
                                     duration,
                                     &shared,
                                     flush_rx,
@@ -977,6 +1024,7 @@ fn perform_seek(
     decoder: &mut dyn AudioDecoder,
     track_id: u32,
     target: Duration,
+    serial: u64,
     duration: Option<Duration>,
     shared: &Arc<Shared>,
     flush_rx: &Receiver<f32>,
@@ -999,12 +1047,15 @@ fn perform_seek(
         Ok(_seeked_to) => {
             decoder.reset();
             reset_audio_queue_and_clock(shared, flush_rx);
-            let base = (clamped.as_secs_f64() * out_rate as f64) as u64;
-            shared.base_frames.store(base, Ordering::Release);
             shared.is_playing.store(true, Ordering::Release);
+            // Don't overwrite a newer seek's optimistic clock rebase.
+            if shared.seek_serial.load(Ordering::Acquire) == serial {
+                let base = (clamped.as_secs_f64() * out_rate as f64) as u64;
+                shared.base_frames.store(base, Ordering::Release);
+            }
         }
         Err(err) => {
-            let mut s = shared.status.lock().unwrap();
+            let mut s = lock_status(shared);
             s.error = Some(format!("seek failed: {err}"));
         }
     }
@@ -1013,7 +1064,7 @@ fn perform_seek(
 enum CommandAction {
     Continue,
     Load(MediaSource),
-    Seek(Duration),
+    Seek(Duration, u64),
     Stop,
     Shutdown,
 }
@@ -1035,10 +1086,10 @@ fn drain_commands(
 fn apply_command(cmd: Command, shared: &Arc<Shared>, flush_rx: &Receiver<f32>) -> CommandAction {
     match cmd {
         Command::Load(path) => CommandAction::Load(path),
-        Command::Seek(pos) => CommandAction::Seek(pos),
+        Command::Seek(pos, serial) => CommandAction::Seek(pos, serial),
 
         Command::Play => {
-            let mut s = shared.status.lock().unwrap();
+            let mut s = lock_status(shared);
             match s.state {
                 PlaybackState::Paused => {
                     shared.is_playing.store(true, Ordering::Release);
@@ -1059,7 +1110,7 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>, flush_rx: &Receiver<f32>) -
 
         Command::Pause => {
             shared.is_playing.store(false, Ordering::Release);
-            let mut s = shared.status.lock().unwrap();
+            let mut s = lock_status(shared);
             if s.state == PlaybackState::Playing {
                 s.state = PlaybackState::Paused;
             }
@@ -1067,7 +1118,7 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>, flush_rx: &Receiver<f32>) -
         }
 
         Command::Toggle => {
-            let mut s = shared.status.lock().unwrap();
+            let mut s = lock_status(shared);
             match s.state {
                 PlaybackState::Idle | PlaybackState::Loading | PlaybackState::Error => {
                     return CommandAction::Continue;
@@ -1092,7 +1143,7 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>, flush_rx: &Receiver<f32>) -
 
         Command::Stop => {
             reset_audio_queue_and_clock(shared, flush_rx);
-            let mut s = shared.status.lock().unwrap();
+            let mut s = lock_status(shared);
             s.state = PlaybackState::Stopped;
             s.position = Duration::ZERO;
             CommandAction::Stop
@@ -1101,7 +1152,7 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>, flush_rx: &Receiver<f32>) -
         Command::SetVolume(v) => {
             let v = v.clamp(0.0, 2.0);
             shared.volume_bits.store(v.to_bits(), Ordering::Release);
-            let mut s = shared.status.lock().unwrap();
+            let mut s = lock_status(shared);
             s.volume = v;
             CommandAction::Continue
         }
@@ -1131,7 +1182,7 @@ fn wait_until_queue_drained(
         match drain_commands(cmd_rx, shared, flush_rx) {
             CommandAction::Continue => {}
             CommandAction::Load(path) => return DecodeOutcome::Load(path),
-            CommandAction::Seek(_) => return DecodeOutcome::Idle,
+            CommandAction::Seek(..) => return DecodeOutcome::Idle,
             CommandAction::Stop => return DecodeOutcome::Idle,
             CommandAction::Shutdown => return DecodeOutcome::Shutdown,
         }
@@ -1139,7 +1190,7 @@ fn wait_until_queue_drained(
         if flush_rx.is_empty() {
             shared.is_playing.store(false, Ordering::Release);
 
-            let mut s = shared.status.lock().unwrap();
+            let mut s = lock_status(shared);
             if s.state != PlaybackState::Stopped {
                 s.state = PlaybackState::Ended;
             }
