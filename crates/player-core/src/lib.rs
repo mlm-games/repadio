@@ -41,7 +41,6 @@ pub enum PlaybackState {
     Loading,
     Playing,
     Paused,
-    Stopped,
     Ended,
     Error,
 }
@@ -127,7 +126,6 @@ enum Command {
     Play,
     Pause,
     Toggle,
-    Stop,
     Seek(Duration, u64),
     SetVolume(f32),
     Shutdown,
@@ -259,9 +257,6 @@ impl AudioPlayer {
     }
     pub fn toggle(&self) -> Result<()> {
         self.send(Command::Toggle)
-    }
-    pub fn stop(&self) -> Result<()> {
-        self.send(Command::Stop)
     }
     pub fn seek(&self, position: Duration) -> Result<()> {
         // Optimistically update the position clock so the UI doesn't flicker
@@ -594,7 +589,6 @@ fn run_command_loop(
             Ok(cmd) => match apply_command(cmd, shared, flush_rx) {
                 CommandAction::Continue => {}
                 CommandAction::Seek(..) => {}
-                CommandAction::Stop => {}
                 CommandAction::Load(path) => {
                     if let Err(err) = decode_file_to_queue(
                         path,
@@ -803,7 +797,6 @@ fn decode_file_to_queue(
             CommandAction::Continue => {}
             CommandAction::Load(path) => return Ok(DecodeOutcome::Load(path)),
             CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
-            CommandAction::Stop => return Ok(DecodeOutcome::Idle),
             CommandAction::Seek(target, serial) => {
                 perform_seek(
                     &mut *format,
@@ -954,7 +947,6 @@ fn decode_file_to_queue(
                             CommandAction::Continue => {}
                             CommandAction::Load(path) => return Ok(DecodeOutcome::Load(path)),
                             CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
-                            CommandAction::Stop => return Ok(DecodeOutcome::Idle),
                             CommandAction::Seek(target, serial) => {
                                 perform_seek(
                                     &mut *format,
@@ -1032,7 +1024,6 @@ enum CommandAction {
     Continue,
     Load(MediaSource),
     Seek(Duration, u64),
-    Stop,
     Shutdown,
 }
 
@@ -1062,7 +1053,7 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>, flush_rx: &Receiver<f32>) -
                     shared.is_playing.store(true, Ordering::Release);
                     s.state = PlaybackState::Playing;
                 }
-                PlaybackState::Stopped | PlaybackState::Ended => {
+                PlaybackState::Ended => {
                     if let Some(source) = s.source.clone() {
                         return CommandAction::Load(source);
                     }
@@ -1090,7 +1081,7 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>, flush_rx: &Receiver<f32>) -
                 PlaybackState::Idle | PlaybackState::Loading | PlaybackState::Error => {
                     return CommandAction::Continue;
                 }
-                PlaybackState::Stopped | PlaybackState::Ended => {
+                PlaybackState::Ended => {
                     if let Some(source) = s.source.clone() {
                         return CommandAction::Load(source);
                     }
@@ -1106,14 +1097,6 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>, flush_rx: &Receiver<f32>) -
                 }
             }
             CommandAction::Continue
-        }
-
-        Command::Stop => {
-            reset_audio_queue_and_clock(shared, flush_rx);
-            let mut s = lock_status(shared);
-            s.state = PlaybackState::Stopped;
-            s.position = Duration::ZERO;
-            CommandAction::Stop
         }
 
         Command::SetVolume(v) => {
@@ -1150,7 +1133,6 @@ fn wait_until_queue_drained(
             CommandAction::Continue => {}
             CommandAction::Load(path) => return DecodeOutcome::Load(path),
             CommandAction::Seek(..) => return DecodeOutcome::Idle,
-            CommandAction::Stop => return DecodeOutcome::Idle,
             CommandAction::Shutdown => return DecodeOutcome::Shutdown,
         }
 
@@ -1158,9 +1140,7 @@ fn wait_until_queue_drained(
             shared.is_playing.store(false, Ordering::Release);
 
             let mut s = lock_status(shared);
-            if s.state != PlaybackState::Stopped {
-                s.state = PlaybackState::Ended;
-            }
+            s.state = PlaybackState::Ended;
 
             return DecodeOutcome::Idle;
         }

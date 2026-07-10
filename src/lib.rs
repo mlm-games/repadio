@@ -30,7 +30,6 @@ material_symbols! {
     play_arrow     : '\u{E037}',
     skip_next      : '\u{E044}',
     skip_previous  : '\u{E045}',
-    stop           : '\u{E047}',
     volume_up      : '\u{E050}',
     volume_down    : '\u{E04D}',
     volume_off     : '\u{E04F}',
@@ -601,8 +600,8 @@ fn StatusChip(state: PlaybackState) -> View {
             theme().surface_variant,
             theme().on_surface.with_alpha(180),
         ),
-        PlaybackState::Stopped | PlaybackState::Idle => (
-            "Stopped",
+        PlaybackState::Idle => (
+            "Idle",
             theme().surface_variant,
             theme().on_surface.with_alpha(180),
         ),
@@ -695,24 +694,6 @@ fn TransportBar(
             },
             m3::IconButtonConfig {
                 container_size: Some(48.0),
-                ..Default::default()
-            },
-        ),
-        Spacer(),
-        m3::IconButton(
-            Icon(Symbols::stop)
-                .size(20.0)
-                .color(theme().on_surface.with_alpha(180)),
-            {
-                let player = player.clone();
-                move || {
-                    if let Err(e) = player.stop() {
-                        log::error!("stop failed: {e}");
-                    }
-                }
-            },
-            m3::IconButtonConfig {
-                container_size: Some(40.0),
                 ..Default::default()
             },
         ),
