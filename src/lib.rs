@@ -1,11 +1,10 @@
 #![allow(non_snake_case, non_upper_case_globals)]
 
 use std::{
-    path::PathBuf,
     rc::Rc,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -45,6 +44,7 @@ use repose_ui::{Box, Column, LazyColumn, LazyColumnConfig, Row, Spacer, Text, Vi
 
 #[derive(Clone)]
 struct Entry {
+    id: u64,
     source: MediaSource,
     meta: TrackMeta,
 }
@@ -71,6 +71,7 @@ struct PendingState {
     files: Mutex<Vec<MediaSource>>,
     probed_meta: Mutex<Vec<(MediaSource, TrackMeta)>>,
     needs_wake: AtomicBool,
+    next_id: AtomicU64,
 }
 
 type PendingFiles = Arc<PendingState>;
@@ -86,11 +87,12 @@ pub fn run_desktop() -> anyhow::Result<()> {
         files: Mutex::new(
             std::env::args()
                 .skip(1)
-                .map(|p| MediaSource::Path(PathBuf::from(p)))
+                .map(|p| MediaSource::Path(std::path::PathBuf::from(p)))
                 .collect(),
         ),
         probed_meta: Mutex::new(Vec::new()),
         needs_wake: AtomicBool::new(false),
+        next_id: AtomicU64::new(0),
     });
 
     repose_platform::run_desktop_app(move |_sched, _ctx| App(player.clone(), pending.clone()))
@@ -113,6 +115,7 @@ pub async fn wasm_main() {
         files: Mutex::new(Vec::new()),
         probed_meta: Mutex::new(Vec::new()),
         needs_wake: AtomicBool::new(false),
+        next_id: AtomicU64::new(0),
     });
 
     let canvas = web_sys::window()
@@ -145,24 +148,75 @@ pub async fn wasm_main() {
     .expect("app run failed");
 }
 
+/// Read a file imported via Android's `ACTION_VIEW` intent.
+///
+/// `RepadioActivity.kt` writes the content URI bytes to
+/// `filesDir/pending_intent`.  This function reads and deletes it so the
+/// same import is not picked up twice.
+#[cfg(target_os = "android")]
+fn take_pending_intent(dir: &std::path::Path) -> Option<MediaSource> {
+    let path = dir.join("pending_intent");
+    let bytes = std::fs::read(&path).ok()?;
+    let _ = std::fs::remove_file(&path);
+    if bytes.is_empty() {
+        return None;
+    }
+    Some(MediaSource::Bytes {
+        name: "Shared audio".to_string(),
+        bytes: Arc::from(bytes),
+    })
+}
+
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "C" fn android_main(android_app: winit::platform::android::activity::AndroidApp) {
     android_logger::init_once(
         android_logger::Config::default().with_max_level(log::LevelFilter::Info),
     );
-    rlobkit_dialogs::init();
     rlobkit_dialogs::init_shared_pending_state();
+    rlobkit_dialogs::init_with_android_context(
+        android_app.vm_as_ptr().cast(),
+        android_app.activity_as_ptr().cast(),
+    );
     player_platform::init();
-    if let Err(err) = repose_platform::android::run_android_app(android_app, |_sched, _ctx| {
-        let player = AudioPlayer::spawn().expect("failed to spawn audio player");
-        let pending: PendingFiles = Arc::new(PendingState {
-            files: Mutex::new(Vec::new()),
-            probed_meta: Mutex::new(Vec::new()),
-            needs_wake: AtomicBool::new(false),
-        });
-        App(player, pending)
-    }) {
+
+    log::info!(
+        "rlobkit helper activity available: {}",
+        rlobkit_dialogs::helper_activity_available_for_host()
+    );
+
+    let data_dir = android_app.internal_data_path();
+
+    let mut initial = Vec::new();
+    if let Some(ref dir) = data_dir {
+        if let Some(src) = take_pending_intent(dir) {
+            log::info!("loaded pending intent file");
+            initial.push(src);
+        }
+    }
+
+    let player = AudioPlayer::spawn().expect("failed to spawn audio player");
+    let pending: PendingFiles = Arc::new(PendingState {
+        files: Mutex::new(initial),
+        probed_meta: Mutex::new(Vec::new()),
+        needs_wake: AtomicBool::new(false),
+        next_id: AtomicU64::new(0),
+    });
+
+    if let Err(err) = repose_platform::android::run_android_app(
+        android_app,
+        move |_sched, _ctx| {
+            // Poll for onNewIntent imports while the app is already running.
+            if let Some(ref dir) = data_dir {
+                if let Some(src) = take_pending_intent(dir) {
+                    log::info!("loaded late pending intent");
+                    pending.files.lock().unwrap().push(src);
+                    request_frame();
+                }
+            }
+            App(player.clone(), pending.clone())
+        },
+    ) {
         log::error!("Repadio failed: {err:?}");
     }
 }
@@ -201,7 +255,9 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
             let mut list = playlist.get();
             let was_empty = list.is_empty();
             for source in &new_files {
+                let id = pending.next_id.fetch_add(1, Ordering::Relaxed);
                 list.push(Entry {
+                    id,
                     source: source.clone(),
                     meta: TrackMeta::default(),
                 });
@@ -221,11 +277,7 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
             thread::spawn(move || {
                 for source in to_probe {
                     let meta = probe_media_source(source.clone());
-                    pending
-                        .probed_meta
-                        .lock()
-                        .unwrap()
-                        .push((source, meta));
+                    pending.probed_meta.lock().unwrap().push((source, meta));
                     pending.needs_wake.store(true, Ordering::Release);
                 }
             });
@@ -240,6 +292,12 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
     if matches!(snap.state, PlaybackState::Playing | PlaybackState::Loading)
         || scrubbing.get().is_some()
     {
+        request_frame();
+    }
+
+    // Keep frame alive if probe thread posted results
+    // between frames.
+    if pending.needs_wake.load(Ordering::Relaxed) || !pending.files.lock().unwrap().is_empty() {
         request_frame();
     }
 
@@ -309,6 +367,8 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
                             .collect();
                         pending.files.lock().unwrap().extend(sources);
                         pending.needs_wake.store(true, Ordering::Release);
+                        request_frame();
+                        repose_platform::wake_event_loop();
                     }
                 });
             }
@@ -771,26 +831,31 @@ fn EmptyPlaylist(pending: PendingFiles) -> View {
             Spacer(),
             m3::FilledTonalButton(
                 Modifier::new(),
-                move || {
+                {
                     let pending = pending.clone();
-                    player_platform::pick_audio_files_async(move |picked| {
-                        if !picked.is_empty() {
-                            let sources: Vec<MediaSource> = picked
-                                .into_iter()
-                                .map(|f| match f {
-                                    player_platform::PickedFile::Path(p) => MediaSource::Path(p),
-                                    player_platform::PickedFile::Bytes { name, data } => {
-                                        MediaSource::Bytes {
-                                            name,
-                                            bytes: Arc::from(data),
+                    move || {
+                        let pending = pending.clone();
+                        player_platform::pick_audio_files_async(move |picked| {
+                            if !picked.is_empty() {
+                                let sources: Vec<MediaSource> = picked
+                                    .into_iter()
+                                    .map(|f| match f {
+                                        player_platform::PickedFile::Path(p) => MediaSource::Path(p),
+                                        player_platform::PickedFile::Bytes { name, data } => {
+                                            MediaSource::Bytes {
+                                                name,
+                                                bytes: Arc::from(data),
+                                            }
                                         }
-                                    }
-                                })
-                                .collect();
-                            pending.files.lock().unwrap().extend(sources);
-                            pending.needs_wake.store(true, Ordering::Release);
-                        }
-                    });
+                                    })
+                                    .collect();
+                                pending.files.lock().unwrap().extend(sources);
+                                pending.needs_wake.store(true, Ordering::Release);
+                                request_frame();
+                                repose_platform::wake_event_loop();
+                            }
+                        });
+                    }
                 },
                 m3::ButtonConfig::default(),
                 || Row(Modifier::new().gap(8.0)).child((Icon(Symbols::add), Text("Add files"))),
@@ -812,15 +877,7 @@ fn PlaylistList(
     LazyColumn(
         list,
         68.0f32,
-        |entry: &Entry| {
-            let s = entry.source.display_name();
-            let mut h: u64 = 14695981039346656037;
-            for b in s.bytes() {
-                h ^= b as u64;
-                h = h.wrapping_mul(1099511628211);
-            }
-            h
-        },
+        |entry: &Entry| entry.id,
         {
             let current = current.clone();
             let player = player.clone();

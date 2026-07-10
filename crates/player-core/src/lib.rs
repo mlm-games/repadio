@@ -9,10 +9,10 @@ use std::{
     time::Duration,
 };
 
-#[cfg(target_arch = "wasm32")]
-use web_thread as thread;
 #[cfg(not(target_arch = "wasm32"))]
 use std::thread;
+#[cfg(target_arch = "wasm32")]
+use web_thread as thread;
 
 use anyhow::{Context, Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -48,7 +48,7 @@ pub enum PlaybackState {
 /// Abstracts over native filesystem paths and in-memory byte buffers so
 /// the same pipeline works on desktop, WASM (browser blobs / OPFS), and
 /// Android (content:// URIs).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Hash)]
 pub enum MediaSource {
     Path(PathBuf),
     Bytes { name: String, bytes: Arc<[u8]> },
@@ -566,7 +566,7 @@ fn run_command_loop(
     loop {
         match cmd_rx.recv() {
             Ok(Command::Load(path)) => {
-                log::info!("audio thread processing load: {:?}", path);
+                log::info!("audio thread processing load: {}", path.display_name());
                 let mut next = Some(path);
                 'decode: while let Some(path) = next.take() {
                     match decode_file_to_queue(

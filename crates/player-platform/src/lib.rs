@@ -66,21 +66,33 @@ pub fn pick_audio_files_async(on_done: impl FnOnce(Vec<PickedFile>) + Send + 'st
             let files = match result {
                 Ok(Some(platform_files)) => platform_files
                     .into_iter()
-                    .filter_map(|f| {
-                        let name = f.name().to_string();
-                        match f.read_bytes().ok() {
-                            Some(data) => Some(PickedFile::Bytes {
+                    .filter_map(|file| {
+                        let name = file.name().to_string();
+
+                        match file.read_bytes() {
+                            Ok(data) => Some(PickedFile::Bytes {
                                 name,
                                 data: data.to_vec(),
                             }),
-                            None => {
-                                // Fallback: use the content URI as a path.
-                                f.path().map(|p| PickedFile::Path(p.to_path_buf()))
+                            Err(err) => {
+                                log::error!(
+                                    "failed to read Android picker file {name:?}: {err}"
+                                );
+                                None
                             }
                         }
                     })
                     .collect(),
-                _ => Vec::new(),
+
+                Ok(None) => {
+                    log::info!("Android audio picker cancelled");
+                    Vec::new()
+                }
+
+                Err(err) => {
+                    log::error!("Android audio picker failed: {err}");
+                    Vec::new()
+                }
             };
             on_done(files);
         });
