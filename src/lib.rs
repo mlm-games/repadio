@@ -202,20 +202,17 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
         next_id: AtomicU64::new(0),
     });
 
-    if let Err(err) = repose_platform::android::run_android_app(
-        android_app,
-        move |_sched, _ctx| {
-            // Poll for onNewIntent imports while the app is already running.
-            if let Some(ref dir) = data_dir {
-                if let Some(src) = take_pending_intent(dir) {
-                    log::info!("loaded late pending intent");
-                    pending.files.lock().unwrap().push(src);
-                    request_frame();
-                }
+    if let Err(err) = repose_platform::android::run_android_app(android_app, move |_sched, _ctx| {
+        // Poll for onNewIntent imports while the app is already running.
+        if let Some(ref dir) = data_dir {
+            if let Some(src) = take_pending_intent(dir) {
+                log::info!("loaded late pending intent");
+                pending.files.lock().unwrap().push(src);
+                request_frame();
             }
-            App(player.clone(), pending.clone())
-        },
-    ) {
+        }
+        App(player.clone(), pending.clone())
+    }) {
         log::error!("Repadio failed: {err:?}");
     }
 }
@@ -826,7 +823,9 @@ fn EmptyPlaylist(pending: PendingFiles) -> View {
                                 let sources: Vec<MediaSource> = picked
                                     .into_iter()
                                     .map(|f| match f {
-                                        player_platform::PickedFile::Path(p) => MediaSource::Path(p),
+                                        player_platform::PickedFile::Path(p) => {
+                                            MediaSource::Path(p)
+                                        }
                                         player_platform::PickedFile::Bytes { name, data } => {
                                             MediaSource::Bytes {
                                                 name,

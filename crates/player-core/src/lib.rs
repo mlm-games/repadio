@@ -1027,10 +1027,7 @@ enum CommandAction {
     Shutdown,
 }
 
-fn drain_commands(
-    cmd_rx: &Receiver<Command>,
-    shared: &Arc<Shared>,
-) -> CommandAction {
+fn drain_commands(cmd_rx: &Receiver<Command>, shared: &Arc<Shared>) -> CommandAction {
     while let Ok(cmd) = cmd_rx.try_recv() {
         match apply_command(cmd, shared) {
             CommandAction::Continue => {}

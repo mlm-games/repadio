@@ -75,9 +75,7 @@ pub fn pick_audio_files_async(on_done: impl FnOnce(Vec<PickedFile>) + Send + 'st
                                 data: data.to_vec(),
                             }),
                             Err(err) => {
-                                log::error!(
-                                    "failed to read Android picker file {name:?}: {err}"
-                                );
+                                log::error!("failed to read Android picker file {name:?}: {err}");
                                 None
                             }
                         }
