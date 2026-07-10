@@ -10,6 +10,7 @@ anyhow.workspace = true
 crossbeam-channel.workspace = true
 symphonia.workspace = true
 log.workspace = true
+rubato.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 cpal.workspace = true

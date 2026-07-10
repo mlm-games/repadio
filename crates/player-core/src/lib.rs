@@ -17,6 +17,8 @@ use web_thread as thread;
 use anyhow::{Context, Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
+use rubato::audioadapter_buffers::direct::InterleavedSlice;
+use rubato::{Fft, FixedSync, Resampler};
 
 use symphonia::{
     core::{
@@ -790,11 +792,11 @@ fn decode_file_to_queue(
         .make_audio_decoder(&codec_params, &AudioDecoderOptions::default())
         .context("failed to create decoder")?;
 
-    let mut resampler = LinearResampler::new(
+    let mut resampler = RubatoResampler::new(
         codec_params.sample_rate.unwrap_or(out_rate),
         out_rate,
         out_channels,
-    );
+    )?;
 
     loop {
         match drain_commands(cmd_rx, &shared, flush_rx) {
@@ -821,9 +823,51 @@ fn decode_file_to_queue(
         let packet = match format.next_packet() {
             Ok(Some(packet)) => packet,
             Ok(None) => {
+                let flushed = resampler.flush()?;
+                for mut sample in flushed {
+                    loop {
+                        match sample_tx.try_send(sample) {
+                            Ok(()) => break,
+                            Err(TrySendError::Full(s)) => {
+                                sample = s;
+                                match drain_commands(cmd_rx, &shared, flush_rx) {
+                                    CommandAction::Continue => {}
+                                    CommandAction::Load(p) => return Ok(DecodeOutcome::Load(p)),
+                                    CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
+                                    _ => return Ok(DecodeOutcome::Idle),
+                                }
+                                thread::sleep(Duration::from_millis(2));
+                            }
+                            Err(TrySendError::Disconnected(_)) => {
+                                return Ok(DecodeOutcome::Shutdown);
+                            }
+                        }
+                    }
+                }
                 return Ok(wait_until_queue_drained(cmd_rx, &shared, flush_rx));
             }
             Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                let flushed = resampler.flush()?;
+                for mut sample in flushed {
+                    loop {
+                        match sample_tx.try_send(sample) {
+                            Ok(()) => break,
+                            Err(TrySendError::Full(s)) => {
+                                sample = s;
+                                match drain_commands(cmd_rx, &shared, flush_rx) {
+                                    CommandAction::Continue => {}
+                                    CommandAction::Load(p) => return Ok(DecodeOutcome::Load(p)),
+                                    CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
+                                    _ => return Ok(DecodeOutcome::Idle),
+                                }
+                                thread::sleep(Duration::from_millis(2));
+                            }
+                            Err(TrySendError::Disconnected(_)) => {
+                                return Ok(DecodeOutcome::Shutdown);
+                            }
+                        }
+                    }
+                }
                 return Ok(wait_until_queue_drained(cmd_rx, &shared, flush_rx));
             }
             Err(SymphoniaError::IoError(_)) => {
@@ -855,11 +899,11 @@ fn decode_file_to_queue(
                 decoder = get_codecs()
                     .make_audio_decoder(&codec_params, &AudioDecoderOptions::default())
                     .context("failed to create decoder after reset")?;
-                resampler = LinearResampler::new(
+                resampler = RubatoResampler::new(
                     codec_params.sample_rate.unwrap_or(out_rate),
                     out_rate,
                     out_channels,
-                );
+                )?;
                 continue;
             }
             Err(err) => {
@@ -897,7 +941,7 @@ fn decode_file_to_queue(
         let mut f32_samples = vec![0.0; decoded.samples_interleaved()];
         decoded.copy_to_slice_interleaved(&mut f32_samples);
 
-        let converted = resampler.process(&f32_samples, in_channels);
+        let converted = resampler.process(&f32_samples, in_channels)?;
 
         for mut sample in converted {
             loop {
@@ -1123,83 +1167,145 @@ fn wait_until_queue_drained(
     }
 }
 
-struct LinearResampler {
-    out_channels: usize,
-    /// Output frames per input frame.
-    inv_ratio: f64,
-    /// Fractional read position in input frames, carried between packets.
-    pos: f64,
-    /// Last input frame (channel-mapped to out_channels) for cross-boundary
-    /// interpolation.
-    last_frame: Vec<f32>,
-    /// `true` once at least one packet has been processed.
-    has_last: bool,
+struct RubatoResampler {
+    inner: Fft<f32>,
+    channels: usize,
+    input_frames_needed: usize,
+    input_buf: Vec<f32>,
+    input_pos: usize,
+    output_buf: Vec<f32>,
+    output_capacity: usize,
 }
 
-impl LinearResampler {
-    fn new(in_rate: u32, out_rate: u32, out_channels: usize) -> Self {
-        let out_channels = out_channels.max(1);
-        Self {
-            out_channels,
-            inv_ratio: if in_rate == out_rate {
-                1.0
-            } else {
-                in_rate as f64 / out_rate as f64
-            },
-            pos: 0.0,
-            last_frame: vec![0.0; out_channels],
-            has_last: false,
-        }
+impl RubatoResampler {
+    fn new(in_rate: u32, out_rate: u32, out_channels: usize) -> anyhow::Result<Self> {
+        let channels = out_channels.max(1);
+        let chunk_size = 512.min(in_rate.max(out_rate) as usize / 10).max(64);
+
+        let inner = Fft::<f32>::new(
+            in_rate as usize,
+            out_rate as usize,
+            chunk_size,
+            channels,
+            FixedSync::Input,
+        )
+        .context("failed to create FFT resampler")?;
+
+        let input_frames_needed = inner.input_frames_next();
+        let output_capacity = inner.output_frames_max();
+
+        Ok(Self {
+            inner,
+            channels,
+            input_frames_needed,
+            input_buf: vec![0.0; input_frames_needed * channels],
+            input_pos: 0,
+            output_buf: vec![0.0; output_capacity * channels],
+            output_capacity,
+        })
     }
 
-    fn process(&mut self, input: &[f32], in_channels: usize) -> Vec<f32> {
+    fn process(&mut self, input: &[f32], in_channels: usize) -> anyhow::Result<Vec<f32>> {
         let in_channels = in_channels.max(1);
-        let out_channels = self.out_channels;
-
+        let out_channels = self.channels;
         let in_frames = input.len() / in_channels;
         if in_frames == 0 {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
-        let mut out = Vec::new();
-
-        while self.pos < in_frames as f64 {
-            let i0 = self.pos.floor() as usize;
-            let i1_ceil = i0 + 1;
-            let frac = (self.pos - i0 as f64) as f32;
-
-            for out_ch in 0..out_channels {
-                let a = read_mapped_sample(input, i0, out_ch, in_channels, out_channels);
-                let b = if i1_ceil < in_frames {
-                    read_mapped_sample(input, i1_ceil, out_ch, in_channels, out_channels)
-                } else if self.has_last {
-                    self.last_frame[out_ch]
-                } else {
-                    a
-                };
-                out.push(a + (b - a) * frac);
+        let new_pos = self.input_pos + in_frames;
+        let needed = new_pos * out_channels;
+        if needed > self.input_buf.len() {
+            self.input_buf.resize(needed, 0.0);
+        }
+        for frame in 0..in_frames {
+            let pos = (self.input_pos + frame) * out_channels;
+            for ch in 0..out_channels {
+                self.input_buf[pos + ch] =
+                    read_mapped_sample(input, frame, ch, in_channels, out_channels);
             }
+        }
+        self.input_pos = new_pos;
 
-            self.pos += self.inv_ratio;
+        let mut output = Vec::new();
+        while self.input_pos >= self.input_frames_needed {
+            let total = self.input_frames_needed * out_channels;
+
+            let input_adapter = InterleavedSlice::new(
+                &self.input_buf[..total],
+                out_channels,
+                self.input_frames_needed,
+            )
+            .context("resampler input adapter")?;
+
+            let cap = self.output_capacity * out_channels;
+            let mut output_adapter = InterleavedSlice::new_mut(
+                &mut self.output_buf[..cap],
+                out_channels,
+                self.output_capacity,
+            )
+            .context("resampler output adapter")?;
+
+            let (_, written) = self
+                .inner
+                .process_into_buffer(&input_adapter, &mut output_adapter, None)
+                .context("resampling failed")?;
+
+            output.extend_from_slice(&self.output_buf[..written * out_channels]);
+
+            // Shift remaining buffered data to front.
+            let consumed = self.input_frames_needed;
+            let remaining = self.input_pos - consumed;
+            if remaining > 0 {
+                self.input_buf.copy_within(consumed * out_channels.., 0);
+            }
+            self.input_pos = remaining;
         }
 
-        // Carry fractional position to the next packet.
-        self.pos -= in_frames as f64;
+        Ok(output)
+    }
 
-        // Save the last frame for cross-boundary interpolation.
-        let last_idx = in_frames - 1;
-        for out_ch in 0..out_channels {
-            self.last_frame[out_ch] =
-                read_mapped_sample(input, last_idx, out_ch, in_channels, out_channels);
+    fn flush(&mut self) -> anyhow::Result<Vec<f32>> {
+        if self.input_pos == 0 {
+            return Ok(Vec::new());
         }
-        self.has_last = true;
 
-        out
+        let out_channels = self.channels;
+        let total = self.input_frames_needed * out_channels;
+
+        // Zero unused portion of input buffer.
+        let used = self.input_pos * out_channels;
+        self.input_buf[used..total].fill(0.0);
+
+        let input_adapter = InterleavedSlice::new(
+            &self.input_buf[..total],
+            out_channels,
+            self.input_frames_needed,
+        )
+        .context("flush input adapter")?;
+
+        let cap = self.output_capacity * out_channels;
+        let mut output_adapter = InterleavedSlice::new_mut(
+            &mut self.output_buf[..cap],
+            out_channels,
+            self.output_capacity,
+        )
+        .context("flush output adapter")?;
+
+        let indexing = rubato::Indexing::new().partial_len(self.input_pos);
+        let (_, written) = self
+            .inner
+            .process_into_buffer(&input_adapter, &mut output_adapter, Some(&indexing))
+            .context("resampling failed on flush")?;
+
+        self.input_pos = 0;
+
+        Ok(self.output_buf[..written * out_channels].to_vec())
     }
 
     fn reset(&mut self) {
-        self.pos = 0.0;
-        self.has_last = false;
+        self.input_pos = 0;
+        self.inner.reset();
     }
 }
 
