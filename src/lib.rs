@@ -10,12 +10,18 @@ use std::{
     time::Duration,
 };
 
-use player_core::{AudioPlayer, MediaSource, PlaybackState, TrackMeta, probe_track_meta};
+use player_core::{AudioPlayer, MediaSource, PlaybackState, TrackMeta, probe_media_source};
 use repose_core::modifier::PaddingValues;
 use repose_core::prelude::*;
 use repose_material::material3 as m3;
 use repose_material::{Icon, material_symbols};
 use repose_ui::TextStyle;
+
+#[cfg(target_arch = "wasm32")]
+use web_thread as thread;
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::thread;
 
 material_symbols! {
     add            : '\u{E145}',
@@ -63,7 +69,7 @@ impl Entry {
 
 struct PendingState {
     files: Mutex<Vec<MediaSource>>,
-    probed_meta: Mutex<Vec<(PathBuf, TrackMeta)>>,
+    probed_meta: Mutex<Vec<(MediaSource, TrackMeta)>>,
     needs_wake: AtomicBool,
 }
 
@@ -182,11 +188,8 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
             .collect::<Vec<_>>();
         if !probed.is_empty() {
             let mut list = playlist.get();
-            for (path, meta) in probed {
-                if let Some(entry) = list
-                    .iter_mut()
-                    .find(|e| e.source == MediaSource::Path(path.clone()))
-                {
+            for (source, meta) in probed {
+                if let Some(entry) = list.iter_mut().find(|e| e.source == source) {
                     entry.meta = meta;
                 }
             }
@@ -212,29 +215,20 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
                 advance_armed.set(true);
             }
 
-            // Spawn background metadata probes (desktop only: needs real paths).
+            // Probe metadata in background (blocking I/O).
             let pending = pending.clone();
-            let probe_paths: Vec<PathBuf> = new_files
-                .iter()
-                .filter_map(|s| match s {
-                    MediaSource::Path(p) => Some(p.clone()),
-                    MediaSource::Bytes { .. } => None,
-                })
-                .collect();
-            #[cfg(not(target_arch = "wasm32"))]
-            if !probe_paths.is_empty() {
-                std::thread::spawn(move || {
-                    for path in &probe_paths {
-                        let meta = probe_track_meta(path);
-                        pending
-                            .probed_meta
-                            .lock()
-                            .unwrap()
-                            .push((path.clone(), meta));
-                        pending.needs_wake.store(true, Ordering::Release);
-                    }
-                });
-            }
+            let to_probe = new_files.clone();
+            thread::spawn(move || {
+                for source in to_probe {
+                    let meta = probe_media_source(source.clone());
+                    pending
+                        .probed_meta
+                        .lock()
+                        .unwrap()
+                        .push((source, meta));
+                    pending.needs_wake.store(true, Ordering::Release);
+                }
+            });
         }
         if needs_wake || !new_files.is_empty() {
             request_frame();

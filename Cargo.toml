@@ -140,3 +140,4 @@ console_error_panic_hook.workspace = true
 console_log.workspace = true
 getrandom.workspace = true
 wgpu.workspace = true
+web-thread = { git = "https://github.com/mlm-games/wasm-worker" }

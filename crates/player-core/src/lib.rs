@@ -346,7 +346,7 @@ pub fn probe_track_meta(path: &Path) -> TrackMeta {
     probe_media_source(MediaSource::Path(path.to_path_buf()))
 }
 
-fn probe_media_source(source: MediaSource) -> TrackMeta {
+pub fn probe_media_source(source: MediaSource) -> TrackMeta {
     let mut meta = TrackMeta::default();
 
     let Ok((mss, hint)) = media_source_stream(source) else {
