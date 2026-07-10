@@ -2800,6 +2800,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "web-thread",
 ]
 
 [[package]]
@@ -4408,6 +4409,19 @@ checksum = "8622dcb61c0bcc9fffa6938bed81210af2da9a7e4a1a834b2e37a59b6dfb6141"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "web-thread"
+version = "0.1.1"
+source = "git+https://github.com/mlm-games/wasm-worker#d289eb12669f8c5c6db4fd7b8de4349a40a95b27"
+dependencies = [
+ "atomic-waker",
+ "js-sys",
+ "pin-project",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

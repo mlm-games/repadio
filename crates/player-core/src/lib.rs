@@ -9,6 +9,8 @@ use std::{
     time::Duration,
 };
 
+#[cfg(target_arch = "wasm32")]
+use web_thread as thread;
 #[cfg(not(target_arch = "wasm32"))]
 use std::thread;
 
@@ -398,12 +400,9 @@ fn apply_revision(meta: &mut TrackMeta, rev: &MetadataRevision) {
 }
 
 /// WASM entry point: sets up CPAL synchronously, stores the stream in a
-/// static `OnceLock`, and drives decode/command processing through the
-/// browser event loop via `wasm_bindgen_futures::spawn_local`.
-///
-/// Because WASM has no blocking threads, the decode loop runs as a
-/// recursive async task.  The CPAL callback (AudioWorklet) pulls decoded
-/// samples from the same bounded queue as on desktop.
+/// static `OnceLock`, and spawns the decode/command loop onto a real
+/// Web Worker via `web_thread` so that blocking I/O and channel waits
+/// actually sleep instead of spinning the main thread.
 #[cfg(target_arch = "wasm32")]
 fn audio_thread_wasm(cmd_rx: Receiver<Command>, shared: Arc<Shared>) -> Result<()> {
     #[cfg(target_feature = "atomics")]
@@ -467,110 +466,24 @@ fn audio_thread_wasm(cmd_rx: Receiver<Command>, shared: Arc<Shared>) -> Result<(
             .map_err(|_| anyhow!("audio stream already initialized"))
     })?;
 
-    // Drive command/decode processing on the browser event loop so
-    // blocking I/O (file reads, symphonia decode) doesn't freeze the UI.
-    // The decode loop must be async-aware on WASM; the pending-files
-    // queue pattern in the app layer feeds file paths via the command
-    // channel.
-    wasm_bindgen_futures::spawn_local(async move {
-        if let Err(err) = audio_thread_wasm_loop(
-            cmd_rx,
-            sample_tx,
-            flush_rx,
-            shared,
+    // Real thread (Web Worker) via web_thread — blocking I/O, channel
+    // sends, and thread::sleep all work correctly here.
+    web_thread::spawn(move || {
+        let result = run_command_loop(
+            &cmd_rx,
+            &sample_tx,
+            &flush_rx,
+            &shared,
             out_channels,
             out_sample_rate,
-        )
-        .await
-        {
+        );
+        if let Err(err) = result {
+            set_error(shared.as_ref(), &err);
             web_sys::console::log_1(&format!("audio thread error: {err}").into());
         }
     });
 
     Ok(())
-}
-
-/// WASM decode loop -> async counterpart of `audio_thread`.
-/// `wasm_bindgen_futures::spawn_local` runs this cooperatively; we poll
-/// commands with `try_recv` (non-blocking) and decode audio whenever a
-/// `Load` arrives.  File reads and Symphonia decoding block the main
-/// thread briefly, so keep decode runs short or offload via
-/// `wasm-bindgen-rayon` for heavy files.
-#[cfg(target_arch = "wasm32")]
-async fn audio_thread_wasm_loop(
-    cmd_rx: Receiver<Command>,
-    sample_tx: Sender<f32>,
-    flush_rx: Receiver<f32>,
-    shared: Arc<Shared>,
-    out_channels: usize,
-    out_sample_rate: u32,
-) -> Result<()> {
-    use js_sys::Promise;
-    use wasm_bindgen_futures::JsFuture;
-
-    loop {
-        // Non-blocking command poll -> we must not stall the event loop.
-        match cmd_rx.try_recv() {
-            Ok(Command::Load(path)) => {
-                let mut next = Some(path);
-                while let Some(path) = next.take() {
-                    let err_shared = shared.clone();
-                    next = match decode_file_to_queue(
-                        path,
-                        &cmd_rx,
-                        &sample_tx,
-                        &flush_rx,
-                        shared.clone(),
-                        out_channels,
-                        out_sample_rate,
-                    ) {
-                        Ok(DecodeOutcome::Idle) => None,
-                        Ok(DecodeOutcome::Load(path)) => Some(path),
-                        Ok(DecodeOutcome::Shutdown) => return Ok(()),
-                        Err(err) => {
-                            log::error!("decode error: {err}");
-                            set_error(err_shared.as_ref(), &err);
-                            None
-                        }
-                    };
-                }
-            }
-            Ok(cmd) => match apply_command(cmd, &shared, &flush_rx) {
-                CommandAction::Continue => {}
-                CommandAction::Seek(..) => {}
-                CommandAction::Stop => {}
-                CommandAction::Load(path) => {
-                    let err_shared = shared.clone();
-                    if let Err(err) = decode_file_to_queue(
-                        path,
-                        &cmd_rx,
-                        &sample_tx,
-                        &flush_rx,
-                        shared.clone(),
-                        out_channels,
-                        out_sample_rate,
-                    ) {
-                        log::error!("decode error: {err}");
-                        set_error(err_shared.as_ref(), &err);
-                    }
-                }
-                CommandAction::Shutdown => return Ok(()),
-            },
-            Err(_) => {}
-        }
-
-        // Yield to the browser event loop so the UI and AudioWorklet
-        // can make progress.  5 ms is short enough to keep the audio
-        // buffer from running dry during song changes.
-        JsFuture::from(Promise::new(&mut |resolve, _| {
-            web_sys::window()
-                .unwrap()
-                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 5)
-                .unwrap();
-        }))
-        .await
-        .ok();
-    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -642,7 +555,6 @@ fn set_error(shared: &Shared, err: &(impl std::fmt::Display + ?Sized)) {
     s.error = Some(err.to_string());
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn run_command_loop(
     cmd_rx: &Receiver<Command>,
     sample_tx: &Sender<f32>,
@@ -1018,10 +930,7 @@ fn decode_file_to_queue(
                         }
 
                         // Yield so the audio callback can drain the queue.
-                        #[cfg(not(target_arch = "wasm32"))]
                         thread::sleep(Duration::from_millis(2));
-                        #[cfg(target_arch = "wasm32")]
-                        std::thread::yield_now();
                     }
                     Err(TrySendError::Disconnected(_)) => return Ok(DecodeOutcome::Shutdown),
                 }
@@ -1210,11 +1119,7 @@ fn wait_until_queue_drained(
             return DecodeOutcome::Idle;
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
         thread::sleep(Duration::from_millis(10));
-
-        #[cfg(target_arch = "wasm32")]
-        std::thread::yield_now();
     }
 }
 
