@@ -36,6 +36,8 @@ winit = { version = "0.30" }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 wgpu = { version = "30", features = ["webgpu", "webgl"] }
 
+videoson = { git = "https://github.com/mlm-games/videoson", rev = "02c1ebb2300137acc372577348422c795b90ac1c", features = ["h264", "rav1d"] }
+
 player-core = { path = "crates/player-core" }
 player-sync = { path = "crates/player-sync" }
 player-platform = { path = "crates/player-platform" }
@@ -111,6 +113,7 @@ mime_type = "audio/*"
 anyhow.workspace = true
 env_logger.workspace = true
 log.workspace = true
+crossbeam-channel.workspace = true
 
 player-core.workspace = true
 player-sync.workspace = true

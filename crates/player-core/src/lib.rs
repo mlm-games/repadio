@@ -25,15 +25,19 @@ use symphonia::{
         codecs::{
             CodecParameters,
             audio::{AudioDecoder, AudioDecoderOptions},
+            video::well_known as video_codec_ids,
         },
         errors::Error as SymphoniaError,
         formats::{FormatOptions, SeekMode, SeekTo, TrackType, probe::Hint},
         io::{MediaSourceStream, MediaSourceStreamOptions},
         meta::{MetadataOptions, MetadataRevision, StandardTag},
-        units::Time,
+        packet::Packet as SymphoniaPacket,
+        units::{Time, TimeBase},
     },
     default::{get_codecs, get_probe},
 };
+
+pub mod video;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackState {
@@ -134,16 +138,29 @@ enum Command {
 #[derive(Clone)]
 pub struct AudioPlayer {
     inner: Arc<AudioPlayerInner>,
+    video_rx: crossbeam_channel::Receiver<video::DecodedVideoFrame>,
 }
 
 struct AudioPlayerInner {
     tx: Sender<Command>,
     shared: Arc<Shared>,
+    #[allow(dead_code)]
+    video_tx: crossbeam_channel::Sender<video::DecodedVideoFrame>,
 }
 
 impl Drop for AudioPlayerInner {
     fn drop(&mut self) {
         self.tx.send(Command::Shutdown).ok();
+    }
+}
+
+impl AudioPlayer {
+    pub fn video_rx(&self) -> crossbeam_channel::Receiver<video::DecodedVideoFrame> {
+        self.video_rx.clone()
+    }
+
+    pub fn seek_serial(&self) -> u64 {
+        self.inner.shared.seek_serial.load(Ordering::Acquire)
     }
 }
 
@@ -185,12 +202,15 @@ impl AudioPlayer {
         });
 
         let (tx, rx) = unbounded();
+        let (video_tx, video_rx) = crossbeam_channel::bounded(8);
         let thread_shared = shared.clone();
 
         #[cfg(not(target_arch = "wasm32"))]
         {
             let (stream, sample_tx, flush_rx, out_channels, out_sample_rate) =
                 create_cpal_stream(&shared)?;
+
+            let thread_video_tx = video_tx.clone();
 
             std::thread::Builder::new()
                 .name("repadio-audio".into())
@@ -207,6 +227,7 @@ impl AudioPlayer {
                             &thread_shared,
                             out_channels,
                             out_sample_rate,
+                            &thread_video_tx,
                         );
 
                         drop(stream);
@@ -221,10 +242,15 @@ impl AudioPlayer {
         }
 
         #[cfg(target_arch = "wasm32")]
-        audio_thread_wasm(rx, thread_shared).context("failed to start WASM audio")?;
+        audio_thread_wasm(rx, thread_shared, &video_tx).context("failed to start WASM audio")?;
 
         Ok(Self {
-            inner: Arc::new(AudioPlayerInner { tx, shared }),
+            inner: Arc::new(AudioPlayerInner {
+                tx,
+                shared,
+                video_tx,
+            }),
+            video_rx,
         })
     }
 
@@ -399,9 +425,13 @@ fn apply_revision(meta: &mut TrackMeta, rev: &MetadataRevision) {
 /// WASM entry point: sets up CPAL synchronously, stores the stream in a
 /// static `OnceLock`, and spawns the decode/command loop onto a real
 /// Web Worker via `web_thread` so that blocking I/O and channel waits
-/// actually sleep instead of spinning the main thread.
+
 #[cfg(target_arch = "wasm32")]
-fn audio_thread_wasm(cmd_rx: Receiver<Command>, shared: Arc<Shared>) -> Result<()> {
+fn audio_thread_wasm(
+    cmd_rx: Receiver<Command>,
+    shared: Arc<Shared>,
+    video_tx: &crossbeam_channel::Sender<video::DecodedVideoFrame>,
+) -> Result<()> {
     #[cfg(target_feature = "atomics")]
     let host = cpal::available_hosts()
         .iter()
@@ -465,6 +495,7 @@ fn audio_thread_wasm(cmd_rx: Receiver<Command>, shared: Arc<Shared>) -> Result<(
 
     // Real thread (Web Worker) via web_thread — blocking I/O, channel
     // sends, and thread::sleep all work correctly here.
+    let thread_video_tx = video_tx.clone();
     web_thread::spawn(move || {
         let result = run_command_loop(
             &cmd_rx,
@@ -473,6 +504,7 @@ fn audio_thread_wasm(cmd_rx: Receiver<Command>, shared: Arc<Shared>) -> Result<(
             &shared,
             out_channels,
             out_sample_rate,
+            &thread_video_tx,
         );
         if let Err(err) = result {
             set_error(shared.as_ref(), &err);
@@ -559,6 +591,7 @@ fn run_command_loop(
     shared: &Arc<Shared>,
     out_channels: usize,
     out_sample_rate: u32,
+    video_tx: &crossbeam_channel::Sender<video::DecodedVideoFrame>,
 ) -> Result<()> {
     loop {
         match cmd_rx.recv() {
@@ -574,6 +607,7 @@ fn run_command_loop(
                         shared.clone(),
                         out_channels,
                         out_sample_rate,
+                        video_tx,
                     ) {
                         Ok(DecodeOutcome::Idle) => next = None,
                         Ok(DecodeOutcome::Load(path)) => next = Some(path),
@@ -598,6 +632,7 @@ fn run_command_loop(
                         shared.clone(),
                         out_channels,
                         out_sample_rate,
+                        video_tx,
                     ) {
                         log::error!("decode error: {err}");
                         set_error(shared.as_ref(), &err);
@@ -702,6 +737,41 @@ enum DecodeOutcome {
     Shutdown,
 }
 
+struct VideoDecodeState {
+    track_id: u32,
+    decoder: video::VideoDecoder,
+    time_base: TimeBase,
+}
+
+fn packet_pts_us(packet: &SymphoniaPacket, tb: &TimeBase) -> i64 {
+    let time = tb.calc_time_saturating(packet.pts);
+    (time.as_secs_f64() * 1_000_000.0) as i64
+}
+
+fn handle_video_packet(
+    state: &mut VideoDecodeState,
+    packet: &SymphoniaPacket,
+    video_tx: &crossbeam_channel::Sender<video::DecodedVideoFrame>,
+) {
+    let pts_us = packet_pts_us(packet, &state.time_base);
+    // Drain residual frames from previous calls (e.g. before a decoder reset).
+    let fallback = Duration::from_micros(pts_us.max(0) as u64);
+    if state
+        .decoder
+        .send_packet(&packet.data, pts_us, false)
+        .is_err()
+    {
+        log::warn!("video decode error, resetting decoder");
+        state.decoder.reset();
+        return;
+    }
+    for frame in state.decoder.drain_frames(fallback) {
+        if video_tx.send(frame).is_err() {
+            return;
+        }
+    }
+}
+
 fn decode_file_to_queue(
     source: MediaSource,
     cmd_rx: &Receiver<Command>,
@@ -710,6 +780,7 @@ fn decode_file_to_queue(
     shared: Arc<Shared>,
     out_channels: usize,
     out_rate: u32,
+    video_tx: &crossbeam_channel::Sender<video::DecodedVideoFrame>,
 ) -> Result<DecodeOutcome> {
     reset_audio_queue_and_clock(&shared, flush_rx);
 
@@ -792,12 +863,65 @@ fn decode_file_to_queue(
         out_channels,
     )?;
 
+    // --- Video track detection ---
+    let mut video_state: Option<VideoDecodeState> = None;
+    'video_init: {
+        let vtrack = format
+            .default_track(TrackType::Video)
+            .or_else(|| format.first_track_known_codec(TrackType::Video));
+        let Some(vtrack) = vtrack else {
+            break 'video_init;
+        };
+        let Some(CodecParameters::Video(vp)) = &vtrack.codec_params else {
+            break 'video_init;
+        };
+        use symphonia::core::codecs::video::well_known::extra_data as ed_ids;
+        let w = vp.width.unwrap_or(0) as u32;
+        let h = vp.height.unwrap_or(0) as u32;
+        let extradata = vp
+            .extra_data
+            .iter()
+            .find(|ed| ed.id == ed_ids::VIDEO_EXTRA_DATA_ID_AVC_DECODER_CONFIG)
+            .or_else(|| vp.extra_data.first())
+            .map(|ed| &ed.data[..])
+            .unwrap_or(&[]);
+        let (name, dec) = if vp.codec == video_codec_ids::CODEC_ID_H264 {
+            match video::VideoDecoder::new_h264(w, h, extradata) {
+                Ok(d) => ("H.264", d),
+                Err(e) => {
+                    log::warn!("failed to init H.264 decoder: {e}");
+                    break 'video_init;
+                }
+            }
+        } else if vp.codec == video_codec_ids::CODEC_ID_AV1 {
+            match video::VideoDecoder::new_av1(w, h, extradata) {
+                Ok(d) => ("AV1", d),
+                Err(e) => {
+                    log::warn!("failed to init AV1 decoder: {e}");
+                    break 'video_init;
+                }
+            }
+        } else {
+            log::info!("unsupported video codec {:?}, skipping", vp.codec);
+            break 'video_init;
+        };
+        log::info!("video: {name} {}x{}", w, h);
+        video_state = Some(VideoDecodeState {
+            track_id: vtrack.id,
+            decoder: dec,
+            time_base: vtrack.time_base.unwrap_or_default(),
+        });
+    }
+
     loop {
         match drain_commands(cmd_rx, &shared) {
             CommandAction::Continue => {}
             CommandAction::Load(path) => return Ok(DecodeOutcome::Load(path)),
             CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
             CommandAction::Seek(target, serial) => {
+                if let Some(ref mut vs) = video_state {
+                    vs.decoder.reset();
+                }
                 perform_seek(
                     &mut *format,
                     &mut *decoder,
@@ -909,6 +1033,11 @@ fn decode_file_to_queue(
         };
 
         if packet.track_id != track_id {
+            if let Some(ref mut vs) = video_state {
+                if packet.track_id == vs.track_id {
+                    handle_video_packet(vs, &packet, video_tx);
+                }
+            }
             continue;
         }
 
@@ -948,6 +1077,9 @@ fn decode_file_to_queue(
                             CommandAction::Load(path) => return Ok(DecodeOutcome::Load(path)),
                             CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
                             CommandAction::Seek(target, serial) => {
+                                if let Some(ref mut vs) = video_state {
+                                    vs.decoder.reset();
+                                }
                                 perform_seek(
                                     &mut *format,
                                     &mut *decoder,
