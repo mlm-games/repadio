@@ -41,6 +41,8 @@ wgpu = { version = "30", features = ["webgpu", "webgl"] }
 
 videoson = { git = "https://github.com/mlm-games/videoson", features = [
     "h264",
+    "h265",
+    "vp9",
 ] }
 web-time = "1.1.0"
 
