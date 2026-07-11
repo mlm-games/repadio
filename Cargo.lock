@@ -2980,6 +2980,7 @@ name = "player-sync"
 version = "0.2.0"
 dependencies = [
  "player-core",
+ "web-time",
 ]
 
 [[package]]

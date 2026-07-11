@@ -7,3 +7,4 @@ license.workspace = true
 
 [dependencies]
 player-core.workspace = true
+web-time.workspace = true
