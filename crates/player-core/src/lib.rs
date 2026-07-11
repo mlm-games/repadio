@@ -598,6 +598,7 @@ fn run_command_loop(
             Ok(Command::Load(path)) => {
                 log::info!("audio thread processing load: {}", path.display_name());
                 let mut next = Some(path);
+                let mut pending_seek: Option<(Duration, u64)> = None;
                 'decode: while let Some(path) = next.take() {
                     match decode_file_to_queue(
                         path,
@@ -608,9 +609,13 @@ fn run_command_loop(
                         out_channels,
                         out_sample_rate,
                         video_tx,
+                        pending_seek.take(),
                     ) {
                         Ok(DecodeOutcome::Idle) => next = None,
-                        Ok(DecodeOutcome::Seek(..)) => next = None,
+                        Ok(DecodeOutcome::Seek(target, serial)) => {
+                            pending_seek = Some((target, serial));
+                            next = lock_status(shared).source.clone();
+                        }
                         Ok(DecodeOutcome::Load(path)) => next = Some(path),
                         Ok(DecodeOutcome::Shutdown) => return Ok(()),
                         Err(err) => {
@@ -634,6 +639,7 @@ fn run_command_loop(
                         out_channels,
                         out_sample_rate,
                         video_tx,
+                        None,
                     ) {
                         log::error!("decode error: {err}");
                         set_error(shared.as_ref(), &err);
@@ -784,6 +790,7 @@ fn decode_file_to_queue(
     out_channels: usize,
     out_rate: u32,
     video_tx: &crossbeam_channel::Sender<video::DecodedVideoFrame>,
+    initial_seek: Option<(Duration, u64)>,
 ) -> Result<DecodeOutcome> {
     reset_audio_queue_and_clock(&shared, flush_rx);
 
@@ -916,7 +923,25 @@ fn decode_file_to_queue(
         });
     }
 
-    'decode: loop {
+    if let Some((target, serial)) = initial_seek {
+        if let Some(ref mut vs) = video_state {
+            vs.decoder.reset();
+        }
+        perform_seek(
+            &mut *format,
+            &mut *decoder,
+            track_id,
+            target,
+            serial,
+            duration,
+            &shared,
+            flush_rx,
+            out_rate,
+        );
+        resampler.reset();
+    }
+
+    loop {
         match drain_commands(cmd_rx, &shared) {
             CommandAction::Continue => {}
             CommandAction::Load(path) => return Ok(DecodeOutcome::Load(path)),
@@ -955,22 +980,7 @@ fn decode_file_to_queue(
                                     CommandAction::Load(p) => return Ok(DecodeOutcome::Load(p)),
                                     CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
                                     CommandAction::Seek(target, serial) => {
-                                        if let Some(ref mut vs) = video_state {
-                                            vs.decoder.reset();
-                                        }
-                                        perform_seek(
-                                            &mut *format,
-                                            &mut *decoder,
-                                            track_id,
-                                            target,
-                                            serial,
-                                            duration,
-                                            &shared,
-                                            flush_rx,
-                                            out_rate,
-                                        );
-                                        resampler.reset();
-                                        continue 'decode;
+                                        return Ok(DecodeOutcome::Seek(target, serial));
                                     }
                                 }
                                 thread::sleep(Duration::from_millis(2));
@@ -983,22 +993,7 @@ fn decode_file_to_queue(
                 }
                 match wait_until_queue_drained(cmd_rx, &shared, flush_rx) {
                     DecodeOutcome::Seek(target, serial) => {
-                        if let Some(ref mut vs) = video_state {
-                            vs.decoder.reset();
-                        }
-                        perform_seek(
-                            &mut *format,
-                            &mut *decoder,
-                            track_id,
-                            target,
-                            serial,
-                            duration,
-                            &shared,
-                            flush_rx,
-                            out_rate,
-                        );
-                        resampler.reset();
-                        continue 'decode;
+                        return Ok(DecodeOutcome::Seek(target, serial));
                     }
                     other => return Ok(other),
                 }
@@ -1016,22 +1011,7 @@ fn decode_file_to_queue(
                                     CommandAction::Load(p) => return Ok(DecodeOutcome::Load(p)),
                                     CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
                                     CommandAction::Seek(target, serial) => {
-                                        if let Some(ref mut vs) = video_state {
-                                            vs.decoder.reset();
-                                        }
-                                        perform_seek(
-                                            &mut *format,
-                                            &mut *decoder,
-                                            track_id,
-                                            target,
-                                            serial,
-                                            duration,
-                                            &shared,
-                                            flush_rx,
-                                            out_rate,
-                                        );
-                                        resampler.reset();
-                                        continue 'decode;
+                                        return Ok(DecodeOutcome::Seek(target, serial));
                                     }
                                 }
                                 thread::sleep(Duration::from_millis(2));
@@ -1044,22 +1024,7 @@ fn decode_file_to_queue(
                 }
                 match wait_until_queue_drained(cmd_rx, &shared, flush_rx) {
                     DecodeOutcome::Seek(target, serial) => {
-                        if let Some(ref mut vs) = video_state {
-                            vs.decoder.reset();
-                        }
-                        perform_seek(
-                            &mut *format,
-                            &mut *decoder,
-                            track_id,
-                            target,
-                            serial,
-                            duration,
-                            &shared,
-                            flush_rx,
-                            out_rate,
-                        );
-                        resampler.reset();
-                        continue 'decode;
+                        return Ok(DecodeOutcome::Seek(target, serial));
                     }
                     other => return Ok(other),
                 }
