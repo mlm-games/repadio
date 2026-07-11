@@ -4,7 +4,8 @@ use anyhow::Result;
 use repose_core::color::ColorInfo;
 use videoson::{
     NalFormat, VideoCodecParams, VideoDecoder as VideoDecoderTrait, VideoDecoderOptions,
-    VideoOutputFormat, codec_h264::H264Decoder, codec_rav1d::Rav1dSafeDecoder,
+    VideoOutputFormat, codec_h264::H264Decoder, codec_h265::H265Decoder,
+    codec_rav1d::Rav1dSafeDecoder, codec_vp9::Vp9Decoder,
 };
 
 #[derive(Debug, Clone)]
@@ -160,6 +161,45 @@ impl VideoDecoder {
             .send_eos()
             .map_err(|e| anyhow::anyhow!("videoson eos: {e:?}"))?;
         Ok(self.drain_frames(Duration::ZERO, 0))
+    }
+
+    pub fn new_hevc(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
+        let nal_len_size = parse_nal_length_size(extradata);
+        let params = VideoCodecParams {
+            codec: videoson::CodecType::H265,
+            coded_width: width,
+            coded_height: height,
+            extradata: extradata.to_vec(),
+            nal_format: Some(NalFormat::Hvcc { nal_len_size }),
+        };
+        let opts = VideoDecoderOptions {
+            verify: false,
+            output_format: VideoOutputFormat::Nv12,
+        };
+        let inner = H265Decoder::try_new(&params, &opts)
+            .map_err(|e| anyhow::anyhow!("videoson H.265 init: {e:?}"))?;
+        Ok(Self {
+            inner: Box::new(inner),
+        })
+    }
+
+    pub fn new_vp9(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
+        let params = VideoCodecParams {
+            codec: videoson::CodecType::VP9,
+            coded_width: width,
+            coded_height: height,
+            extradata: extradata.to_vec(),
+            nal_format: None,
+        };
+        let opts = VideoDecoderOptions {
+            verify: false,
+            output_format: VideoOutputFormat::Nv12,
+        };
+        let inner = Vp9Decoder::try_new(&params, &opts)
+            .map_err(|e| anyhow::anyhow!("videoson VP9 init: {e:?}"))?;
+        Ok(Self {
+            inner: Box::new(inner),
+        })
     }
 
     pub fn reset(&mut self) {

@@ -187,8 +187,13 @@ impl VideoSink {
                 self.frame_duration = dur.as_secs_f64();
             }
 
-            // SyncDriver: compare frame PTS against audio clock
-            let now_clock = self.clock.position();
+            // SyncDriver: when clock isn't running (preroll), force-present
+            // the first frame so it shows up immediately.
+            let now_clock = if self.clock.is_playing() {
+                self.clock.position()
+            } else {
+                Duration::MAX
+            };
             let action = if pts + Duration::from_millis(50) < now_clock {
                 player_sync::FrameAction::Drop
             } else if pts <= now_clock {
@@ -222,7 +227,14 @@ impl VideoSink {
 
                     // Swap active handle
                     self.active_idx = inactive;
+                    let was_visible = self.visible;
                     self.visible = true;
+
+                    // Signal video-ready + update position clock.
+                    if !was_visible {
+                        self.clock.mark_video_ready();
+                    }
+                    self.clock.set_video_position(frame.pts);
 
                     // Advance frame timer
                     if let Some(ft) = self.frame_timer {
@@ -581,7 +593,7 @@ fn App(player: AudioPlayer, pending: PendingFiles, video_sink: &Rc<RefCell<Video
     );
 
     m3::Scaffold(
-        move |padding| {
+        move |_padding| {
             Column(
                 Modifier::new()
                     .fill_max_size()
@@ -795,8 +807,21 @@ fn NowPlayingCard(
                 (0.0, 1.0),
                 None,
                 {
+                    let player = player.clone();
                     let scrubbing = scrubbing.clone();
-                    move |ratio: f32| scrubbing.set(Some(ratio))
+                    let duration = snap.duration;
+                    move |ratio: f32| {
+                        let was_scrubbing = scrubbing.get().is_some();
+                        scrubbing.set(Some(ratio));
+                        if !was_scrubbing {
+                            // Pause audio while scrubbing (prevents glitchy sounds)
+                            let _ = player.pause();
+                        }
+                        // Show target time during scrub.
+                        let _target_time = duration.map(|d| {
+                            format_duration(Duration::from_secs_f64(d.as_secs_f64() * ratio as f64))
+                        });
+                    }
                 },
                 m3::SliderConfig {
                     enabled: snap.duration.is_some(),
@@ -814,6 +839,7 @@ fn NowPlayingCard(
                                 if let Err(e) = player.seek(target) {
                                     log::error!("seek failed: {e}");
                                 }
+                                let _ = player.play();
                             }
                         }))
                     },
