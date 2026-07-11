@@ -40,7 +40,6 @@ wgpu = { version = "30", features = ["webgpu", "webgl"] }
 
 videoson = { git = "https://github.com/mlm-games/videoson", rev = "02c1ebb2300137acc372577348422c795b90ac1c", features = [
     "h264",
-    "rav1d",
 ] }
 
 # repose-core = { path = "../repose/crates/repose-core" }
