@@ -312,21 +312,12 @@ pub async fn wasm_main() {
     }
 }
 
-///
-/// `RepadioActivity.kt` writes the content URI bytes to
-/// `filesDir/pending_intent`.  This function reads and deletes it so the
-/// same import is not picked up twice.
 #[cfg(target_os = "android")]
-fn take_pending_intent(dir: &std::path::Path) -> Option<MediaSource> {
-    let path = dir.join("pending_intent");
-    let bytes = std::fs::read(&path).ok()?;
-    let _ = std::fs::remove_file(&path);
-    if bytes.is_empty() {
-        return None;
-    }
+fn intent_to_media_source(dir: &std::path::Path) -> Option<MediaSource> {
+    let intent = rlobkit_app_events::take_pending_intent(dir)?;
     Some(MediaSource::Bytes {
-        name: "Shared audio".to_string(),
-        bytes: Arc::from(bytes),
+        name: intent.name,
+        bytes: Arc::from(intent.data),
     })
 }
 
@@ -348,11 +339,17 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
         rlobkit_dialogs::helper_activity_available_for_host()
     );
 
+    // Only forward IME inset for keyboard — Scaffold handles the rest via
+    // its own safe-area padding, and system bars were always 0 pre-migration.
+    rlobkit_app_events::insets::set_on_insets(Box::new(|insets| {
+        repose_core::locals::set_ime_inset(insets.ime_bottom);
+    }));
+
     let data_dir = android_app.internal_data_path();
 
     let mut initial = Vec::new();
     if let Some(ref dir) = data_dir {
-        if let Some(src) = take_pending_intent(dir) {
+        if let Some(src) = intent_to_media_source(dir) {
             log::info!("loaded pending intent file");
             initial.push(src);
         }
@@ -376,7 +373,7 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
             repose_platform::android::run_android_app(android_app, move |_sched, ctx| {
                 // Poll for onNewIntent imports while the app is already running.
                 if let Some(ref dir) = data_dir {
-                    if let Some(src) = take_pending_intent(dir) {
+                    if let Some(src) = intent_to_media_source(dir) {
                         log::info!("loaded late pending intent");
                         pending.files.lock().unwrap().push(src);
                         request_frame();
@@ -553,10 +550,10 @@ fn App(player: AudioPlayer, pending: PendingFiles, video_sink: &Rc<RefCell<Video
                 Modifier::new()
                     .fill_max_size()
                     .padding_values(PaddingValues {
-                        top: 16.0,
+                        top: 12.0,
                         bottom: padding.bottom,
-                        left: 24.0,
-                        right: 24.0,
+                        left: 12.0,
+                        right: 12.0,
                     })
                     .gap(16.0),
             )
