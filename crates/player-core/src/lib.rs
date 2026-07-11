@@ -772,6 +772,25 @@ struct VideoDecodeState {
     need_keyframe: bool,
 }
 
+/// State for the two-phase accurate seek / buffering.
+/// Decoded output before `target` is discarded; playback starts once the
+/// audio stream reaches `target` AND at least `min_samples` are queued.
+struct SeekPhase {
+    target: Duration,
+    min_samples: usize,
+    audio_reached: bool,
+}
+
+impl SeekPhase {
+    fn new(target: Duration, out_rate: u32, out_channels: usize) -> Self {
+        Self {
+            target,
+            min_samples: (out_rate as usize * out_channels) / 4, // ~250 ms
+            audio_reached: target.is_zero(),
+        }
+    }
+}
+
 fn packet_pts_us(packet: &SymphoniaPacket, tb: &TimeBase) -> i64 {
     let time = tb.calc_time_saturating(packet.pts);
     (time.as_secs_f64() * 1_000_000.0) as i64
@@ -801,7 +820,8 @@ fn handle_video_packet(
     state: &mut VideoDecodeState,
     packet: &SymphoniaPacket,
     video_tx: &crossbeam_channel::Sender<video::DecodedVideoFrame>,
-    generation: u64,
+    load_serial: u64,
+    min_pts: Option<Duration>,
 ) {
     let is_sync = match state.codec {
         VideoCodecKind::H264 { nal_len_size } => {
@@ -829,7 +849,12 @@ fn handle_video_packet(
         state.need_keyframe = true;
         return;
     }
-    for frame in state.decoder.drain_frames(fallback, generation) {
+    for frame in state.decoder.drain_frames(fallback, load_serial) {
+        if let Some(min) = min_pts {
+            if frame.pts < min {
+                continue;
+            }
+        }
         if video_tx.try_send(frame).is_err() {
             break;
         }
@@ -930,7 +955,6 @@ fn decode_file_to_queue(
         out_channels,
     )?;
 
-    // --- Video track detection ---
     let mut video_state: Option<VideoDecodeState> = None;
     'video_init: {
         let vtrack = format
@@ -987,18 +1011,19 @@ fn decode_file_to_queue(
         });
     }
 
-    let mut preroll_active = true;
-    let preroll_min = (out_rate as usize * out_channels) / 4;
+    let mut audio_tb = track.time_base.unwrap_or_default();
 
-    if let Some((target, serial)) = initial_seek {
+    let mut seek_phase: Option<SeekPhase> = if let Some((target, serial)) = initial_seek {
         if let Some(ref mut vs) = video_state {
             vs.decoder.reset();
             vs.need_keyframe = true;
         }
+        let video_track_id = video_state.as_ref().map(|vs| vs.track_id);
         perform_seek(
             &mut *format,
             &mut *decoder,
             track_id,
+            video_track_id,
             target,
             serial,
             duration,
@@ -1007,7 +1032,10 @@ fn decode_file_to_queue(
             out_rate,
         );
         resampler.reset();
-    }
+        Some(SeekPhase::new(target, out_rate, out_channels))
+    } else {
+        Some(SeekPhase::new(Duration::ZERO, out_rate, out_channels))
+    };
 
     loop {
         match drain_commands(cmd_rx, &shared) {
@@ -1015,15 +1043,16 @@ fn decode_file_to_queue(
             CommandAction::Load(path) => return Ok(DecodeOutcome::Load(path)),
             CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
             CommandAction::Seek(target, serial) => {
-                let was_playing = shared.is_playing.load(Ordering::Acquire);
                 if let Some(ref mut vs) = video_state {
                     vs.decoder.reset();
                     vs.need_keyframe = true;
                 }
+                let video_track_id = video_state.as_ref().map(|vs| vs.track_id);
                 perform_seek(
                     &mut *format,
                     &mut *decoder,
                     track_id,
+                    video_track_id,
                     target,
                     serial,
                     duration,
@@ -1032,9 +1061,7 @@ fn decode_file_to_queue(
                     out_rate,
                 );
                 resampler.reset();
-                shared.resume_intent.store(was_playing, Ordering::Release);
-                lock_status(&shared).state = PlaybackState::Buffering;
-                preroll_active = true;
+                seek_phase = Some(SeekPhase::new(target, out_rate, out_channels));
             }
         }
 
@@ -1064,17 +1091,10 @@ fn decode_file_to_queue(
                         }
                     }
                 }
-                if preroll_active {
-                    preroll_active = false;
-                    let resume = shared.resume_intent.load(Ordering::Acquire);
-                    if resume {
-                        shared.is_playing.store(true, Ordering::Release);
-                        lock_status(&shared).state = PlaybackState::Playing;
-                    } else {
-                        lock_status(&shared).state = PlaybackState::Paused;
-                        flush_audio_queue(flush_rx);
-                        return Ok(DecodeOutcome::Idle);
-                    }
+                if seek_phase.take().is_some() && shared.resume_intent.load(Ordering::Acquire) {
+                    shared.is_playing.store(true, Ordering::Release);
+                    let mut s = lock_status(&shared);
+                    s.state = PlaybackState::Playing;
                 }
                 match wait_until_queue_drained(cmd_rx, &shared, flush_rx) {
                     DecodeOutcome::Seek(target, serial) => {
@@ -1107,17 +1127,10 @@ fn decode_file_to_queue(
                         }
                     }
                 }
-                if preroll_active {
-                    preroll_active = false;
-                    let resume = shared.resume_intent.load(Ordering::Acquire);
-                    if resume {
-                        shared.is_playing.store(true, Ordering::Release);
-                        lock_status(&shared).state = PlaybackState::Playing;
-                    } else {
-                        lock_status(&shared).state = PlaybackState::Paused;
-                        flush_audio_queue(flush_rx);
-                        return Ok(DecodeOutcome::Idle);
-                    }
+                if seek_phase.take().is_some() && shared.resume_intent.load(Ordering::Acquire) {
+                    shared.is_playing.store(true, Ordering::Release);
+                    let mut s = lock_status(&shared);
+                    s.state = PlaybackState::Playing;
                 }
                 match wait_until_queue_drained(cmd_rx, &shared, flush_rx) {
                     DecodeOutcome::Seek(target, serial) => {
@@ -1142,6 +1155,7 @@ fn decode_file_to_queue(
                     .or_else(|| format.first_track_known_codec(TrackType::Audio))
                     .context("no supported audio track after reset")?;
                 track_id = track.id;
+                audio_tb = track.time_base.unwrap_or_default();
                 codec_params = match &track.codec_params {
                     Some(CodecParameters::Audio(p)) => p.clone(),
                     _ => anyhow::bail!("track has no audio codec parameters after reset"),
@@ -1175,7 +1189,8 @@ fn decode_file_to_queue(
             if let Some(ref mut vs) = video_state {
                 if packet.track_id == vs.track_id {
                     let serial = shared.load_serial.load(Ordering::Acquire);
-                    handle_video_packet(vs, &packet, video_tx, serial);
+                    let min_pts = seek_phase.as_ref().map(|p| p.target);
+                    handle_video_packet(vs, &packet, video_tx, serial, min_pts);
                 }
             }
             continue;
@@ -1205,7 +1220,32 @@ fn decode_file_to_queue(
 
         let converted = resampler.process(&f32_samples, in_channels)?;
 
-        for mut sample in converted {
+        let mut push: &[f32] = &converted;
+
+        if let Some(phase) = &mut seek_phase {
+            if !phase.audio_reached {
+                let pkt_start = {
+                    let t = audio_tb.calc_time_saturating(packet.pts);
+                    Duration::from_secs_f64(t.as_secs_f64())
+                };
+                let out_frames = converted.len() / out_channels;
+                let pkt_dur = Duration::from_secs_f64(out_frames as f64 / out_rate as f64);
+
+                if pkt_start + pkt_dur <= phase.target {
+                    // Entirely before target: decode kept codec state warm, output dropped.
+                    push = &[];
+                } else {
+                    // Straddles the target: trim the leading samples.
+                    let lead = phase.target.saturating_sub(pkt_start);
+                    let skip_frames = (lead.as_secs_f64() * out_rate as f64) as usize;
+                    let skip = (skip_frames * out_channels).min(converted.len());
+                    push = &converted[skip..];
+                    phase.audio_reached = true;
+                }
+            }
+        }
+
+        for mut sample in push.iter().copied() {
             loop {
                 match sample_tx.try_send(sample) {
                     Ok(()) => break,
@@ -1217,15 +1257,16 @@ fn decode_file_to_queue(
                             CommandAction::Load(path) => return Ok(DecodeOutcome::Load(path)),
                             CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
                             CommandAction::Seek(target, serial) => {
-                                let was_playing = shared.is_playing.load(Ordering::Acquire);
                                 if let Some(ref mut vs) = video_state {
                                     vs.decoder.reset();
                                     vs.need_keyframe = true;
                                 }
+                                let video_track_id = video_state.as_ref().map(|vs| vs.track_id);
                                 perform_seek(
                                     &mut *format,
                                     &mut *decoder,
                                     track_id,
+                                    video_track_id,
                                     target,
                                     serial,
                                     duration,
@@ -1234,9 +1275,7 @@ fn decode_file_to_queue(
                                     out_rate,
                                 );
                                 resampler.reset();
-                                shared.resume_intent.store(was_playing, Ordering::Release);
-                                lock_status(&shared).state = PlaybackState::Buffering;
-                                preroll_active = true;
+                                seek_phase = Some(SeekPhase::new(target, out_rate, out_channels));
                                 // Drop the in-flight sample; it's pre-seek audio.
                                 break;
                             }
@@ -1249,13 +1288,16 @@ fn decode_file_to_queue(
                 }
             }
         }
-        if preroll_active && sample_tx.len() >= preroll_min {
-            preroll_active = false;
-            if shared.resume_intent.load(Ordering::Acquire) {
-                shared.is_playing.store(true, Ordering::Release);
-                lock_status(&shared).state = PlaybackState::Playing;
-            } else {
-                lock_status(&shared).state = PlaybackState::Paused;
+
+        if let Some(phase) = &seek_phase {
+            if phase.audio_reached && sample_tx.len() >= phase.min_samples {
+                let resume = shared.resume_intent.load(Ordering::Acquire);
+                shared.is_playing.store(resume, Ordering::Release);
+                {
+                    let mut s = lock_status(&shared);
+                    s.state = if resume { PlaybackState::Playing } else { PlaybackState::Paused };
+                }
+                seek_phase = None;
             }
         }
     }
@@ -1265,7 +1307,8 @@ fn decode_file_to_queue(
 fn perform_seek(
     format: &mut dyn symphonia::core::formats::FormatReader,
     decoder: &mut dyn AudioDecoder,
-    track_id: u32,
+    audio_track_id: u32,
+    video_track_id: Option<u32>,
     target: Duration,
     serial: u64,
     duration: Option<Duration>,
@@ -1277,20 +1320,26 @@ fn perform_seek(
         Some(d) if target > d => d,
         _ => target,
     };
-
     let time = Time::try_from_secs_f64(clamped.as_secs_f64()).unwrap_or(Time::ZERO);
+
+    let was_playing = shared.is_playing.load(Ordering::Acquire);
+    shared.resume_intent.store(was_playing, Ordering::Release);
+
+    // Landing on a video keyframe at-or-before target is the whole point:
+    // video recovers instantly, and we discard the small audio lead-in.
+    let seek_track = video_track_id.unwrap_or(audio_track_id);
 
     match format.seek(
         SeekMode::Accurate,
-        SeekTo::Time {
-            time,
-            track_id: Some(track_id),
-        },
+        SeekTo::Time { time, track_id: Some(seek_track) },
     ) {
-        Ok(_seeked_to) => {
+        Ok(_) => {
             decoder.reset();
             reset_audio_queue_and_clock(shared, flush_rx);
-            // Don't overwrite a newer seek's optimistic clock rebase.
+            {
+                let mut s = lock_status(shared);
+                s.state = PlaybackState::Buffering;
+            }
             if shared.seek_serial.load(Ordering::Acquire) == serial {
                 let base = (clamped.as_secs_f64() * out_rate as f64) as u64;
                 shared.base_frames.store(base, Ordering::Release);

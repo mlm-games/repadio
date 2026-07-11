@@ -922,7 +922,7 @@ fn TransportBar(
             },
         ),
         m3::FilledIconButton(
-            Icon(if state == PlaybackState::Playing {
+            Icon(if state == PlaybackState::Playing || state == PlaybackState::Buffering {
                 Symbols::pause
             } else {
                 Symbols::play_arrow
