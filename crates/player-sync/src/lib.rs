@@ -4,7 +4,7 @@
 //! The AUDIO pipeline is the master clock; video only observes it.
 
 use std::sync::Arc;
-use std::time::Duration;
+use web_time::Duration;
 
 use player_core::AudioPlayer;
 

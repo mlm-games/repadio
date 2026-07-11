@@ -13,6 +13,7 @@ log.workspace = true
 rubato.workspace = true
 videoson.workspace = true
 repose-core.workspace = true
+web-time.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 cpal.workspace = true

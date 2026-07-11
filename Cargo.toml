@@ -38,10 +38,10 @@ winit = { version = "0.30" }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 wgpu = { version = "30", features = ["webgpu", "webgl"] }
 
-videoson = { git = "https://github.com/mlm-games/videoson", rev = "02c1ebb2300137acc372577348422c795b90ac1c", features = [
+videoson = { git = "https://github.com/mlm-games/videoson", features = [
     "h264",
 ] }
-
+web-time = "1.1.0"
 
 player-core = { path = "crates/player-core" }
 player-sync = { path = "crates/player-sync" }
@@ -138,6 +138,7 @@ repose-platform.workspace = true
 winit.workspace = true
 rlobkit-dialogs.workspace = true
 rlobkit-app-events.workspace = true
+web-time.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15"

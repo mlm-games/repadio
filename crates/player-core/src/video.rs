@@ -1,10 +1,10 @@
-use std::time::Duration;
+use web_time::Duration;
 
 use anyhow::Result;
 use repose_core::color::ColorInfo;
 use videoson::{
     NalFormat, VideoCodecParams, VideoDecoder as VideoDecoderTrait, VideoDecoderOptions,
-    codec_h264::H264Decoder, codec_rav1d::Rav1dSafeDecoder,
+    VideoOutputFormat, codec_h264::H264Decoder, codec_rav1d::Rav1dSafeDecoder,
 };
 
 #[derive(Debug, Clone)]
@@ -15,12 +15,14 @@ pub struct VideoStreamInfo {
     pub codec_name: &'static str,
 }
 
+/// Decoded frame in **NV12** layout, ready for GPU upload.
 pub struct DecodedVideoFrame {
     pub width: u32,
     pub height: u32,
+    /// Packed luma: `width * height` bytes.
     pub y_plane: Vec<u8>,
-    pub u_plane: Vec<u8>,
-    pub v_plane: Vec<u8>,
+    /// Packed chroma: `width * ceil(height/2)` bytes, U/V interleaved.
+    pub uv_plane: Vec<u8>,
     pub pts: Duration,
     pub load_serial: u64,
     pub color_info: ColorInfo,
@@ -42,7 +44,11 @@ impl VideoDecoder {
                 nal_len_size: nal_length_size,
             }),
         };
-        let inner = H264Decoder::try_new(&params, &VideoDecoderOptions::default())
+        let opts = VideoDecoderOptions {
+            verify: false,
+            output_format: VideoOutputFormat::Nv12,
+        };
+        let inner = H264Decoder::try_new(&params, &opts)
             .map_err(|e| anyhow::anyhow!("videoson H.264 init: {e:?}"))?;
         Ok(Self {
             inner: Box::new(inner),
@@ -57,7 +63,11 @@ impl VideoDecoder {
             extradata: extradata.to_vec(),
             nal_format: None,
         };
-        let inner = Rav1dSafeDecoder::try_new(&params, &VideoDecoderOptions::default())
+        let opts = VideoDecoderOptions {
+            verify: false,
+            output_format: VideoOutputFormat::Nv12,
+        };
+        let inner = Rav1dSafeDecoder::try_new(&params, &opts)
             .map_err(|e| anyhow::anyhow!("videoson AV1 init: {e:?}"))?;
         Ok(Self {
             inner: Box::new(inner),
@@ -78,52 +88,52 @@ impl VideoDecoder {
             .map_err(|e| anyhow::anyhow!("videoson send: {e:?}"))
     }
 
-    pub fn drain_frames(&mut self, fallback_pts: Duration, load_serial: u64) -> Vec<DecodedVideoFrame> {
+    pub fn drain_frames(
+        &mut self,
+        fallback_pts: Duration,
+        load_serial: u64,
+    ) -> Vec<DecodedVideoFrame> {
         let mut frames = Vec::new();
+
         while let Ok(Some(frame)) = self.inner.receive_frame() {
-            let w = frame.width as u32;
-            let h = frame.height as u32;
+            // NV12: [Y, UV]
+            if frame.plane_data.len() < 2 {
+                continue;
+            }
 
             let y_data = match &frame.plane_data[0].data {
                 videoson::PlaneData::U8(v) => v.as_slice(),
                 _ => continue,
             };
-            // If U or V planes are missing, skip the frame.
-            let u_plane_data = match frame.plane_data.get(1).and_then(|p| match &p.data {
-                videoson::PlaneData::U8(v) => Some(v.as_slice()),
-                _ => None,
-            }) {
-                Some(d) if !d.is_empty() => d,
-                _ => continue,
-            };
-            let v_plane_data = match frame.plane_data.get(2).and_then(|p| match &p.data {
-                videoson::PlaneData::U8(v) => Some(v.as_slice()),
-                _ => None,
-            }) {
-                Some(d) if !d.is_empty() => d,
+            let uv_data = match &frame.plane_data[1].data {
+                videoson::PlaneData::U8(v) => v.as_slice(),
                 _ => continue,
             };
 
+            let w = frame.width as usize;
+            let h = frame.height as usize;
             let y_stride = frame.plane_data[0].stride;
-            let u_stride = frame.plane_data[1].stride;
-            let v_stride = frame.plane_data[2].stride;
+            let uv_stride = frame.plane_data[1].stride;
 
-            // Tightly pack Y plane (remove stride padding).
-            let mut y_plane = Vec::with_capacity(w as usize * h as usize);
-            for row in 0..h as usize {
+            // Defensive tight-pack (decoders already pack, but keep safe).
+            let mut y_plane = Vec::with_capacity(w * h);
+            for row in 0..h {
                 let start = row * y_stride;
-                y_plane.extend_from_slice(&y_data[start..start + w as usize]);
+                if start + w > y_data.len() {
+                    break;
+                }
+                y_plane.extend_from_slice(&y_data[start..start + w]);
             }
 
-        let uv_w = w.div_ceil(2) as usize;
-        let uv_h = h.div_ceil(2) as usize;
-            let mut u_plane = Vec::with_capacity(uv_w * uv_h);
-            let mut v_plane = Vec::with_capacity(uv_w * uv_h);
+            let uv_w = ((frame.width + 1) / 2 * 2) as usize;
+            let uv_h = ((frame.height + 1) / 2) as usize;
+            let mut uv_plane = Vec::with_capacity(uv_w * uv_h);
             for row in 0..uv_h {
-                let u_start = row * u_stride;
-                let v_start = row * v_stride;
-                u_plane.extend_from_slice(&u_plane_data[u_start..u_start + uv_w]);
-                v_plane.extend_from_slice(&v_plane_data[v_start..v_start + uv_w]);
+                let start = row * uv_stride;
+                if start + uv_w > uv_data.len() {
+                    break;
+                }
+                uv_plane.extend_from_slice(&uv_data[start..start + uv_w]);
             }
 
             let pts = frame
@@ -132,16 +142,16 @@ impl VideoDecoder {
                 .unwrap_or(fallback_pts);
 
             frames.push(DecodedVideoFrame {
-                width: w,
-                height: h,
+                width: frame.width,
+                height: frame.height,
                 y_plane,
-                u_plane,
-                v_plane,
+                uv_plane,
                 pts,
                 load_serial,
                 color_info: ColorInfo::default(),
             });
         }
+
         frames
     }
 
@@ -161,16 +171,11 @@ pub fn parse_nal_length_size(extradata: &[u8]) -> u8 {
     if extradata.len() < 5 {
         return 4;
     }
-    // Byte 4: bits 0-1 = lengthSizeMinusOne
     (extradata[4] & 0x03) + 1
 }
 
-pub fn yuv420_uv_to_nv12(
-    u_plane: &[u8],
-    v_plane: &[u8],
-    width: u32,
-    height: u32,
-) -> Vec<u8> {
+/// Legacy helper for callers that still have separate U/V planes.
+pub fn yuv420_uv_to_nv12(u_plane: &[u8], v_plane: &[u8], width: u32, height: u32) -> Vec<u8> {
     let uv_size = (width.div_ceil(2) * height.div_ceil(2)) as usize;
     let mut uv = Vec::with_capacity(uv_size * 2);
     for i in 0..uv_size {

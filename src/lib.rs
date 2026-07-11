@@ -204,16 +204,6 @@ impl VideoSink {
                 player_sync::FrameAction::PresentNow => {
                     let frame = self.buffered.remove(0);
 
-                    // Convert YUV420p to NV12 (interleave U and V planes)
-                    let uv_w = frame.width.div_ceil(2) as usize;
-                    let uv_h = frame.height.div_ceil(2) as usize;
-                    let uv_size = uv_w * uv_h;
-                    let mut uv = Vec::with_capacity(uv_size * 2);
-                    for i in 0..uv_size {
-                        uv.push(frame.u_plane.get(i).copied().unwrap_or(128));
-                        uv.push(frame.v_plane.get(i).copied().unwrap_or(128));
-                    }
-
                     // Upload to inactive handle
                     let inactive = 1 - self.active_idx;
                     let handle = self.handles[inactive].unwrap();
@@ -222,7 +212,7 @@ impl VideoSink {
                         frame.width,
                         frame.height,
                         frame.y_plane,
-                        uv,
+                        frame.uv_plane,
                         frame.color_info,
                     );
 
