@@ -3,7 +3,7 @@ use std::{
     io::Cursor,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     time::Duration,
@@ -25,6 +25,7 @@ use symphonia::{
         codecs::{
             CodecParameters,
             audio::{AudioDecoder, AudioDecoderOptions},
+            registry::CodecRegistry,
             video::well_known as video_codec_ids,
         },
         errors::Error as SymphoniaError,
@@ -34,8 +35,18 @@ use symphonia::{
         packet::Packet as SymphoniaPacket,
         units::{Time, TimeBase},
     },
-    default::{get_codecs, get_probe},
+    default::get_probe,
 };
+
+fn get_codecs() -> &'static CodecRegistry {
+    static REGISTRY: OnceLock<CodecRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let mut registry = CodecRegistry::new();
+        symphonia::default::register_enabled_codecs(&mut registry);
+        registry.register_audio_decoder::<symphonia_adapter_oporus::OpusDecoder>();
+        registry
+    })
+}
 
 pub mod video;
 
