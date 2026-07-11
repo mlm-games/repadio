@@ -610,6 +610,7 @@ fn run_command_loop(
                         video_tx,
                     ) {
                         Ok(DecodeOutcome::Idle) => next = None,
+                        Ok(DecodeOutcome::Seek(..)) => next = None,
                         Ok(DecodeOutcome::Load(path)) => next = Some(path),
                         Ok(DecodeOutcome::Shutdown) => return Ok(()),
                         Err(err) => {
@@ -733,6 +734,7 @@ fn make_u16_callback(
 
 enum DecodeOutcome {
     Idle,
+    Seek(Duration, u64),
     Load(MediaSource),
     Shutdown,
 }
@@ -772,6 +774,7 @@ fn handle_video_packet(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decode_file_to_queue(
     source: MediaSource,
     cmd_rx: &Receiver<Command>,
@@ -913,7 +916,7 @@ fn decode_file_to_queue(
         });
     }
 
-    loop {
+    'decode: loop {
         match drain_commands(cmd_rx, &shared) {
             CommandAction::Continue => {}
             CommandAction::Load(path) => return Ok(DecodeOutcome::Load(path)),
@@ -951,7 +954,24 @@ fn decode_file_to_queue(
                                     CommandAction::Continue => {}
                                     CommandAction::Load(p) => return Ok(DecodeOutcome::Load(p)),
                                     CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
-                                    _ => return Ok(DecodeOutcome::Idle),
+                                    CommandAction::Seek(target, serial) => {
+                                        if let Some(ref mut vs) = video_state {
+                                            vs.decoder.reset();
+                                        }
+                                        perform_seek(
+                                            &mut *format,
+                                            &mut *decoder,
+                                            track_id,
+                                            target,
+                                            serial,
+                                            duration,
+                                            &shared,
+                                            flush_rx,
+                                            out_rate,
+                                        );
+                                        resampler.reset();
+                                        continue 'decode;
+                                    }
                                 }
                                 thread::sleep(Duration::from_millis(2));
                             }
@@ -961,7 +981,27 @@ fn decode_file_to_queue(
                         }
                     }
                 }
-                return Ok(wait_until_queue_drained(cmd_rx, &shared, flush_rx));
+                match wait_until_queue_drained(cmd_rx, &shared, flush_rx) {
+                    DecodeOutcome::Seek(target, serial) => {
+                        if let Some(ref mut vs) = video_state {
+                            vs.decoder.reset();
+                        }
+                        perform_seek(
+                            &mut *format,
+                            &mut *decoder,
+                            track_id,
+                            target,
+                            serial,
+                            duration,
+                            &shared,
+                            flush_rx,
+                            out_rate,
+                        );
+                        resampler.reset();
+                        continue 'decode;
+                    }
+                    other => return Ok(other),
+                }
             }
             Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                 let flushed = resampler.flush()?;
@@ -975,7 +1015,24 @@ fn decode_file_to_queue(
                                     CommandAction::Continue => {}
                                     CommandAction::Load(p) => return Ok(DecodeOutcome::Load(p)),
                                     CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
-                                    _ => return Ok(DecodeOutcome::Idle),
+                                    CommandAction::Seek(target, serial) => {
+                                        if let Some(ref mut vs) = video_state {
+                                            vs.decoder.reset();
+                                        }
+                                        perform_seek(
+                                            &mut *format,
+                                            &mut *decoder,
+                                            track_id,
+                                            target,
+                                            serial,
+                                            duration,
+                                            &shared,
+                                            flush_rx,
+                                            out_rate,
+                                        );
+                                        resampler.reset();
+                                        continue 'decode;
+                                    }
                                 }
                                 thread::sleep(Duration::from_millis(2));
                             }
@@ -985,7 +1042,27 @@ fn decode_file_to_queue(
                         }
                     }
                 }
-                return Ok(wait_until_queue_drained(cmd_rx, &shared, flush_rx));
+                match wait_until_queue_drained(cmd_rx, &shared, flush_rx) {
+                    DecodeOutcome::Seek(target, serial) => {
+                        if let Some(ref mut vs) = video_state {
+                            vs.decoder.reset();
+                        }
+                        perform_seek(
+                            &mut *format,
+                            &mut *decoder,
+                            track_id,
+                            target,
+                            serial,
+                            duration,
+                            &shared,
+                            flush_rx,
+                            out_rate,
+                        );
+                        resampler.reset();
+                        continue 'decode;
+                    }
+                    other => return Ok(other),
+                }
             }
             Err(SymphoniaError::IoError(_)) => {
                 // Real I/O error, not end-of-stream.
@@ -1260,7 +1337,7 @@ fn wait_until_queue_drained(
         match drain_commands(cmd_rx, shared) {
             CommandAction::Continue => {}
             CommandAction::Load(path) => return DecodeOutcome::Load(path),
-            CommandAction::Seek(..) => return DecodeOutcome::Idle,
+            CommandAction::Seek(target, serial) => return DecodeOutcome::Seek(target, serial),
             CommandAction::Shutdown => return DecodeOutcome::Shutdown,
         }
 
