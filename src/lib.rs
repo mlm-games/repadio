@@ -1,19 +1,22 @@
 #![allow(non_snake_case, non_upper_case_globals)]
 
 use std::{
+    cell::RefCell,
     rc::Rc,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
+use player_core::video::DecodedVideoFrame;
 use player_core::{AudioPlayer, MediaSource, PlaybackState, TrackMeta, probe_media_source};
 use repose_core::modifier::PaddingValues;
 use repose_core::prelude::*;
 use repose_material::material3 as m3;
 use repose_material::{Icon, material_symbols};
+use repose_platform::render::RenderContext;
 use repose_ui::TextStyle;
 
 #[cfg(target_arch = "wasm32")]
@@ -39,7 +42,7 @@ material_symbols! {
     graphic_eq     : '\u{E1B8}',
 }
 use repose_ui::lazy_states::LazyColumnState;
-use repose_ui::{Box, Column, LazyColumn, LazyColumnConfig, Row, Spacer, Text, ViewExt};
+use repose_ui::{Box, Column, Image, LazyColumn, LazyColumnConfig, Row, Spacer, Text, ViewExt, ZStack};
 
 #[derive(Clone)]
 struct Entry {
@@ -75,6 +78,183 @@ struct PendingState {
 
 type PendingFiles = Arc<PendingState>;
 
+// ---------------------------------------------------------------------------
+// Video sink: receives decoded frames from the audio thread, applies A/V sync,
+// uploads to the GPU via ping-pong NV12 textures.
+// ---------------------------------------------------------------------------
+
+struct VideoSink {
+    rx: crossbeam_channel::Receiver<DecodedVideoFrame>,
+    handles: [Option<ImageHandle>; 2],
+    active_idx: usize,
+    clock: AudioPlayer,
+    frame_timer: Option<Instant>,
+    frame_duration: f64,
+    buffered: Vec<DecodedVideoFrame>,
+    last_seek_serial: u64,
+
+    visible: bool,
+    last_load_serial: u64,
+    aspect: f32,
+}
+
+impl VideoSink {
+    fn new(rx: crossbeam_channel::Receiver<DecodedVideoFrame>, clock: AudioPlayer) -> Self {
+        let serial = clock.seek_serial();
+        let load_serial = clock.load_serial();
+        Self {
+            rx,
+            handles: [None, None],
+            active_idx: 0,
+            clock,
+            frame_timer: None,
+            frame_duration: 1.0 / 30.0,
+            buffered: Vec::new(),
+            last_seek_serial: serial,
+
+            visible: false,
+            last_load_serial: load_serial,
+            aspect: 16.0 / 9.0,
+        }
+    }
+
+    fn poll(&mut self, ctx: &RenderContext) {
+        let current_load_serial = self.clock.load_serial();
+        let current_serial = self.clock.seek_serial();
+
+        // New file: hard reset, blank the video
+        if current_load_serial != self.last_load_serial {
+            self.last_load_serial = current_load_serial;
+            self.last_seek_serial = current_serial;
+            self.buffered.clear();
+            self.frame_timer = None;
+            self.frame_duration = 1.0 / 30.0;
+            self.visible = false;
+            while self.rx.try_recv().is_ok() {}
+        // Seek within same file: drop stale queued frames, keep the last frame visible
+        } else if current_serial != self.last_seek_serial {
+            self.last_seek_serial = current_serial;
+            self.buffered.clear();
+            self.frame_timer = None;
+            self.frame_duration = 1.0 / 30.0;
+            while self.rx.try_recv().is_ok() {}
+        }
+
+        // Drain available frames into buffer, filtering by load_serial
+        while let Ok(frame) = self.rx.try_recv() {
+            if frame.load_serial == current_load_serial {
+                self.aspect = frame.width as f32 / frame.height.max(1) as f32;
+                self.buffered.push(frame);
+            }
+        }
+
+        // Sort by PTS for proper display order (H.264 B-frames etc.)
+        self.buffered.sort_by_key(|f| f.pts);
+
+        if self.buffered.is_empty() {
+            return;
+        }
+
+        // Allocate two ping-pong ImageHandles on first frame
+        if self.handles[0].is_none() {
+            self.handles[0] = Some(ctx.alloc_image_handle());
+            self.handles[1] = Some(ctx.alloc_image_handle());
+        }
+
+        let now = Instant::now();
+
+        // Initialize frame timer on first frame
+        if self.frame_timer.is_none() {
+            self.frame_timer = Some(now);
+        }
+
+        // Process frames: find one to display, drop late ones, wait for early ones
+        while !self.buffered.is_empty() {
+            let pts = self.buffered[0].pts;
+
+            // Update frame_duration from PTS gaps if we have >1 frame buffered
+            if self.buffered.len() > 1 {
+                let next_pts = self.buffered[1].pts;
+                let dur = if next_pts > pts && next_pts < pts + Duration::from_secs(1) {
+                    next_pts - pts
+                } else {
+                    Duration::from_secs_f64(self.frame_duration)
+                };
+                self.frame_duration = dur.as_secs_f64();
+            }
+
+            // SyncDriver: compare frame PTS against audio clock
+            let now_clock = self.clock.position();
+            let action = if pts + Duration::from_millis(50) < now_clock {
+                player_sync::FrameAction::Drop
+            } else if pts <= now_clock {
+                player_sync::FrameAction::PresentNow
+            } else {
+                player_sync::FrameAction::WaitFor(pts - now_clock)
+            };
+
+            match action {
+                player_sync::FrameAction::Drop => {
+                    self.buffered.remove(0);
+                    continue;
+                }
+                player_sync::FrameAction::WaitFor(_) => {
+                    break;
+                }
+                player_sync::FrameAction::PresentNow => {
+                    let frame = self.buffered.remove(0);
+
+                    // Convert YUV420p to NV12 (interleave U and V planes)
+                    let uv_w = frame.width.div_ceil(2) as usize;
+                    let uv_h = frame.height.div_ceil(2) as usize;
+                    let uv_size = uv_w * uv_h;
+                    let mut uv = Vec::with_capacity(uv_size * 2);
+                    for i in 0..uv_size {
+                        uv.push(frame.u_plane.get(i).copied().unwrap_or(128));
+                        uv.push(frame.v_plane.get(i).copied().unwrap_or(128));
+                    }
+
+                    // Upload to inactive handle
+                    let inactive = 1 - self.active_idx;
+                    let handle = self.handles[inactive].unwrap();
+                    ctx.set_image_nv12(
+                        handle,
+                        frame.width,
+                        frame.height,
+                        frame.y_plane,
+                        uv,
+                        frame.color_info,
+                    );
+
+                    // Swap active handle
+                    self.active_idx = inactive;
+                    self.visible = true;
+
+                    // Advance frame timer
+                    if let Some(ft) = self.frame_timer {
+                        self.frame_timer = Some(ft + Duration::from_secs_f64(self.frame_duration));
+                    }
+
+                    request_frame();
+                    break;
+                }
+            }
+        }
+    }
+
+    fn active_handle(&self) -> Option<ImageHandle> {
+        if self.visible {
+            self.handles[self.active_idx]
+        } else {
+            None
+        }
+    }
+
+    fn aspect(&self) -> f32 {
+        self.aspect.clamp(0.25, 4.0)
+    }
+}
+
 #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 pub fn run_desktop() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -82,6 +262,10 @@ pub fn run_desktop() -> anyhow::Result<()> {
     player_platform::init();
 
     let player = AudioPlayer::spawn()?;
+    let video_sink = Rc::new(RefCell::new(VideoSink::new(
+        player.video_rx(),
+        player.clone(),
+    )));
     let pending: PendingFiles = Arc::new(PendingState {
         files: Mutex::new(
             std::env::args()
@@ -94,7 +278,10 @@ pub fn run_desktop() -> anyhow::Result<()> {
         next_id: AtomicU64::new(0),
     });
 
-    repose_platform::run_desktop_app(move |_sched, _ctx| App(player.clone(), pending.clone()))
+    repose_platform::run_desktop_app(move |_sched, ctx| {
+        video_sink.borrow_mut().poll(ctx);
+        App(player.clone(), pending.clone(), &video_sink)
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -110,6 +297,10 @@ pub async fn wasm_main() {
     player_platform::init();
 
     let player = AudioPlayer::spawn().expect("failed to spawn audio player");
+    let video_sink = Rc::new(RefCell::new(VideoSink::new(
+        player.video_rx(),
+        player.clone(),
+    )));
     let pending: PendingFiles = Arc::new(PendingState {
         files: Mutex::new(Vec::new()),
         probed_meta: Mutex::new(Vec::new()),
@@ -140,29 +331,25 @@ pub async fn wasm_main() {
         closure.forget();
     }
 
-    repose_platform::web::run_web_app(
-        move |_sched, _ctx| App(player.clone(), pending.clone()),
-        repose_platform::web::WebOptions::new(None),
-    )
-    .expect("app run failed");
+    {
+        let vs = video_sink.clone();
+        repose_platform::web::run_web_app(
+            move |_sched, ctx| {
+                vs.borrow_mut().poll(ctx);
+                App(player.clone(), pending.clone(), &vs)
+            },
+            repose_platform::web::WebOptions::new(None),
+        )
+        .expect("app run failed");
+    }
 }
 
-/// Read a file imported via Android's `ACTION_VIEW` intent.
-///
-/// `RepadioActivity.kt` writes the content URI bytes to
-/// `filesDir/pending_intent`.  This function reads and deletes it so the
-/// same import is not picked up twice.
 #[cfg(target_os = "android")]
-fn take_pending_intent(dir: &std::path::Path) -> Option<MediaSource> {
-    let path = dir.join("pending_intent");
-    let bytes = std::fs::read(&path).ok()?;
-    let _ = std::fs::remove_file(&path);
-    if bytes.is_empty() {
-        return None;
-    }
+fn intent_to_media_source(dir: &std::path::Path) -> Option<MediaSource> {
+    let intent = rlobkit_app_events::take_pending_intent(dir)?;
     Some(MediaSource::Bytes {
-        name: "Shared audio".to_string(),
-        bytes: Arc::from(bytes),
+        name: intent.name,
+        bytes: Arc::from(intent.data),
     })
 }
 
@@ -184,17 +371,32 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
         rlobkit_dialogs::helper_activity_available_for_host()
     );
 
+    rlobkit_app_events::insets::set_on_insets(Box::new(|insets| {
+        let r = repose_core::locals::WindowInsets {
+            top: insets.top,
+            bottom: insets.bottom,
+            left: insets.left,
+            right: insets.right,
+            ime_bottom: insets.ime_bottom,
+        };
+        repose_core::locals::set_window_insets_default(r);
+    }));
+
     let data_dir = android_app.internal_data_path();
 
     let mut initial = Vec::new();
     if let Some(ref dir) = data_dir {
-        if let Some(src) = take_pending_intent(dir) {
+        if let Some(src) = intent_to_media_source(dir) {
             log::info!("loaded pending intent file");
             initial.push(src);
         }
     }
 
     let player = AudioPlayer::spawn().expect("failed to spawn audio player");
+    let video_sink = Rc::new(RefCell::new(VideoSink::new(
+        player.video_rx(),
+        player.clone(),
+    )));
     let pending: PendingFiles = Arc::new(PendingState {
         files: Mutex::new(initial),
         probed_meta: Mutex::new(Vec::new()),
@@ -202,22 +404,28 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
         next_id: AtomicU64::new(0),
     });
 
-    if let Err(err) = repose_platform::android::run_android_app(android_app, move |_sched, _ctx| {
-        // Poll for onNewIntent imports while the app is already running.
-        if let Some(ref dir) = data_dir {
-            if let Some(src) = take_pending_intent(dir) {
-                log::info!("loaded late pending intent");
-                pending.files.lock().unwrap().push(src);
-                request_frame();
-            }
+    {
+        let vs = video_sink.clone();
+        if let Err(err) =
+            repose_platform::android::run_android_app(android_app, move |_sched, ctx| {
+                // Poll for onNewIntent imports while the app is already running.
+                if let Some(ref dir) = data_dir {
+                    if let Some(src) = intent_to_media_source(dir) {
+                        log::info!("loaded late pending intent");
+                        pending.files.lock().unwrap().push(src);
+                        request_frame();
+                    }
+                }
+                vs.borrow_mut().poll(ctx);
+                App(player.clone(), pending.clone(), &vs)
+            })
+        {
+            log::error!("Repadio failed: {err:?}");
         }
-        App(player.clone(), pending.clone())
-    }) {
-        log::error!("Repadio failed: {err:?}");
     }
 }
 
-fn App(player: AudioPlayer, pending: PendingFiles) -> View {
+fn App(player: AudioPlayer, pending: PendingFiles, video_sink: &Rc<RefCell<VideoSink>>) -> View {
     let playlist = remember(|| signal(Vec::<Entry>::new()));
     let current = remember(|| signal(None::<usize>));
     let volume = remember(|| signal(1.0f32));
@@ -285,8 +493,10 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
 
     let snap = player.snapshot();
 
-    if matches!(snap.state, PlaybackState::Playing | PlaybackState::Loading)
-        || scrubbing.get().is_some()
+    if matches!(
+        snap.state,
+        PlaybackState::Playing | PlaybackState::Loading | PlaybackState::Buffering
+    ) || scrubbing.get().is_some()
     {
         request_frame();
     }
@@ -324,7 +534,10 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
         pending_advance.set(true);
     }
 
-    if matches!(snap.state, PlaybackState::Playing | PlaybackState::Loading) {
+    if matches!(
+        snap.state,
+        PlaybackState::Playing | PlaybackState::Loading | PlaybackState::Buffering
+    ) {
         advance_armed.set(true);
     }
 
@@ -379,16 +592,16 @@ fn App(player: AudioPlayer, pending: PendingFiles) -> View {
                 Modifier::new()
                     .fill_max_size()
                     .padding_values(PaddingValues {
-                        top: 16.0,
-                        bottom: padding.bottom,
-                        left: 24.0,
-                        right: 24.0,
+                        top: 12.0,
+                        bottom: 12.0,
+                        left: 12.0,
+                        right: 12.0,
                     })
                     .gap(16.0),
             )
             .child((
                 ErrorBanner(snap.error.clone(), dismissed_error.clone()),
-                NowPlayingCard(player.clone(), snap.clone(), scrubbing.clone()),
+                NowPlayingCard(player.clone(), snap.clone(), scrubbing.clone(), video_sink),
                 TransportBar(
                     player.clone(),
                     playlist.clone(),
@@ -460,6 +673,7 @@ fn NowPlayingCard(
     player: AudioPlayer,
     snap: player_core::PlayerSnapshot,
     scrubbing: Rc<Signal<Option<f32>>>,
+    video_sink: &Rc<RefCell<VideoSink>>,
 ) -> View {
     let title = snap
         .title
@@ -495,6 +709,9 @@ fn NowPlayingCard(
         theme().on_surface.with_alpha(120)
     };
 
+    let video_handle = video_sink.borrow().active_handle();
+    let has_video = video_handle.is_some();
+
     Column(
         Modifier::new()
             .fill_max_width()
@@ -504,37 +721,80 @@ fn NowPlayingCard(
             .gap(16.0),
     )
     .child((
-        Row(Modifier::new()
-            .fill_max_width()
-            .gap(16.0)
-            .align_items(AlignItems::CENTER))
-        .child((
-            Box(Modifier::new()
-                .width(88.0)
-                .height(88.0)
-                .clip_rounded(20.0)
-                .background(art_bg)
-                .align_items(AlignItems::CENTER)
-                .justify_content(JustifyContent::CENTER))
-            .child(
-                Icon(if snap.art.is_some() {
-                    Symbols::image
-                } else {
-                    Symbols::music_note
-                })
-                .size(36.0)
-                .color(art_fg),
-            ),
-            Column(Modifier::new().weight(1.0).gap(6.0)).child((
-                Text(title).size(20.0).single_line().overflow_ellipsize(),
-                Text(sub_line)
-                    .size(13.0)
-                    .color(theme().on_surface.with_alpha(170))
-                    .single_line()
-                    .overflow_ellipsize(),
-                StatusChip(snap.state),
-            )),
-        )),
+        if has_video {
+            let aspect = video_sink.borrow().aspect();
+            Column(Modifier::new().fill_max_width().gap(12.0)).child((
+                Box(Modifier::new()
+                    .fill_max_width()
+                    .aspect_ratio(aspect)
+                    .clip_rounded(20.0)
+                    .background(art_bg))
+                .child(ZStack(Modifier::new().fill_max_size()).child((
+                    Image(Modifier::new().fill_max_size(), video_handle.unwrap()),
+                    if snap.state == PlaybackState::Buffering {
+                        Box(Modifier::new()
+                            .fill_max_size()
+                            .background(theme().surface.with_alpha(100))
+                            .align_items(AlignItems::CENTER)
+                            .justify_content(JustifyContent::CENTER))
+                        .child(m3::CircularProgressIndicator(
+                            None,
+                            m3::CircularProgressIndicatorConfig {
+                                color: theme().primary,
+                                ..Default::default()
+                            },
+                        ))
+                    } else {
+                        Box(Modifier::new().height(0.0))
+                    },
+                ))),
+                Row(Modifier::new()
+                    .fill_max_width()
+                    .gap(16.0)
+                    .align_items(AlignItems::CENTER))
+                .child((Column(Modifier::new().weight(1.0).gap(6.0)).child((
+                    Text(title).size(20.0).single_line().overflow_ellipsize(),
+                    Text(sub_line)
+                        .size(13.0)
+                        .color(theme().on_surface.with_alpha(170))
+                        .single_line()
+                        .overflow_ellipsize(),
+                    StatusChip(snap.state),
+                )),)),
+            ))
+        } else {
+            Row(Modifier::new()
+                .fill_max_width()
+                .gap(16.0)
+                .align_items(AlignItems::CENTER))
+            .child((
+                Box(Modifier::new()
+                    .width(88.0)
+                    .height(88.0)
+                    .clip_rounded(20.0)
+                    .background(art_bg)
+                    .align_items(AlignItems::CENTER)
+                    .justify_content(JustifyContent::CENTER))
+                .child(
+                    Icon(if snap.art.is_some() {
+                        Symbols::image
+                    } else {
+                        Symbols::music_note
+                    })
+                    .size(36.0)
+                    .color(art_fg),
+                ),
+                Column(Modifier::new().weight(1.0).gap(6.0)).child((
+                    Text(title).size(20.0).single_line().overflow_ellipsize(),
+                    Text(sub_line)
+                        .size(13.0)
+                        .color(theme().on_surface.with_alpha(170))
+                        .single_line()
+                        .overflow_ellipsize(),
+                    StatusChip(snap.state),
+                )),
+            ))
+        },
         Column(Modifier::new().fill_max_width().gap(4.0)).child((
             m3::Slider(
                 slider_value,
@@ -593,6 +853,11 @@ fn StatusChip(state: PlaybackState) -> View {
         ),
         PlaybackState::Loading => (
             "Loading…",
+            theme().tertiary_container,
+            theme().on_tertiary_container,
+        ),
+        PlaybackState::Buffering => (
+            "Buffering…",
             theme().tertiary_container,
             theme().on_tertiary_container,
         ),
@@ -657,7 +922,7 @@ fn TransportBar(
             },
         ),
         m3::FilledIconButton(
-            Icon(if state == PlaybackState::Playing {
+            Icon(if state == PlaybackState::Playing || state == PlaybackState::Buffering {
                 Symbols::pause
             } else {
                 Symbols::play_arrow

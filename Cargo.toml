@@ -15,13 +15,15 @@ rubato = "4.0"
 env_logger = "0.11"
 log = "0.4"
 symphonia = { version = "0.6", features = ["all"] }
-rlobkit-dialogs = "0.4"
+rlobkit-dialogs = "0.5"
+# rlobkit-app-events = { path = "../rlobkit/rlobkit-app-events" }
+rlobkit-app-events = { version = "0.5" }
 futures-lite = "2"
 
-repose-core = "0.22"
-repose-ui = "0.22"
-repose-material = "0.22"
-repose-platform = "0.22"
+repose-core = "0.23"
+repose-ui = "0.23"
+repose-material = "0.23"
+repose-platform = "0.23"
 
 console_error_panic_hook = "0.1"
 console_log = "1.0"
@@ -36,9 +38,21 @@ winit = { version = "0.30" }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 wgpu = { version = "30", features = ["webgpu", "webgl"] }
 
+videoson = { git = "https://github.com/mlm-games/videoson", rev = "02c1ebb2300137acc372577348422c795b90ac1c", features = [
+    "h264",
+] }
+
+
 player-core = { path = "crates/player-core" }
 player-sync = { path = "crates/player-sync" }
 player-platform = { path = "crates/player-platform" }
+
+# [patch.crates-io]
+# repose-core = { path = "../repose/crates/repose-core" }
+# repose-ui = { path = "../repose/crates/repose-ui" }
+# repose-material = { path = "../repose/crates/repose-material" }
+# repose-platform = { path = "../repose/crates/repose-platform" }
+# repose-render-wgpu = { path = "../repose/crates/repose-render-wgpu" }
 
 [package]
 name = "repadio"
@@ -68,7 +82,6 @@ build_targets = [
 ]
 split_per_abi = true
 resources = "others/packaging/res"
-java_sources = ["java/"]
 
 [package.metadata.android.application]
 label = "Repadio"
@@ -84,7 +97,7 @@ version_code = 1
 name = "android.permission.INTERNET"
 
 [[package.metadata.android.application.activity]]
-name = "org.mlm.repadio.RepadioActivity"
+name = "rust.rlobkit.RlobKitMainActivity"
 exported = true
 launch_mode = "singleTask"
 
@@ -111,6 +124,7 @@ mime_type = "audio/*"
 anyhow.workspace = true
 env_logger.workspace = true
 log.workspace = true
+crossbeam-channel.workspace = true
 
 player-core.workspace = true
 player-sync.workspace = true
@@ -123,9 +137,11 @@ repose-platform.workspace = true
 
 winit.workspace = true
 rlobkit-dialogs.workspace = true
+rlobkit-app-events.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15"
+rlobkit-app-events = { workspace = true, features = ["jni-bridge"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen.workspace = true
