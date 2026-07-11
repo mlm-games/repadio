@@ -339,10 +339,15 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
         rlobkit_dialogs::helper_activity_available_for_host()
     );
 
-    // Only forward IME inset for keyboard — Scaffold handles the rest via
-    // its own safe-area padding, and system bars were always 0 pre-migration.
     rlobkit_app_events::insets::set_on_insets(Box::new(|insets| {
-        repose_core::locals::set_ime_inset(insets.ime_bottom);
+        let r = repose_core::locals::WindowInsets {
+            top: insets.top,
+            bottom: insets.bottom,
+            left: insets.left,
+            right: insets.right,
+            ime_bottom: insets.ime_bottom,
+        };
+        repose_core::locals::set_window_insets_default(r);
     }));
 
     let data_dir = android_app.internal_data_path();
@@ -551,7 +556,7 @@ fn App(player: AudioPlayer, pending: PendingFiles, video_sink: &Rc<RefCell<Video
                     .fill_max_size()
                     .padding_values(PaddingValues {
                         top: 12.0,
-                        bottom: padding.bottom,
+                        bottom: 12.0,
                         left: 12.0,
                         right: 12.0,
                     })
