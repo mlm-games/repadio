@@ -21,6 +21,7 @@ pub struct DecodedVideoFrame {
     pub u_plane: Vec<u8>,
     pub v_plane: Vec<u8>,
     pub pts: Duration,
+    pub load_serial: u64,
 }
 
 pub struct VideoDecoder {
@@ -75,7 +76,7 @@ impl VideoDecoder {
             .map_err(|e| anyhow::anyhow!("videoson send: {e:?}"))
     }
 
-    pub fn drain_frames(&mut self, fallback_pts: Duration) -> Vec<DecodedVideoFrame> {
+    pub fn drain_frames(&mut self, fallback_pts: Duration, load_serial: u64) -> Vec<DecodedVideoFrame> {
         let mut frames = Vec::new();
         while let Ok(Some(frame)) = self.inner.receive_frame() {
             let w = frame.width as u32;
@@ -112,8 +113,8 @@ impl VideoDecoder {
                 y_plane.extend_from_slice(&y_data[start..start + w as usize]);
             }
 
-            let uv_w = (w / 2) as usize;
-            let uv_h = (h / 2) as usize;
+        let uv_w = w.div_ceil(2) as usize;
+        let uv_h = h.div_ceil(2) as usize;
             let mut u_plane = Vec::with_capacity(uv_w * uv_h);
             let mut v_plane = Vec::with_capacity(uv_w * uv_h);
             for row in 0..uv_h {
@@ -135,6 +136,7 @@ impl VideoDecoder {
                 u_plane,
                 v_plane,
                 pts,
+                load_serial,
             });
         }
         frames
@@ -144,7 +146,7 @@ impl VideoDecoder {
         self.inner
             .send_eos()
             .map_err(|e| anyhow::anyhow!("videoson eos: {e:?}"))?;
-        Ok(self.drain_frames(Duration::ZERO))
+        Ok(self.drain_frames(Duration::ZERO, 0))
     }
 
     pub fn reset(&mut self) {
@@ -152,7 +154,7 @@ impl VideoDecoder {
     }
 }
 
-fn parse_nal_length_size(extradata: &[u8]) -> u8 {
+pub fn parse_nal_length_size(extradata: &[u8]) -> u8 {
     if extradata.len() < 5 {
         return 4;
     }
@@ -160,14 +162,13 @@ fn parse_nal_length_size(extradata: &[u8]) -> u8 {
     (extradata[4] & 0x03) + 1
 }
 
-pub fn yuv420_to_nv12(
-    _y_plane: &[u8],
+pub fn yuv420_uv_to_nv12(
     u_plane: &[u8],
     v_plane: &[u8],
     width: u32,
     height: u32,
 ) -> Vec<u8> {
-    let uv_size = (width / 2 * height / 2) as usize;
+    let uv_size = (width.div_ceil(2) * height.div_ceil(2)) as usize;
     let mut uv = Vec::with_capacity(uv_size * 2);
     for i in 0..uv_size {
         uv.push(u_plane.get(i).copied().unwrap_or(128));

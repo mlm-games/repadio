@@ -43,6 +43,7 @@ pub mod video;
 pub enum PlaybackState {
     Idle,
     Loading,
+    Buffering,
     Playing,
     Paused,
     Ended,
@@ -162,6 +163,15 @@ impl AudioPlayer {
     pub fn seek_serial(&self) -> u64 {
         self.inner.shared.seek_serial.load(Ordering::Acquire)
     }
+
+    pub fn load_serial(&self) -> u64 {
+        self.inner.shared.load_serial.load(Ordering::Acquire)
+    }
+
+    /// Deprecated: use `load_serial()` instead.
+    pub fn generation(&self) -> u64 {
+        self.load_serial()
+    }
 }
 
 struct Shared {
@@ -173,13 +183,16 @@ struct Shared {
     base_frames: AtomicU64,
     output_sample_rate: AtomicU32,
     volume_bits: AtomicU32,
-    /// Incremented on every load/seek/stop. Callbacks discard samples from
-    /// an old generation to prevent stale audio leaking after a discontinuity.
-    generation: AtomicU64,
+    /// Incremented on every `decode_file_to_queue` call to signal a new
+    /// file load. VideoSink uses this to distinguish new-file from seek.
+    load_serial: AtomicU64,
     /// Monotonically increasing serial for seek ordering.  Bumped before
     /// every `Command::Seek` is sent.  `perform_seek` checks this to avoid
     /// overwriting a newer seek's optimistic clock rebase.
     seek_serial: AtomicU64,
+    /// Whether playback should resume after buffering completes.
+    /// Can be changed by Play/Pause during Buffering state.
+    resume_intent: AtomicBool,
 }
 
 // CPAL streams are not `Send`/`Sync`, so need thread-local storage for wasm.
@@ -197,12 +210,13 @@ impl AudioPlayer {
             base_frames: AtomicU64::new(0),
             output_sample_rate: AtomicU32::new(48_000),
             volume_bits: AtomicU32::new(1.0f32.to_bits()),
-            generation: AtomicU64::new(0),
+            load_serial: AtomicU64::new(0),
             seek_serial: AtomicU64::new(0),
+            resume_intent: AtomicBool::new(true),
         });
 
         let (tx, rx) = unbounded();
-        let (video_tx, video_rx) = crossbeam_channel::bounded(8);
+        let (video_tx, video_rx) = crossbeam_channel::bounded(2);
         let thread_shared = shared.clone();
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -745,10 +759,17 @@ enum DecodeOutcome {
     Shutdown,
 }
 
+enum VideoCodecKind {
+    H264 { nal_len_size: usize },
+    Av1,
+}
+
 struct VideoDecodeState {
     track_id: u32,
     decoder: video::VideoDecoder,
     time_base: TimeBase,
+    codec: VideoCodecKind,
+    need_keyframe: bool,
 }
 
 fn packet_pts_us(packet: &SymphoniaPacket, tb: &TimeBase) -> i64 {
@@ -756,26 +777,61 @@ fn packet_pts_us(packet: &SymphoniaPacket, tb: &TimeBase) -> i64 {
     (time.as_secs_f64() * 1_000_000.0) as i64
 }
 
+fn h264_avcc_has_idr(data: &[u8], nal_len_size: usize) -> bool {
+    let mut i = 0usize;
+    while i + nal_len_size <= data.len() {
+        let mut n = 0usize;
+        for &b in &data[i..i + nal_len_size] {
+            n = (n << 8) | b as usize;
+        }
+        i += nal_len_size;
+        if n == 0 || i + n > data.len() {
+            return false;
+        }
+        let nal_type = data[i] & 0x1f;
+        if nal_type == 5 {
+            return true;
+        }
+        i += n;
+    }
+    false
+}
+
 fn handle_video_packet(
     state: &mut VideoDecodeState,
     packet: &SymphoniaPacket,
     video_tx: &crossbeam_channel::Sender<video::DecodedVideoFrame>,
+    generation: u64,
 ) {
+    let is_sync = match state.codec {
+        VideoCodecKind::H264 { nal_len_size } => {
+            h264_avcc_has_idr(&packet.data, nal_len_size)
+        }
+        VideoCodecKind::Av1 => true,
+    };
+
+    if state.need_keyframe {
+        if !is_sync {
+            return;
+        }
+        state.need_keyframe = false;
+    }
+
     let pts_us = packet_pts_us(packet, &state.time_base);
-    // Drain residual frames from previous calls (e.g. before a decoder reset).
     let fallback = Duration::from_micros(pts_us.max(0) as u64);
     if state
         .decoder
-        .send_packet(&packet.data, pts_us, false)
+        .send_packet(&packet.data, pts_us, is_sync)
         .is_err()
     {
         log::warn!("video decode error, resetting decoder");
         state.decoder.reset();
+        state.need_keyframe = true;
         return;
     }
-    for frame in state.decoder.drain_frames(fallback) {
-        if video_tx.send(frame).is_err() {
-            return;
+    for frame in state.decoder.drain_frames(fallback, generation) {
+        if video_tx.try_send(frame).is_err() {
+            break;
         }
     }
 }
@@ -793,6 +849,7 @@ fn decode_file_to_queue(
     initial_seek: Option<(Duration, u64)>,
 ) -> Result<DecodeOutcome> {
     reset_audio_queue_and_clock(&shared, flush_rx);
+    shared.load_serial.fetch_add(1, Ordering::Release);
 
     let display_name = match &source {
         MediaSource::Path(p) => p.file_name().map(|v| v.to_string_lossy().to_string()),
@@ -812,7 +869,7 @@ fn decode_file_to_queue(
         s.error = None;
     }
 
-    shared.is_playing.store(true, Ordering::Release);
+    shared.resume_intent.store(true, Ordering::Release);
 
     let (mss, hint) = media_source_stream(source).context("failed to open media source")?;
 
@@ -859,7 +916,7 @@ fn decode_file_to_queue(
 
     {
         let mut s = lock_status(&shared);
-        s.state = PlaybackState::Playing;
+        s.state = PlaybackState::Buffering;
         s.duration = duration;
     }
 
@@ -916,16 +973,27 @@ fn decode_file_to_queue(
             break 'video_init;
         };
         log::info!("video: {name} {}x{}", w, h);
+        let nal_len_size = video::parse_nal_length_size(extradata) as usize;
         video_state = Some(VideoDecodeState {
             track_id: vtrack.id,
             decoder: dec,
             time_base: vtrack.time_base.unwrap_or_default(),
+            codec: if vp.codec == video_codec_ids::CODEC_ID_H264 {
+                VideoCodecKind::H264 { nal_len_size }
+            } else {
+                VideoCodecKind::Av1
+            },
+            need_keyframe: false,
         });
     }
+
+    let mut preroll_active = true;
+    let preroll_min = (out_rate as usize * out_channels) / 4;
 
     if let Some((target, serial)) = initial_seek {
         if let Some(ref mut vs) = video_state {
             vs.decoder.reset();
+            vs.need_keyframe = true;
         }
         perform_seek(
             &mut *format,
@@ -947,8 +1015,10 @@ fn decode_file_to_queue(
             CommandAction::Load(path) => return Ok(DecodeOutcome::Load(path)),
             CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
             CommandAction::Seek(target, serial) => {
+                let was_playing = shared.is_playing.load(Ordering::Acquire);
                 if let Some(ref mut vs) = video_state {
                     vs.decoder.reset();
+                    vs.need_keyframe = true;
                 }
                 perform_seek(
                     &mut *format,
@@ -962,6 +1032,9 @@ fn decode_file_to_queue(
                     out_rate,
                 );
                 resampler.reset();
+                shared.resume_intent.store(was_playing, Ordering::Release);
+                lock_status(&shared).state = PlaybackState::Buffering;
+                preroll_active = true;
             }
         }
 
@@ -989,6 +1062,18 @@ fn decode_file_to_queue(
                                 return Ok(DecodeOutcome::Shutdown);
                             }
                         }
+                    }
+                }
+                if preroll_active {
+                    preroll_active = false;
+                    let resume = shared.resume_intent.load(Ordering::Acquire);
+                    if resume {
+                        shared.is_playing.store(true, Ordering::Release);
+                        lock_status(&shared).state = PlaybackState::Playing;
+                    } else {
+                        lock_status(&shared).state = PlaybackState::Paused;
+                        flush_audio_queue(flush_rx);
+                        return Ok(DecodeOutcome::Idle);
                     }
                 }
                 match wait_until_queue_drained(cmd_rx, &shared, flush_rx) {
@@ -1020,6 +1105,18 @@ fn decode_file_to_queue(
                                 return Ok(DecodeOutcome::Shutdown);
                             }
                         }
+                    }
+                }
+                if preroll_active {
+                    preroll_active = false;
+                    let resume = shared.resume_intent.load(Ordering::Acquire);
+                    if resume {
+                        shared.is_playing.store(true, Ordering::Release);
+                        lock_status(&shared).state = PlaybackState::Playing;
+                    } else {
+                        lock_status(&shared).state = PlaybackState::Paused;
+                        flush_audio_queue(flush_rx);
+                        return Ok(DecodeOutcome::Idle);
                     }
                 }
                 match wait_until_queue_drained(cmd_rx, &shared, flush_rx) {
@@ -1077,7 +1174,8 @@ fn decode_file_to_queue(
         if packet.track_id != track_id {
             if let Some(ref mut vs) = video_state {
                 if packet.track_id == vs.track_id {
-                    handle_video_packet(vs, &packet, video_tx);
+                    let serial = shared.load_serial.load(Ordering::Acquire);
+                    handle_video_packet(vs, &packet, video_tx, serial);
                 }
             }
             continue;
@@ -1119,8 +1217,10 @@ fn decode_file_to_queue(
                             CommandAction::Load(path) => return Ok(DecodeOutcome::Load(path)),
                             CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
                             CommandAction::Seek(target, serial) => {
+                                let was_playing = shared.is_playing.load(Ordering::Acquire);
                                 if let Some(ref mut vs) = video_state {
                                     vs.decoder.reset();
+                                    vs.need_keyframe = true;
                                 }
                                 perform_seek(
                                     &mut *format,
@@ -1134,6 +1234,9 @@ fn decode_file_to_queue(
                                     out_rate,
                                 );
                                 resampler.reset();
+                                shared.resume_intent.store(was_playing, Ordering::Release);
+                                lock_status(&shared).state = PlaybackState::Buffering;
+                                preroll_active = true;
                                 // Drop the in-flight sample; it's pre-seek audio.
                                 break;
                             }
@@ -1144,6 +1247,15 @@ fn decode_file_to_queue(
                     }
                     Err(TrySendError::Disconnected(_)) => return Ok(DecodeOutcome::Shutdown),
                 }
+            }
+        }
+        if preroll_active && sample_tx.len() >= preroll_min {
+            preroll_active = false;
+            if shared.resume_intent.load(Ordering::Acquire) {
+                shared.is_playing.store(true, Ordering::Release);
+                lock_status(&shared).state = PlaybackState::Playing;
+            } else {
+                lock_status(&shared).state = PlaybackState::Paused;
             }
         }
     }
@@ -1168,8 +1280,6 @@ fn perform_seek(
 
     let time = Time::try_from_secs_f64(clamped.as_secs_f64()).unwrap_or(Time::ZERO);
 
-    let was_playing = shared.is_playing.load(Ordering::Acquire);
-
     match format.seek(
         SeekMode::Accurate,
         SeekTo::Time {
@@ -1180,7 +1290,6 @@ fn perform_seek(
         Ok(_seeked_to) => {
             decoder.reset();
             reset_audio_queue_and_clock(shared, flush_rx);
-            shared.is_playing.store(was_playing, Ordering::Release);
             // Don't overwrite a newer seek's optimistic clock rebase.
             if shared.seek_serial.load(Ordering::Acquire) == serial {
                 let base = (clamped.as_secs_f64() * out_rate as f64) as u64;
@@ -1223,6 +1332,9 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>) -> CommandAction {
                     shared.is_playing.store(true, Ordering::Release);
                     s.state = PlaybackState::Playing;
                 }
+                PlaybackState::Buffering => {
+                    shared.resume_intent.store(true, Ordering::Release);
+                }
                 PlaybackState::Ended => {
                     if let Some(source) = s.source.clone() {
                         return CommandAction::Load(source);
@@ -1239,8 +1351,12 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>) -> CommandAction {
         Command::Pause => {
             shared.is_playing.store(false, Ordering::Release);
             let mut s = lock_status(shared);
-            if s.state == PlaybackState::Playing {
-                s.state = PlaybackState::Paused;
+            match s.state {
+                PlaybackState::Playing => s.state = PlaybackState::Paused,
+                PlaybackState::Buffering => {
+                    shared.resume_intent.store(false, Ordering::Release);
+                }
+                _ => {}
             }
             CommandAction::Continue
         }
@@ -1264,6 +1380,10 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>) -> CommandAction {
                 PlaybackState::Paused => {
                     shared.is_playing.store(true, Ordering::Release);
                     s.state = PlaybackState::Playing;
+                }
+                PlaybackState::Buffering => {
+                    let new_intent = !shared.resume_intent.load(Ordering::Acquire);
+                    shared.resume_intent.store(new_intent, Ordering::Release);
                 }
             }
             CommandAction::Continue
@@ -1290,7 +1410,6 @@ fn reset_audio_queue_and_clock(shared: &Shared, flush_rx: &Receiver<f32>) {
     flush_audio_queue(flush_rx);
     shared.played_frames.store(0, Ordering::Release);
     shared.base_frames.store(0, Ordering::Release);
-    shared.generation.fetch_add(1, Ordering::Release);
 }
 
 fn wait_until_queue_drained(

@@ -42,7 +42,7 @@ material_symbols! {
     graphic_eq     : '\u{E1B8}',
 }
 use repose_ui::lazy_states::LazyColumnState;
-use repose_ui::{Box, Column, Image, LazyColumn, LazyColumnConfig, Row, Spacer, Text, ViewExt};
+use repose_ui::{Box, Column, Image, LazyColumn, LazyColumnConfig, Row, Spacer, Text, ViewExt, ZStack};
 
 #[derive(Clone)]
 struct Entry {
@@ -92,11 +92,16 @@ struct VideoSink {
     frame_duration: f64,
     buffered: Vec<DecodedVideoFrame>,
     last_seek_serial: u64,
+
+    visible: bool,
+    last_load_serial: u64,
+    aspect: f32,
 }
 
 impl VideoSink {
     fn new(rx: crossbeam_channel::Receiver<DecodedVideoFrame>, clock: AudioPlayer) -> Self {
         let serial = clock.seek_serial();
+        let load_serial = clock.load_serial();
         Self {
             rx,
             handles: [None, None],
@@ -106,25 +111,46 @@ impl VideoSink {
             frame_duration: 1.0 / 30.0,
             buffered: Vec::new(),
             last_seek_serial: serial,
+
+            visible: false,
+            last_load_serial: load_serial,
+            aspect: 16.0 / 9.0,
         }
     }
 
     fn poll(&mut self, ctx: &RenderContext) {
-        // Flush on seek: check if seek serial changed
+        let current_load_serial = self.clock.load_serial();
         let current_serial = self.clock.seek_serial();
-        if current_serial != self.last_seek_serial {
+
+        // New file: hard reset, blank the video
+        if current_load_serial != self.last_load_serial {
+            self.last_load_serial = current_load_serial;
             self.last_seek_serial = current_serial;
             self.buffered.clear();
             self.frame_timer = None;
             self.frame_duration = 1.0 / 30.0;
-            // Drain any stale frames from channel
+            self.visible = false;
+            while self.rx.try_recv().is_ok() {}
+        // Seek within same file: drop stale queued frames, keep the last frame visible
+        } else if current_serial != self.last_seek_serial {
+            self.last_seek_serial = current_serial;
+            self.buffered.clear();
+            self.frame_timer = None;
+            self.frame_duration = 1.0 / 30.0;
             while self.rx.try_recv().is_ok() {}
         }
 
-        // Drain available frames into buffer
+        // Drain available frames into buffer, filtering by load_serial
         while let Ok(frame) = self.rx.try_recv() {
-            self.buffered.push(frame);
+            if frame.load_serial == current_load_serial {
+                self.aspect = frame.width as f32 / frame.height.max(1) as f32;
+                self.buffered.push(frame);
+            }
         }
+
+        // Sort by PTS for proper display order (H.264 B-frames etc.)
+        self.buffered.sort_by_key(|f| f.pts);
+
         if self.buffered.is_empty() {
             return;
         }
@@ -179,7 +205,9 @@ impl VideoSink {
                     let frame = self.buffered.remove(0);
 
                     // Convert YUV420p to NV12 (interleave U and V planes)
-                    let uv_size = (frame.width / 2 * frame.height / 2) as usize;
+                    let uv_w = frame.width.div_ceil(2) as usize;
+                    let uv_h = frame.height.div_ceil(2) as usize;
+                    let uv_size = uv_w * uv_h;
                     let mut uv = Vec::with_capacity(uv_size * 2);
                     for i in 0..uv_size {
                         uv.push(frame.u_plane.get(i).copied().unwrap_or(128));
@@ -195,11 +223,12 @@ impl VideoSink {
                         frame.height,
                         frame.y_plane,
                         uv,
-                        true, // full_range = JPEG
+                        true, // video is usually limited-range, not JPEG/full-range
                     );
 
                     // Swap active handle
                     self.active_idx = inactive;
+                    self.visible = true;
 
                     // Advance frame timer
                     if let Some(ft) = self.frame_timer {
@@ -214,12 +243,15 @@ impl VideoSink {
     }
 
     fn active_handle(&self) -> Option<ImageHandle> {
-        // Only return a handle after we've uploaded at least one frame
-        if self.handles[self.active_idx].is_some() {
+        if self.visible {
             self.handles[self.active_idx]
         } else {
             None
         }
+    }
+
+    fn aspect(&self) -> f32 {
+        self.aspect.clamp(0.25, 4.0)
     }
 }
 
@@ -461,8 +493,10 @@ fn App(player: AudioPlayer, pending: PendingFiles, video_sink: &Rc<RefCell<Video
 
     let snap = player.snapshot();
 
-    if matches!(snap.state, PlaybackState::Playing | PlaybackState::Loading)
-        || scrubbing.get().is_some()
+    if matches!(
+        snap.state,
+        PlaybackState::Playing | PlaybackState::Loading | PlaybackState::Buffering
+    ) || scrubbing.get().is_some()
     {
         request_frame();
     }
@@ -500,7 +534,10 @@ fn App(player: AudioPlayer, pending: PendingFiles, video_sink: &Rc<RefCell<Video
         pending_advance.set(true);
     }
 
-    if matches!(snap.state, PlaybackState::Playing | PlaybackState::Loading) {
+    if matches!(
+        snap.state,
+        PlaybackState::Playing | PlaybackState::Loading | PlaybackState::Buffering
+    ) {
         advance_armed.set(true);
     }
 
@@ -685,22 +722,37 @@ fn NowPlayingCard(
     )
     .child((
         if has_video {
-            // Video surface: fill card width, maintain aspect ratio
-            Row(Modifier::new()
-                .fill_max_width()
-                .gap(16.0)
-                .align_items(AlignItems::CENTER))
-            .child((
+            let aspect = video_sink.borrow().aspect();
+            Column(Modifier::new().fill_max_width().gap(12.0)).child((
                 Box(Modifier::new()
                     .fill_max_width()
-                    .aspect_ratio(16.0 / 9.0)
+                    .aspect_ratio(aspect)
                     .clip_rounded(20.0)
                     .background(art_bg))
-                .child(Image(
-                    Modifier::new().fill_max_size(),
-                    video_handle.unwrap(),
-                )),
-                Column(Modifier::new().weight(1.0).gap(6.0)).child((
+                .child(ZStack(Modifier::new().fill_max_size()).child((
+                    Image(Modifier::new().fill_max_size(), video_handle.unwrap()),
+                    if snap.state == PlaybackState::Buffering {
+                        Box(Modifier::new()
+                            .fill_max_size()
+                            .background(theme().surface.with_alpha(100))
+                            .align_items(AlignItems::CENTER)
+                            .justify_content(JustifyContent::CENTER))
+                        .child(m3::CircularProgressIndicator(
+                            None,
+                            m3::CircularProgressIndicatorConfig {
+                                color: theme().primary,
+                                ..Default::default()
+                            },
+                        ))
+                    } else {
+                        Box(Modifier::new().height(0.0))
+                    },
+                ))),
+                Row(Modifier::new()
+                    .fill_max_width()
+                    .gap(16.0)
+                    .align_items(AlignItems::CENTER))
+                .child((Column(Modifier::new().weight(1.0).gap(6.0)).child((
                     Text(title).size(20.0).single_line().overflow_ellipsize(),
                     Text(sub_line)
                         .size(13.0)
@@ -708,7 +760,7 @@ fn NowPlayingCard(
                         .single_line()
                         .overflow_ellipsize(),
                     StatusChip(snap.state),
-                )),
+                )),)),
             ))
         } else {
             Row(Modifier::new()
@@ -801,6 +853,11 @@ fn StatusChip(state: PlaybackState) -> View {
         ),
         PlaybackState::Loading => (
             "Loading…",
+            theme().tertiary_container,
+            theme().on_tertiary_container,
+        ),
+        PlaybackState::Buffering => (
+            "Buffering…",
             theme().tertiary_container,
             theme().on_tertiary_container,
         ),
