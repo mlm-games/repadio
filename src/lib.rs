@@ -223,7 +223,7 @@ impl VideoSink {
                         frame.height,
                         frame.y_plane,
                         uv,
-                        true, // video is usually limited-range, not JPEG/full-range
+                        frame.color_info,
                     );
 
                     // Swap active handle

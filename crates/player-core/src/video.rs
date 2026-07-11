@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use repose_core::color::ColorInfo;
 use videoson::{
     NalFormat, VideoCodecParams, VideoDecoder as VideoDecoderTrait, VideoDecoderOptions,
     codec_h264::H264Decoder, codec_rav1d::Rav1dSafeDecoder,
@@ -22,6 +23,7 @@ pub struct DecodedVideoFrame {
     pub v_plane: Vec<u8>,
     pub pts: Duration,
     pub load_serial: u64,
+    pub color_info: ColorInfo,
 }
 
 pub struct VideoDecoder {
@@ -137,6 +139,7 @@ impl VideoDecoder {
                 v_plane,
                 pts,
                 load_serial,
+                color_info: ColorInfo::default(),
             });
         }
         frames
