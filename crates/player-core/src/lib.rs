@@ -835,9 +835,7 @@ fn handle_video_packet(
     min_pts: Option<Duration>,
 ) {
     let is_sync = match state.codec {
-        VideoCodecKind::H264 { nal_len_size } => {
-            h264_avcc_has_idr(&packet.data, nal_len_size)
-        }
+        VideoCodecKind::H264 { nal_len_size } => h264_avcc_has_idr(&packet.data, nal_len_size),
         VideoCodecKind::Av1 => true,
     };
 
@@ -1306,7 +1304,11 @@ fn decode_file_to_queue(
                 shared.is_playing.store(resume, Ordering::Release);
                 {
                     let mut s = lock_status(&shared);
-                    s.state = if resume { PlaybackState::Playing } else { PlaybackState::Paused };
+                    s.state = if resume {
+                        PlaybackState::Playing
+                    } else {
+                        PlaybackState::Paused
+                    };
                 }
                 seek_phase = None;
             }
@@ -1342,7 +1344,10 @@ fn perform_seek(
 
     match format.seek(
         SeekMode::Accurate,
-        SeekTo::Time { time, track_id: Some(seek_track) },
+        SeekTo::Time {
+            time,
+            track_id: Some(seek_track),
+        },
     ) {
         Ok(_) => {
             decoder.reset();

@@ -7,8 +7,10 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
+
+use web_time::Instant;
 
 use player_core::video::DecodedVideoFrame;
 use player_core::{AudioPlayer, MediaSource, PlaybackState, TrackMeta, probe_media_source};
@@ -42,7 +44,9 @@ material_symbols! {
     graphic_eq     : '\u{E1B8}',
 }
 use repose_ui::lazy_states::LazyColumnState;
-use repose_ui::{Box, Column, Image, LazyColumn, LazyColumnConfig, Row, Spacer, Text, ViewExt, ZStack};
+use repose_ui::{
+    Box, Column, Image, LazyColumn, LazyColumnConfig, Row, Spacer, Text, ViewExt, ZStack,
+};
 
 #[derive(Clone)]
 struct Entry {
@@ -912,11 +916,13 @@ fn TransportBar(
             },
         ),
         m3::FilledIconButton(
-            Icon(if state == PlaybackState::Playing || state == PlaybackState::Buffering {
-                Symbols::pause
-            } else {
-                Symbols::play_arrow
-            })
+            Icon(
+                if state == PlaybackState::Playing || state == PlaybackState::Buffering {
+                    Symbols::pause
+                } else {
+                    Symbols::play_arrow
+                },
+            )
             .size(30.0),
             {
                 let player = player.clone();
