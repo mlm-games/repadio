@@ -123,7 +123,6 @@ mime_type = "audio/*"
 
 [dependencies]
 anyhow.workspace = true
-env_logger.workspace = true
 log.workspace = true
 crossbeam-channel.workspace = true
 
@@ -144,6 +143,9 @@ web-time.workspace = true
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15"
 rlobkit-app-events = { workspace = true, features = ["jni-bridge"] }
+
+[target.'cfg(not(any(target_os = "android", target_arch = "wasm32")))'.dependencies]
+env_logger.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen.workspace = true
