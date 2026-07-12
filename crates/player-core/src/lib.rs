@@ -787,7 +787,6 @@ enum VideoCodecKind {
     H264 { nal_len_size: usize },
     Hevc { nal_len_size: usize },
     Av1,
-    Vp9,
 }
 
 struct VideoDecodeState {
@@ -871,10 +870,6 @@ fn hevc_hvcc_has_keyframe(data: &[u8], nal_len_size: usize) -> bool {
     false
 }
 
-fn vp9_is_keyframe(data: &[u8]) -> bool {
-    data.first().map_or(false, |&b| (b & 0x01) == 0)
-}
-
 fn gcd(a: u64, b: u64) -> u64 {
     if b == 0 { a } else { gcd(b, a % b) }
 }
@@ -891,7 +886,6 @@ fn handle_video_packet(
         VideoCodecKind::H264 { nal_len_size } => h264_avcc_has_idr(&packet.data, nal_len_size),
         VideoCodecKind::Hevc { nal_len_size } => hevc_hvcc_has_keyframe(&packet.data, nal_len_size),
         VideoCodecKind::Av1 => true,
-        VideoCodecKind::Vp9 => vp9_is_keyframe(&packet.data),
     };
 
     if state.need_keyframe {
@@ -1065,14 +1059,6 @@ fn decode_file_to_queue(
                     break 'video_init;
                 }
             }
-        } else if vp.codec == video_codec_ids::CODEC_ID_VP9 {
-            match video::VideoDecoder::new_vp9(w, h, extradata) {
-                Ok(d) => ("VP9", d),
-                Err(e) => {
-                    log::warn!("failed to init VP9 decoder: {e}");
-                    break 'video_init;
-                }
-            }
         } else {
             log::info!("unsupported video codec {:?}, skipping", vp.codec);
             break 'video_init;
@@ -1095,8 +1081,6 @@ fn decode_file_to_queue(
                 VideoCodecKind::H264 { nal_len_size }
             } else if vp.codec == video_codec_ids::CODEC_ID_HEVC {
                 VideoCodecKind::Hevc { nal_len_size }
-            } else if vp.codec == video_codec_ids::CODEC_ID_VP9 {
-                VideoCodecKind::Vp9
             } else {
                 VideoCodecKind::Av1
             },

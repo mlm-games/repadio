@@ -5,7 +5,7 @@ use repose_core::color::ColorInfo;
 use videoson::{
     NalFormat, VideoCodecParams, VideoDecoder as VideoDecoderTrait, VideoDecoderOptions,
     VideoOutputFormat, codec_h264::H264Decoder, codec_h265::H265Decoder,
-    codec_rav1d::Rav1dSafeDecoder, codec_vp9::Vp9Decoder,
+    codec_rav1d::Rav1dSafeDecoder,
 };
 
 #[derive(Debug, Clone)]
@@ -230,28 +230,6 @@ impl VideoDecoder {
         };
         let inner = H265Decoder::try_new(&params, &opts)
             .map_err(|e| anyhow::anyhow!("videoson H.265 init: {e:?}"))?;
-        Ok(Self {
-            inner: Box::new(inner),
-            reorder: Vec::new(),
-
-        })
-    }
-
-    pub fn new_vp9(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
-        let params = VideoCodecParams {
-            codec: videoson::CodecType::VP9,
-            coded_width: width,
-            coded_height: height,
-            extradata: extradata.to_vec(),
-            nal_format: None,
-        };
-        let opts =         VideoDecoderOptions {
-            verify: false,
-            output_format: VideoOutputFormat::Nv12,
-            tolerate_truncated_chroma: false,
-        };
-        let inner = Vp9Decoder::try_new(&params, &opts)
-            .map_err(|e| anyhow::anyhow!("videoson VP9 init: {e:?}"))?;
         Ok(Self {
             inner: Box::new(inner),
             reorder: Vec::new(),
