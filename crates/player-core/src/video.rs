@@ -27,10 +27,16 @@ pub struct DecodedVideoFrame {
     pub pts: Duration,
     pub load_serial: u64,
     pub color_info: ColorInfo,
+    /// Picture Order Count (display order index).
+    /// Set by the H.265 decoder; `None` for other codecs/decodecs.
+    pub poc: Option<i32>,
 }
 
 pub struct VideoDecoder {
     inner: Box<dyn VideoDecoderTrait>,
+    /// Reorder buffer that holds frames by PTS and emits the smallest-PTS
+    /// frame each call. Cross-batch reordering is handled by VideoSink::poll().
+    reorder: Vec<DecodedVideoFrame>,
 }
 
 impl VideoDecoder {
@@ -48,11 +54,14 @@ impl VideoDecoder {
         let opts = VideoDecoderOptions {
             verify: false,
             output_format: VideoOutputFormat::Nv12,
+            tolerate_truncated_chroma: false,
         };
         let inner = H264Decoder::try_new(&params, &opts)
             .map_err(|e| anyhow::anyhow!("videoson H.264 init: {e:?}"))?;
         Ok(Self {
             inner: Box::new(inner),
+            reorder: Vec::new(),
+
         })
     }
 
@@ -64,14 +73,17 @@ impl VideoDecoder {
             extradata: extradata.to_vec(),
             nal_format: None,
         };
-        let opts = VideoDecoderOptions {
+        let opts =         VideoDecoderOptions {
             verify: false,
             output_format: VideoOutputFormat::Nv12,
+            tolerate_truncated_chroma: false,
         };
         let inner = Rav1dSafeDecoder::try_new(&params, &opts)
             .map_err(|e| anyhow::anyhow!("videoson AV1 init: {e:?}"))?;
         Ok(Self {
             inner: Box::new(inner),
+            reorder: Vec::new(),
+
         })
     }
 
@@ -89,60 +101,83 @@ impl VideoDecoder {
             .map_err(|e| anyhow::anyhow!("videoson send: {e:?}"))
     }
 
+    pub fn set_frame_duration_micros(&mut self, us: u64) {
+        self.inner.set_frame_duration_micros(us);
+    }
+
+    fn plane_u8(&self, data: &videoson::PlaneData, width: usize, height: usize, stride: usize) -> Vec<u8> {
+        match data {
+            videoson::PlaneData::U8(s) => {
+                let mut plane = Vec::with_capacity(width * height);
+                for row in 0..height {
+                    let start = row * stride;
+                    if start + width > s.len() {
+                        break;
+                    }
+                    plane.extend_from_slice(&s[start..start + width]);
+                }
+                plane
+            }
+            videoson::PlaneData::U16(s) => {
+                let mut plane = Vec::with_capacity(width * height);
+                for row in 0..height {
+                    let start = row * stride;
+                    for col in 0..width {
+                        if start + col >= s.len() {
+                            break;
+                        }
+                        plane.push((s[start + col] >> 2) as u8);
+                    }
+                }
+                plane
+            }
+        }
+    }
+
     pub fn drain_frames(
         &mut self,
         fallback_pts: Duration,
         load_serial: u64,
+        frame_duration_us: u64,
     ) -> Vec<DecodedVideoFrame> {
-        let mut frames = Vec::new();
-
         while let Ok(Some(frame)) = self.inner.receive_frame() {
-            // NV12: [Y, UV]
             if frame.plane_data.len() < 2 {
+                log::warn!("video drain: frame with <2 planes, skipping");
                 continue;
             }
-
-            let y_data = match &frame.plane_data[0].data {
-                videoson::PlaneData::U8(v) => v.as_slice(),
-                _ => continue,
-            };
-            let uv_data = match &frame.plane_data[1].data {
-                videoson::PlaneData::U8(v) => v.as_slice(),
-                _ => continue,
-            };
 
             let w = frame.width as usize;
             let h = frame.height as usize;
             let y_stride = frame.plane_data[0].stride;
             let uv_stride = frame.plane_data[1].stride;
-
-            // Defensive tight-pack (decoders already pack, but keep safe).
-            let mut y_plane = Vec::with_capacity(w * h);
-            for row in 0..h {
-                let start = row * y_stride;
-                if start + w > y_data.len() {
-                    break;
-                }
-                y_plane.extend_from_slice(&y_data[start..start + w]);
-            }
-
             let uv_w = ((frame.width + 1) / 2 * 2) as usize;
             let uv_h = ((frame.height + 1) / 2) as usize;
-            let mut uv_plane = Vec::with_capacity(uv_w * uv_h);
-            for row in 0..uv_h {
-                let start = row * uv_stride;
-                if start + uv_w > uv_data.len() {
-                    break;
-                }
-                uv_plane.extend_from_slice(&uv_data[start..start + uv_w]);
-            }
 
-            let pts = frame
-                .pts
-                .map(|p| Duration::from_micros(p.max(0) as u64))
-                .unwrap_or(fallback_pts);
+            let y_plane = self.plane_u8(&frame.plane_data[0].data, w, h, y_stride);
+            let uv_plane = self.plane_u8(&frame.plane_data[1].data, uv_w, uv_h, uv_stride);
 
-            frames.push(DecodedVideoFrame {
+            // PTS from container may be non-monotonic when the muxer assumed
+            // B-frame reordering but the bitstream has none.  Recompute from
+            // POC when frame_duration_us is provided.
+            let pts = if frame_duration_us > 0 {
+                frame
+                    .poc
+                    .filter(|&p| p >= 0)
+                    .map(|p| Duration::from_micros(p as u64 * frame_duration_us))
+                    .unwrap_or(
+                        frame
+                            .pts
+                            .map(|p| Duration::from_micros(p.max(0) as u64))
+                            .unwrap_or(fallback_pts),
+                    )
+            } else {
+                frame
+                    .pts
+                    .map(|p| Duration::from_micros(p.max(0) as u64))
+                    .unwrap_or(fallback_pts)
+            };
+
+            self.reorder.push(DecodedVideoFrame {
                 width: frame.width,
                 height: frame.height,
                 y_plane,
@@ -150,17 +185,33 @@ impl VideoDecoder {
                 pts,
                 load_serial,
                 color_info: ColorInfo::default(),
+                poc: frame.poc,
             });
         }
 
-        frames
+        if self.reorder.is_empty() {
+            return Vec::new();
+        }
+
+        // Sort by PTS to handle decoders that emit frames out of display
+        // order (e.g. H.264 with B-frames).  The H.265 decoder emits in
+        // strict POC order, so this sort is redundant but harmless.
+        // No hold-back: frames leave immediately so the renderer's
+        // VideoSink can schedule them by PTS without a 1-frame delay.
+        self.reorder.sort_by_key(|f| f.pts);
+        return self.reorder.drain(..).collect();
     }
 
-    pub fn finish(&mut self) -> Result<Vec<DecodedVideoFrame>> {
+    pub fn finish(&mut self, frame_duration_us: u64) -> Result<Vec<DecodedVideoFrame>> {
         self.inner
             .send_eos()
             .map_err(|e| anyhow::anyhow!("videoson eos: {e:?}"))?;
-        Ok(self.drain_frames(Duration::ZERO, 0))
+        // Drain remaining frames from decoder (including decoder's pending
+        // frames flushed by send_eos).  No hold-back in drain_frames, so
+        // self.reorder is always empty after the call.
+        let mut result = self.drain_frames(Duration::ZERO, 0, frame_duration_us);
+        result.extend(self.reorder.drain(..));
+        Ok(result)
     }
 
     pub fn new_hevc(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
@@ -172,14 +223,17 @@ impl VideoDecoder {
             extradata: extradata.to_vec(),
             nal_format: Some(NalFormat::Hvcc { nal_len_size }),
         };
-        let opts = VideoDecoderOptions {
+        let opts =         VideoDecoderOptions {
             verify: false,
             output_format: VideoOutputFormat::Nv12,
+            tolerate_truncated_chroma: false,
         };
         let inner = H265Decoder::try_new(&params, &opts)
             .map_err(|e| anyhow::anyhow!("videoson H.265 init: {e:?}"))?;
         Ok(Self {
             inner: Box::new(inner),
+            reorder: Vec::new(),
+
         })
     }
 
@@ -191,19 +245,23 @@ impl VideoDecoder {
             extradata: extradata.to_vec(),
             nal_format: None,
         };
-        let opts = VideoDecoderOptions {
+        let opts =         VideoDecoderOptions {
             verify: false,
             output_format: VideoOutputFormat::Nv12,
+            tolerate_truncated_chroma: false,
         };
         let inner = Vp9Decoder::try_new(&params, &opts)
             .map_err(|e| anyhow::anyhow!("videoson VP9 init: {e:?}"))?;
         Ok(Self {
             inner: Box::new(inner),
+            reorder: Vec::new(),
+
         })
     }
 
     pub fn reset(&mut self) {
-        self.inner.reset();
+        let _ = self.inner.reset();
+        self.reorder.clear();
     }
 }
 

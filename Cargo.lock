@@ -765,12 +765,11 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "clipawl"
-version = "0.3.2"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b89902e9a5f672dc56123de78c52ef825f9acab979842b8fa2d4689f812ddfc"
+checksum = "9afedf8fd609b74a1d75a30f5e6901cd716c4550a533991993bac0f6ac6f6e6e"
 dependencies = [
  "cfg-if",
- "clipboard_x11",
  "jni",
  "js-sys",
  "log",
@@ -781,16 +780,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "wl-clipboard-rs",
-]
-
-[[package]]
-name = "clipboard_x11"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd63e33452ffdafd39924c4f05a5dd1e94db646c779c6bd59148a3d95fff5ad4"
-dependencies = [
- "thiserror 2.0.18",
- "x11rb",
+ "x11-clipboard",
 ]
 
 [[package]]
@@ -2777,6 +2767,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxideav-bitstream"
+version = "0.0.2"
+source = "git+https://github.com/OxideAV/oxideav-bitstream#a70a423151403526a17c3da705d89bec30b708f1"
+
+[[package]]
 name = "oxideav-core"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2788,9 +2783,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxideav-vp8"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "043a9d81b6c0cb1d7abb3653c53a8463063637836ed469f260bb4cc60f7ab917"
+
+[[package]]
 name = "oxideav-vp9"
 version = "0.0.12"
-source = "git+https://github.com/OxideAV/oxideav-vp9#50360260bc9aded0d6b47144de580f1e28a32220"
+source = "git+https://github.com/OxideAV/oxideav-vp9?rev=50360260bc9aded0d6b47144de580f1e28a32220#50360260bc9aded0d6b47144de580f1e28a32220"
 dependencies = [
  "oxideav-core",
 ]
@@ -3374,6 +3375,7 @@ dependencies = [
  "repose-ui",
  "rlobkit-app-events",
  "rlobkit-dialogs",
+ "symphonia",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -3385,9 +3387,9 @@ dependencies = [
 
 [[package]]
 name = "repose-core"
-version = "0.23.1"
+version = "0.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f54b1b451cc50ee47545b6b679e82711a7b218bf64e9cfc4558c7e030dadd24"
+checksum = "eea3b9fb680e1539f665ae0fae9888ae304ce6552d8710b445453894f0c1d995"
 dependencies = [
  "bitflags 2.13.0",
  "log",
@@ -3403,9 +3405,9 @@ dependencies = [
 
 [[package]]
 name = "repose-devtools"
-version = "0.23.1"
+version = "0.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffa8d386ae70171869ff6af7e56e2b356fcd1d09e839e8e4569e2449ed59828a"
+checksum = "ba8a995cb4826e26a1418363b9ec56b55b3f1e555e6cd74cbc863bb969105fd6"
 dependencies = [
  "log",
  "repose-core",
@@ -3414,9 +3416,9 @@ dependencies = [
 
 [[package]]
 name = "repose-macros"
-version = "0.23.1"
+version = "0.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b94bd8c8e86cd3579a94542aab82418c9b0bdf30e60b1f1c015a224a3025cee8"
+checksum = "5219dfd446fa609e3a512b42d9ff2d0f467a42ae808bfb47498b532a28c88aa5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3425,9 +3427,9 @@ dependencies = [
 
 [[package]]
 name = "repose-material"
-version = "0.23.1"
+version = "0.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99ceba339e7b2232edaa57019d32e3495ed8a35f5775b8677f2473b096c62389"
+checksum = "9be4aa38d3381f0ae47fd126ed46c5c3d10a99d4a2d1bf8cff2361f907d22113"
 dependencies = [
  "repose-core",
  "repose-text",
@@ -3437,9 +3439,9 @@ dependencies = [
 
 [[package]]
 name = "repose-navigation"
-version = "0.23.1"
+version = "0.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "967c34e8d629cf27a20ade7482486b1bd44b5d250fc20afbd66975f79b608cb4"
+checksum = "737a3ea40f0522eb09b4798f43fcd4ca029a0cf96529c66acc55a818246331f1"
 dependencies = [
  "log",
  "repose-core",
@@ -3450,9 +3452,9 @@ dependencies = [
 
 [[package]]
 name = "repose-platform"
-version = "0.23.1"
+version = "0.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43ebf6493c405f50d4dc3c1a43769341ca084b79800e90290c715e68e21e0d9c"
+checksum = "52f633d712c053e8f4465829420c3a913a5350984e9ae38fb11b2aa618204bcb"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -3479,9 +3481,9 @@ dependencies = [
 
 [[package]]
 name = "repose-render-wgpu"
-version = "0.23.1"
+version = "0.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe4e985f9ac79956f297071a9f0ab300c93a10cdb9176207ef99bd057b8a8612"
+checksum = "5d0a35d925483a4c14c9d0bfe2f6b5e3f92b6cca159881ec251824d72b48d826"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -3498,9 +3500,9 @@ dependencies = [
 
 [[package]]
 name = "repose-text"
-version = "0.23.1"
+version = "0.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0ceecb53ef6e7b01ed3f60a2e179233e7ad85c57d0a05d6327b9f9087cb5894"
+checksum = "201ca9c9e182320a0f2108373719327562640a61bee4bbbf545467bfe3870098"
 dependencies = [
  "font-awl",
  "log",
@@ -3514,9 +3516,9 @@ dependencies = [
 
 [[package]]
 name = "repose-tree"
-version = "0.23.1"
+version = "0.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5059f5baddfcb72f1d5ba56ffaee3f8e6044a0f8ecf82efce356ff19502ba45c"
+checksum = "29c9d05eed96c4b947400358e693f894c2a7738bd7e33cbf8266866156a5b756"
 dependencies = [
  "log",
  "rapidhash",
@@ -3528,9 +3530,9 @@ dependencies = [
 
 [[package]]
 name = "repose-ui"
-version = "0.23.1"
+version = "0.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d1b06b8a2c58a47bb934e7be03b6286b672b10d56132e96731cee8ca02b9efc"
+checksum = "0c3a07625a4171d5247385bc8b1b3c80fe4b07bbb8e48e6151a8bdd5dbc36b88"
 dependencies = [
  "log",
  "repose-core",
@@ -3645,8 +3647,7 @@ checksum = "fbedf5e104105e8783a77926f1e212ea37e78fd3b38b2c928938a283d083d6f1"
 [[package]]
 name = "rust_h265"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dde60f5842f27ed06f1d84844cacd93d1a159f606365b30a5594c771e6b4eb17"
+source = "git+https://github.com/mlm-games/rust_h265#1d88bd0818c3376563cb15c11d84260b4b464874"
 
 [[package]]
 name = "rustc-hash"
@@ -4012,8 +4013,7 @@ dependencies = [
 [[package]]
 name = "symphonia"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1758d6c853020a7244de03cc3e0185eaea3f58715122422dd3cc7452e6d4c16a"
+source = "git+https://github.com/mlm-games/symphonia#76784078aa808bb537d6b0da37f39fbd3491e091"
 dependencies = [
  "lazy_static",
  "symphonia-bundle-flac",
@@ -4046,8 +4046,7 @@ dependencies = [
 [[package]]
 name = "symphonia-bundle-flac"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee69ad01236a67260b82fd1ff9790dd75ead29f2f46af145e63b7e72273e0e03"
+source = "git+https://github.com/mlm-games/symphonia#76784078aa808bb537d6b0da37f39fbd3491e091"
 dependencies = [
  "log",
  "symphonia-common",
@@ -4058,8 +4057,7 @@ dependencies = [
 [[package]]
 name = "symphonia-bundle-mp3"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "350f1f2f2e19ad4dd315db94304d1eb361b29af070681f94e51b8fdaad769546"
+source = "git+https://github.com/mlm-games/symphonia#76784078aa808bb537d6b0da37f39fbd3491e091"
 dependencies = [
  "lazy_static",
  "log",
@@ -4069,8 +4067,7 @@ dependencies = [
 [[package]]
 name = "symphonia-codec-aac"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1979c515a76371b186aad2feff5f23e21cbec775bf95de08bf1e3af92a2ad76"
+source = "git+https://github.com/mlm-games/symphonia#76784078aa808bb537d6b0da37f39fbd3491e091"
 dependencies = [
  "lazy_static",
  "log",
@@ -4081,8 +4078,7 @@ dependencies = [
 [[package]]
 name = "symphonia-codec-adpcm"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ebbdfd76d6cc5a601c6292a44357c5b7c82f2cd7cdc0f171421f5c5cff0ea1f"
+source = "git+https://github.com/mlm-games/symphonia#76784078aa808bb537d6b0da37f39fbd3491e091"
 dependencies = [
  "log",
  "symphonia-core",
@@ -4091,8 +4087,7 @@ dependencies = [
 [[package]]
 name = "symphonia-codec-alac"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a149cbfc7fb5c405d123a273227d31de17138419552112bf1aa7b73e65827b8"
+source = "git+https://github.com/mlm-games/symphonia#76784078aa808bb537d6b0da37f39fbd3491e091"
 dependencies = [
  "log",
  "symphonia-common",
@@ -4102,8 +4097,7 @@ dependencies = [
 [[package]]
 name = "symphonia-codec-pcm"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50baee168f0e9dcf6ba7fc06e8b57eb62072a4490cc7cf13af77e72baae5d328"
+source = "git+https://github.com/mlm-games/symphonia#76784078aa808bb537d6b0da37f39fbd3491e091"
 dependencies = [
  "log",
  "symphonia-core",
@@ -4112,8 +4106,7 @@ dependencies = [
 [[package]]
 name = "symphonia-codec-vorbis"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45b07b4423cd8e0fc472575909a5554b12c2f58e3c190b38c24f042e732fd8de"
+source = "git+https://github.com/mlm-games/symphonia#76784078aa808bb537d6b0da37f39fbd3491e091"
 dependencies = [
  "log",
  "symphonia-common",
@@ -4123,8 +4116,7 @@ dependencies = [
 [[package]]
 name = "symphonia-common"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8257891ffa7f05e02b58f4761e2abf7e5278c8744fd59e981559e050f86eef55"
+source = "git+https://github.com/mlm-games/symphonia#76784078aa808bb537d6b0da37f39fbd3491e091"
 dependencies = [
  "log",
  "symphonia-core",
@@ -4134,8 +4126,7 @@ dependencies = [
 [[package]]
 name = "symphonia-core"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95ec293b5f288383b72a7bffcade6b2860b642cf66f28b3bd5967349a49938b1"
+source = "git+https://github.com/mlm-games/symphonia#76784078aa808bb537d6b0da37f39fbd3491e091"
 dependencies = [
  "bitflags 2.13.0",
  "bytemuck",
@@ -4149,8 +4140,7 @@ dependencies = [
 [[package]]
 name = "symphonia-format-caf"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cde3ca76633d3400ab57195456c09f8a58d775ff5452329f3f212b6efc8622f5"
+source = "git+https://github.com/mlm-games/symphonia#76784078aa808bb537d6b0da37f39fbd3491e091"
 dependencies = [
  "log",
  "symphonia-common",
@@ -4160,8 +4150,7 @@ dependencies = [
 [[package]]
 name = "symphonia-format-isomp4"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d179a01305b3505940135a9f0180d6ef4b487912748fe97554756f120fbd05e"
+source = "git+https://github.com/mlm-games/symphonia#76784078aa808bb537d6b0da37f39fbd3491e091"
 dependencies = [
  "log",
  "symphonia-common",
@@ -4172,8 +4161,7 @@ dependencies = [
 [[package]]
 name = "symphonia-format-mkv"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb17713e134f5ad316c2690fa3104590ccc85842cdbcf82c3cd1a845cb08aa74"
+source = "git+https://github.com/mlm-games/symphonia#76784078aa808bb537d6b0da37f39fbd3491e091"
 dependencies = [
  "lazy_static",
  "log",
@@ -4184,8 +4172,7 @@ dependencies = [
 [[package]]
 name = "symphonia-format-ogg"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b05a67e02b1e4fca1a261ba4fe06910a9357489ad8c36aafdd2960e9c6559433"
+source = "git+https://github.com/mlm-games/symphonia#76784078aa808bb537d6b0da37f39fbd3491e091"
 dependencies = [
  "log",
  "symphonia-common",
@@ -4196,8 +4183,7 @@ dependencies = [
 [[package]]
 name = "symphonia-format-riff"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17424452a777666d3eaf09a5c651029b15b6a333812fcc5b5474f2a3f0cff3f0"
+source = "git+https://github.com/mlm-games/symphonia#76784078aa808bb537d6b0da37f39fbd3491e091"
 dependencies = [
  "extended",
  "log",
@@ -4208,8 +4194,7 @@ dependencies = [
 [[package]]
 name = "symphonia-metadata"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a31acf5cd623398a6208e2225d18f4b20f761c55098a796a5247ad516a4a8681"
+source = "git+https://github.com/mlm-games/symphonia#76784078aa808bb537d6b0da37f39fbd3491e091"
 dependencies = [
  "lazy_static",
  "log",
@@ -4544,12 +4529,13 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "videoson"
-version = "0.2.0"
-source = "git+https://github.com/mlm-games/videoson#86f5fda9656e708c301ff5500fbb3ea5413c919b"
+version = "0.4.0"
+source = "git+https://github.com/mlm-games/videoson#683ada93c899b9681d0b437053057e4eb58d662d"
 dependencies = [
  "videoson-codec-h264",
  "videoson-codec-h265",
  "videoson-codec-rav1d",
+ "videoson-codec-vp8",
  "videoson-codec-vp9",
  "videoson-common",
  "videoson-core",
@@ -4558,18 +4544,17 @@ dependencies = [
 
 [[package]]
 name = "videoson-codec-h264"
-version = "0.2.0"
-source = "git+https://github.com/mlm-games/videoson#86f5fda9656e708c301ff5500fbb3ea5413c919b"
+version = "0.4.0"
+source = "git+https://github.com/mlm-games/videoson#683ada93c899b9681d0b437053057e4eb58d662d"
 dependencies = [
  "rust_h264",
- "videoson-common",
  "videoson-core",
 ]
 
 [[package]]
 name = "videoson-codec-h265"
-version = "0.2.0"
-source = "git+https://github.com/mlm-games/videoson#86f5fda9656e708c301ff5500fbb3ea5413c919b"
+version = "0.4.0"
+source = "git+https://github.com/mlm-games/videoson#683ada93c899b9681d0b437053057e4eb58d662d"
 dependencies = [
  "rust_h265",
  "videoson-common",
@@ -4578,38 +4563,47 @@ dependencies = [
 
 [[package]]
 name = "videoson-codec-rav1d"
-version = "0.2.0"
-source = "git+https://github.com/mlm-games/videoson#86f5fda9656e708c301ff5500fbb3ea5413c919b"
+version = "0.4.0"
+source = "git+https://github.com/mlm-games/videoson#683ada93c899b9681d0b437053057e4eb58d662d"
 dependencies = [
  "rav1d-safe",
  "videoson-core",
 ]
 
 [[package]]
+name = "videoson-codec-vp8"
+version = "0.4.0"
+source = "git+https://github.com/mlm-games/videoson#683ada93c899b9681d0b437053057e4eb58d662d"
+dependencies = [
+ "oxideav-vp8",
+ "videoson-core",
+]
+
+[[package]]
 name = "videoson-codec-vp9"
-version = "0.2.0"
-source = "git+https://github.com/mlm-games/videoson#86f5fda9656e708c301ff5500fbb3ea5413c919b"
+version = "0.4.0"
+source = "git+https://github.com/mlm-games/videoson#683ada93c899b9681d0b437053057e4eb58d662d"
 dependencies = [
  "oxideav-vp9",
- "videoson-common",
  "videoson-core",
 ]
 
 [[package]]
 name = "videoson-common"
-version = "0.2.0"
-source = "git+https://github.com/mlm-games/videoson#86f5fda9656e708c301ff5500fbb3ea5413c919b"
+version = "0.4.0"
+source = "git+https://github.com/mlm-games/videoson#683ada93c899b9681d0b437053057e4eb58d662d"
 
 [[package]]
 name = "videoson-core"
-version = "0.2.0"
-source = "git+https://github.com/mlm-games/videoson#86f5fda9656e708c301ff5500fbb3ea5413c919b"
+version = "0.4.0"
+source = "git+https://github.com/mlm-games/videoson#683ada93c899b9681d0b437053057e4eb58d662d"
 
 [[package]]
 name = "videoson-format-ivf"
-version = "0.2.0"
-source = "git+https://github.com/mlm-games/videoson#86f5fda9656e708c301ff5500fbb3ea5413c919b"
+version = "0.4.0"
+source = "git+https://github.com/mlm-games/videoson#683ada93c899b9681d0b437053057e4eb58d662d"
 dependencies = [
+ "oxideav-bitstream",
  "videoson-common",
  "videoson-core",
 ]
@@ -5362,6 +5356,16 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
+
+[[package]]
+name = "x11-clipboard"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "662d74b3d77e396b8e5beb00b9cad6a9eccf40b2ef68cc858784b14c41d535a3"
+dependencies = [
+ "libc",
+ "x11rb",
+]
 
 [[package]]
 name = "x11-dl"

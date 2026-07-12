@@ -172,6 +172,11 @@ impl VideoSink {
             self.frame_timer = Some(now);
         }
 
+        // Compare frame PTS against the audio clock for A/V sync.
+        // The audio clock always advances (via real audio or injected silence
+        // for video-only files).
+        let now_clock = self.clock.position();
+
         // Process frames: find one to display, drop late ones, wait for early ones
         while !self.buffered.is_empty() {
             let pts = self.buffered[0].pts;
@@ -179,22 +184,16 @@ impl VideoSink {
             // Update frame_duration from PTS gaps if we have >1 frame buffered
             if self.buffered.len() > 1 {
                 let next_pts = self.buffered[1].pts;
-                let dur = if next_pts > pts && next_pts < pts + Duration::from_secs(1) {
+                let gap = if next_pts > pts && next_pts < pts + Duration::from_secs(1) {
                     next_pts - pts
                 } else {
                     Duration::from_secs_f64(self.frame_duration)
                 };
-                self.frame_duration = dur.as_secs_f64();
+                self.frame_duration = gap.as_secs_f64();
             }
 
-            // SyncDriver: when clock isn't running (preroll), force-present
-            // the first frame so it shows up immediately.
-            let now_clock = if self.clock.is_playing() {
-                self.clock.position()
-            } else {
-                Duration::MAX
-            };
-            let action = if pts + Duration::from_millis(50) < now_clock {
+            let gap = now_clock.saturating_sub(pts);
+            let action = if gap > Duration::from_millis(50) {
                 player_sync::FrameAction::Drop
             } else if pts <= now_clock {
                 player_sync::FrameAction::PresentNow
@@ -202,15 +201,18 @@ impl VideoSink {
                 player_sync::FrameAction::WaitFor(pts - now_clock)
             };
 
+            let wall_ok = self.frame_timer.map(|ft| now >= ft).unwrap_or(true);
+            let catch_up = pts + Duration::from_secs_f64(self.frame_duration) < now_clock;
+
             match action {
                 player_sync::FrameAction::Drop => {
                     self.buffered.remove(0);
                     continue;
                 }
-                player_sync::FrameAction::WaitFor(_) => {
+                player_sync::FrameAction::WaitFor(_) if !wall_ok && !catch_up => {
                     break;
                 }
-                player_sync::FrameAction::PresentNow => {
+                player_sync::FrameAction::WaitFor(_) | player_sync::FrameAction::PresentNow => {
                     let frame = self.buffered.remove(0);
 
                     // Upload to inactive handle
@@ -227,19 +229,10 @@ impl VideoSink {
 
                     // Swap active handle
                     self.active_idx = inactive;
-                    let was_visible = self.visible;
                     self.visible = true;
 
-                    // Signal video-ready + update position clock.
-                    if !was_visible {
-                        self.clock.mark_video_ready();
-                    }
-                    self.clock.set_video_position(frame.pts);
-
                     // Advance frame timer
-                    if let Some(ft) = self.frame_timer {
-                        self.frame_timer = Some(ft + Duration::from_secs_f64(self.frame_duration));
-                    }
+                    self.frame_timer = Some(now + Duration::from_secs_f64(self.frame_duration));
 
                     request_frame();
                     break;
