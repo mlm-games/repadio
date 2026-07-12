@@ -44,9 +44,12 @@ fn get_codecs() -> &'static CodecRegistry {
         let mut registry = CodecRegistry::new();
         symphonia::default::register_enabled_codecs(&mut registry);
         registry.register_audio_decoder::<symphonia_adapter_oporus::OpusDecoder>();
-        registry
-    })
+    registry
+        })
 }
+
+const MIN_VIDEO_FRAMES_PREROLL: u64 = 8;
+const PREROLL_MS: u32 = 500;
 
 pub mod video;
 
@@ -426,13 +429,8 @@ pub fn probe_media_source(source: MediaSource) -> TrackMeta {
         && rate > 0
     {
         meta.duration = Some(Duration::from_secs_f64(frames as f64 / rate as f64));
-    } else if let Some(track) = reader.first_track_known_codec(TrackType::Video)
-        && let Some(tb) = track.time_base
-        && let Some(nf) = track.num_frames
-    {
-        meta.duration = Some(Duration::from_secs_f64(
-            nf as f64 * tb.numer.get() as f64 / tb.denom.get() as f64,
-        ));
+    } else if let Some(track) = reader.first_track_known_codec(TrackType::Video) {
+        meta.duration = track_duration_secs(track);
     }
 
     meta
@@ -458,6 +456,23 @@ fn apply_revision(meta: &mut TrackMeta, rev: &MetadataRevision) {
     {
         meta.art = Some(Arc::new(visual.data.to_vec()));
     }
+}
+
+fn track_duration_secs(track: &symphonia::core::formats::Track) -> Option<Duration> {
+    let tb = track.time_base?;
+    if let Some(d) = track.duration {
+        let secs = d.get() as f64 * tb.numer.get() as f64 / tb.denom.get() as f64;
+        if secs > 0.0 {
+            return Some(Duration::from_secs_f64(secs));
+        }
+    }
+    if let Some(nf) = track.num_frames {
+        let secs = nf as f64 * tb.numer.get() as f64 / tb.denom.get() as f64;
+        if secs > 0.0 {
+            return Some(Duration::from_secs_f64(secs));
+        }
+    }
+    None
 }
 
 /// WASM entry point: sets up CPAL synchronously, stores the stream in a
@@ -819,10 +834,17 @@ impl SeekPhase {
     fn new(target: Duration, out_rate: u32, out_channels: usize) -> Self {
         Self {
             target,
-            min_samples: (out_rate as usize * out_channels) / 4, // ~250 ms
+            min_samples: (out_rate as usize * out_channels * PREROLL_MS as usize) / 1000,
             audio_reached: target.is_zero(),
         }
     }
+}
+
+fn video_preroll_ok(shared: &Shared) -> bool {
+    if !shared.has_video.load(Ordering::Acquire) {
+        return true;
+    }
+    shared.video_frames_sent.load(Ordering::Acquire) >= MIN_VIDEO_FRAMES_PREROLL
 }
 
 fn packet_pts_us(packet: &SymphoniaPacket, tb: &TimeBase) -> i64 {
@@ -962,6 +984,7 @@ fn decode_file_to_queue(
 ) -> Result<DecodeOutcome> {
     reset_audio_queue_and_clock(&shared, flush_rx);
     shared.load_serial.fetch_add(1, Ordering::Release);
+    shared.video_frames_sent.store(0, Ordering::Release);
 
     let display_name = match &source {
         MediaSource::Path(p) => p.file_name().map(|v| v.to_string_lossy().to_string()),
@@ -1063,14 +1086,7 @@ fn decode_file_to_queue(
             log::info!("unsupported video codec {:?}, skipping", vp.codec);
             break 'video_init;
         };
-        // Capture duration from video timebase
-        if let Some(tb) = vtrack.time_base {
-            if let Some(nf) = vtrack.num_frames {
-                video_duration = Some(Duration::from_secs_f64(
-                    nf as f64 * tb.numer.get() as f64 / tb.denom.get() as f64,
-                ));
-            }
-        }
+        video_duration = track_duration_secs(vtrack);
         log::info!("video: {name} {}x{}", w, h);
         let nal_len_size = video::parse_nal_length_size(extradata) as usize;
         video_state = Some(VideoDecodeState {
@@ -1386,8 +1402,8 @@ fn decode_file_to_queue(
                  // Preroll gate (checked after every video packet)
                 if video_only {
                     if let Some(_phase) = &seek_phase {
-                        let video_ok = true;
-                        let audio_ok = sample_tx.len() >= (out_rate as usize * out_channels) / 4;
+                        let video_ok = video_preroll_ok(&shared);
+                        let audio_ok = sample_tx.len() >= (out_rate as usize * out_channels * PREROLL_MS as usize) / 1000;
                         if video_ok && audio_ok {
                             let resume = shared.resume_intent.load(Ordering::Acquire);
                             shared.is_playing.store(resume, Ordering::Release);
@@ -1500,7 +1516,7 @@ fn decode_file_to_queue(
         // Preroll gate (checked after every audio packet)
         if let Some(phase) = &seek_phase {
             let audio_ok = phase.audio_reached && sample_tx.len() >= phase.min_samples;
-            let video_ok = true;
+            let video_ok = video_preroll_ok(&shared);
             if audio_ok && video_ok {
                 let resume = shared.resume_intent.load(Ordering::Acquire);
                 shared.is_playing.store(resume, Ordering::Release);
