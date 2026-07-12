@@ -209,10 +209,20 @@ impl VideoSink {
                     self.buffered.remove(0);
                     continue;
                 }
-                player_sync::FrameAction::WaitFor(_) if !wall_ok && !catch_up => {
+                // Wait for the next poll unless we're >1 frame behind the audio
+                // clock (catch-up).  This prevents presenting frames in the
+                // future during pause when the audio clock has stopped.
+                player_sync::FrameAction::WaitFor(_) if !catch_up => {
                     break;
                 }
                 player_sync::FrameAction::WaitFor(_) | player_sync::FrameAction::PresentNow => {
+                    // Wall-clock pacing: skip if not enough time has elapsed
+                    // since the last presented frame (smooths over audio clock
+                    // granularity and prevents frame-doubling).
+                    if !wall_ok {
+                        break;
+                    }
+
                     let frame = self.buffered.remove(0);
 
                     // Upload to inactive handle
