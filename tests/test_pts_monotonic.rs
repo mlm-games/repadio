@@ -34,7 +34,6 @@ fn test_pts_monotonic() {
         .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
         .expect("probe");
 
-    // Find and clone the H.265 video track
     let tracks = reader.tracks().to_vec();
     let video_track = tracks
         .iter()
@@ -45,7 +44,6 @@ fn test_pts_monotonic() {
         .cloned()
         .expect("no H.265 track");
 
-    // Extract codec parameters
     let vp = match &video_track.codec_params {
         Some(CodecParameters::Video(vp)) => vp.clone(),
         _ => unreachable!(),
@@ -71,19 +69,19 @@ fn test_pts_monotonic() {
     let mut decoder =
         VideoDecoder::new_hevc(width, height, &extradata).expect("create H.265 decoder");
 
-    // Compute frame duration from GCD of packet PTS ticks.
-    // Defer POC correction until we've seen 2+ non-zero PTS ticks
-    // (at which point the GCD has converged to the true frame duration).
     let mut gcd_pts_ticks: u64 = 0;
     let mut non_zero_pts_seen: u64 = 0;
     let tb_numer = time_base.numer.get() as u64;
     let tb_denom = time_base.denom.get() as u64;
     let mut frame_duration_us = 0u64;
 
-    let mut output_frames: Vec<Duration> = Vec::new();
+    let mut output_frames: Vec<(usize, Duration, Option<i32>)> = Vec::new();
     let mut packet_count = 0;
     let mut prev_pts: Option<Duration> = None;
     let mut pts_dips = 0usize;
+    let mut prev_poc: Option<i32> = None;
+    let mut poc_non_monotonic = 0usize;
+    let mut drain_batch_sizes: Vec<usize> = Vec::new();
 
     loop {
         let packet = match reader.next_packet() {
@@ -109,12 +107,6 @@ fn test_pts_monotonic() {
         };
         let fallback_pts = Duration::from_micros(pts_us.max(0) as u64);
 
-        // Track GCD of packet PTS ticks to derive correct frame duration.
-        // Container PTS may follow B-frame decode order, causing non-monotonic
-        // output when the decoder reorders via DPB.  The GCD of all non-zero
-        // PTS ticks gives the true per-frame tick increment.  We defer POC
-        // correction until we've seen 2+ non-zero PTS ticks (at which point
-        // the GCD has converged to the true frame duration).
         let pts_ticks = packet.pts.get();
         if pts_ticks > 0 {
             if gcd_pts_ticks == 0 {
@@ -145,72 +137,149 @@ fn test_pts_monotonic() {
         let fd = if non_zero_pts_seen >= 2 { frame_duration_us } else { 0 };
         let frames = decoder.drain_frames(fallback_pts, 0, fd);
 
+        drain_batch_sizes.push(frames.len());
+
         for f in &frames {
+            let global_idx = output_frames.len();
             if let Some(prev) = prev_pts {
                 if f.pts < prev && f.pts.abs_diff(prev) > Duration::from_micros(100) {
                     pts_dips += 1;
                     eprintln!(
-                        "PTS DIP #{}: prev={} -> curr={} (Δ={:+.6}s)",
+                        "PTS DIP #{}: prev={} -> curr={} (Δ={:+.6}s)  frame#{} POC={:?}",
                         pts_dips,
                         pts_s_to_dbg(prev),
                         pts_s_to_dbg(f.pts),
                         f.pts.as_secs_f64() - prev.as_secs_f64(),
+                        global_idx,
+                        f.poc,
                     );
                 }
             }
+            if let Some(prev) = prev_poc {
+                if let Some(poc) = f.poc {
+                    if poc < prev {
+                        poc_non_monotonic += 1;
+                        eprintln!(
+                            "POC dip: frame#{} POC {} < prev {}",
+                            global_idx, poc, prev
+                        );
+                    }
+                }
+            }
+            if let Some(poc) = f.poc {
+                prev_poc = Some(poc);
+            }
             prev_pts = Some(f.pts);
-            output_frames.push(f.pts);
+            output_frames.push((global_idx, f.pts, f.poc));
+        }
+
+        if packet_count % 50 == 0 {
+            let elapsed = output_frames.last().map(|f| f.1).unwrap_or(Duration::ZERO);
+            eprintln!(
+                "  progress: packet {} -> {} output frames, PTS={:.3}s",
+                packet_count,
+                output_frames.len(),
+                elapsed.as_secs_f64(),
+            );
         }
     }
-
-    eprintln!(
-        "\nSent {} video packets, got {} output frames from drain, {} PTS dips",
-        packet_count,
-        output_frames.len(),
-        pts_dips
-    );
 
     let finish_fd = if non_zero_pts_seen >= 2 { frame_duration_us } else { 0 };
     let final_frames = decoder.finish(finish_fd).expect("finish");
     for f in &final_frames {
+        let global_idx = output_frames.len();
         if let Some(prev) = prev_pts {
             if f.pts < prev && f.pts.abs_diff(prev) > Duration::from_micros(100) {
                 pts_dips += 1;
                 eprintln!(
-                    "PTS DIP (finish) #{}: prev={} -> curr={} (Δ={:+.6}s)",
+                    "PTS DIP (finish) #{}: prev={} -> curr={} (Δ={:+.6}s)  frame#{} POC={:?}",
                     pts_dips,
                     pts_s_to_dbg(prev),
                     pts_s_to_dbg(f.pts),
                     f.pts.as_secs_f64() - prev.as_secs_f64(),
+                    global_idx,
+                    f.poc,
                 );
             }
         }
+        if let Some(prev) = prev_poc {
+            if let Some(poc) = f.poc {
+                if poc < prev {
+                    poc_non_monotonic += 1;
+                    eprintln!(
+                        "POC dip (finish): frame#{} POC {} < prev {}",
+                        global_idx, poc, prev
+                    );
+                }
+            }
+        }
+        if let Some(poc) = f.poc {
+            prev_poc = Some(poc);
+        }
         prev_pts = Some(f.pts);
-        output_frames.push(f.pts);
+        output_frames.push((global_idx, f.pts, f.poc));
     }
 
+    let max_batch = drain_batch_sizes.iter().copied().max().unwrap_or(0);
+    let batches_gt1 = drain_batch_sizes.iter().filter(|&&s| s > 1).count();
     eprintln!(
-        "Total output frames: {} (after finish), PTS dips: {}",
+        "\nSent {} video packets, got {} output frames, {} PTS dips, {} POC dips",
+        packet_count,
         output_frames.len(),
-        pts_dips
+        pts_dips,
+        poc_non_monotonic,
+    );
+    eprintln!(
+        "Drain batch sizes: max={}, count>1={}, distribution: {:?}",
+        max_batch,
+        batches_gt1,
+        {
+            let mut hist = std::collections::BTreeMap::new();
+            for &s in &drain_batch_sizes {
+                *hist.entry(s).or_insert(0) += 1;
+            }
+            hist
+        },
     );
 
-    if pts_dips > 0 {
-        eprintln!("\nFirst 30 frame PTS values:");
-        for (i, pts) in output_frames.iter().take(30).enumerate() {
-            eprintln!("  frame[{i}] = {}", pts_s_to_dbg(*pts));
+    // Print first 10 and last 10 frames for inspection
+    eprintln!("\nFirst 10 output frames:");
+    for (i, (global_idx, pts, poc)) in output_frames.iter().take(10).enumerate() {
+        eprintln!(
+            "  output[{}] (frame#{})  PTS={}  POC={:?}",
+            i,
+            global_idx,
+            pts_s_to_dbg(*pts),
+            poc,
+        );
+    }
+    if output_frames.len() > 20 {
+        eprintln!("  ...");
+        eprintln!("Last 10 output frames:");
+        for (i, (global_idx, pts, poc)) in output_frames[output_frames.len().saturating_sub(10)..]
+            .iter()
+            .enumerate()
+        {
+            eprintln!(
+                "  output[{}] (frame#{})  PTS={}  POC={:?}",
+                output_frames.len() - 10 + i,
+                global_idx,
+                pts_s_to_dbg(*pts),
+                poc,
+            );
         }
     }
 
+    // Raw sequence check for monotonic PTS (ignoring the 100µs threshold)
     let mut raw_dips = 0;
     for chunk in output_frames.windows(2) {
-        if chunk[1] < chunk[0] {
+        if chunk[1].1 < chunk[0].1 {
             raw_dips += 1;
         }
     }
     if raw_dips > 0 {
         eprintln!(
-            "PTS not monotonic: {} dips in the raw output sequence",
+            "PTS not strictly monotonic: {} dips in raw sequence (sub-100µs ignored by threshold)",
             raw_dips
         );
     }
@@ -218,5 +287,9 @@ fn test_pts_monotonic() {
     assert!(
         pts_dips == 0,
         "Found {pts_dips} PTS dips — PTS is NOT monotonic in decoder output"
+    );
+    assert!(
+        poc_non_monotonic == 0,
+        "Found {poc_non_monotonic} POC dips — POC is NOT monotonic"
     );
 }
