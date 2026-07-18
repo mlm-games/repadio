@@ -215,7 +215,7 @@ impl VideoDecoder {
     }
 
     pub fn new_hevc(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
-        let nal_len_size = parse_nal_length_size(extradata);
+        let nal_len_size = parse_nal_length_size_hevc(extradata);
         let params = VideoCodecParams {
             codec: videoson::CodecType::H265,
             coded_width: width,
@@ -248,6 +248,14 @@ pub fn parse_nal_length_size(extradata: &[u8]) -> u8 {
         return 4;
     }
     (extradata[4] & 0x03) + 1
+}
+
+pub fn parse_nal_length_size_hevc(extradata: &[u8]) -> u8 {
+    if extradata.len() > 21 {
+        (extradata[21] & 0x03) + 1
+    } else {
+        4
+    }
 }
 
 /// Legacy helper for callers that still have separate U/V planes.

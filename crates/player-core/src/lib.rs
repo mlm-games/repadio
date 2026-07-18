@@ -950,6 +950,9 @@ fn handle_video_packet(
         log::warn!("video decode error: {e}, resetting decoder");
         state.decoder.reset();
         state.need_keyframe = true;
+        state.gcd_pts_ticks = 0;
+        state.non_zero_pts_seen = 0;
+        state.frame_duration_us = 0;
         return;
     }
     let fd = if state.non_zero_pts_seen >= 2 { state.frame_duration_us } else { 0 };
@@ -1051,10 +1054,17 @@ fn decode_file_to_queue(
         use symphonia::core::codecs::video::well_known::extra_data as ed_ids;
         let w = vp.width.unwrap_or(0) as u32;
         let h = vp.height.unwrap_or(0) as u32;
+        let wanted = if vp.codec == video_codec_ids::CODEC_ID_HEVC {
+            ed_ids::VIDEO_EXTRA_DATA_ID_HEVC_DECODER_CONFIG
+        } else if vp.codec == video_codec_ids::CODEC_ID_AV1 {
+            ed_ids::VIDEO_EXTRA_DATA_ID_AV1_DECODER_CONFIG
+        } else {
+            ed_ids::VIDEO_EXTRA_DATA_ID_AVC_DECODER_CONFIG
+        };
         let extradata = vp
             .extra_data
             .iter()
-            .find(|ed| ed.id == ed_ids::VIDEO_EXTRA_DATA_ID_AVC_DECODER_CONFIG)
+            .find(|ed| ed.id == wanted)
             .or_else(|| vp.extra_data.first())
             .map(|ed| &ed.data[..])
             .unwrap_or(&[]);
@@ -1088,7 +1098,11 @@ fn decode_file_to_queue(
         };
         video_duration = track_duration_secs(vtrack);
         log::info!("video: {name} {}x{}", w, h);
-        let nal_len_size = video::parse_nal_length_size(extradata) as usize;
+        let nal_len_size = if vp.codec == video_codec_ids::CODEC_ID_HEVC {
+            video::parse_nal_length_size_hevc(extradata) as usize
+        } else {
+            video::parse_nal_length_size(extradata) as usize
+        };
         video_state = Some(VideoDecodeState {
             track_id: vtrack.id,
             decoder: dec,
@@ -1158,6 +1172,9 @@ fn decode_file_to_queue(
         if let Some(ref mut vs) = video_state {
             vs.decoder.reset();
             vs.need_keyframe = true;
+            vs.gcd_pts_ticks = 0;
+            vs.non_zero_pts_seen = 0;
+            vs.frame_duration_us = 0;
         }
         let video_track_id = video_state.as_ref().map(|vs| vs.track_id);
         perform_seek(
@@ -1215,6 +1232,9 @@ fn decode_file_to_queue(
                 if let Some(vs) = &mut video_state {
                     vs.decoder.reset();
                     vs.need_keyframe = true;
+                    vs.gcd_pts_ticks = 0;
+                    vs.non_zero_pts_seen = 0;
+                    vs.frame_duration_us = 0;
                 }
                 shared.video_frames_sent.store(0, Ordering::Release);
                 let video_track_id = video_state.as_ref().map(|vs| vs.track_id);
@@ -1380,6 +1400,9 @@ fn decode_file_to_queue(
                                 if let Some(ref mut vs2) = video_state {
                                     vs2.decoder.reset();
                                     vs2.need_keyframe = true;
+                                    vs2.gcd_pts_ticks = 0;
+                                    vs2.non_zero_pts_seen = 0;
+                                    vs2.frame_duration_us = 0;
                                 }
                                  shared.video_frames_sent.store(0, Ordering::Release);
                                  let video_track_id = video_state.as_ref().map(|vs| vs.track_id);
@@ -1402,9 +1425,11 @@ fn decode_file_to_queue(
                  // Preroll gate (checked after every video packet)
                 if video_only {
                     if let Some(_phase) = &seek_phase {
+                        let min_samples = (out_rate as usize * out_channels * PREROLL_MS as usize) / 1000;
                         let video_ok = video_preroll_ok(&shared);
-                        let audio_ok = sample_tx.len() >= (out_rate as usize * out_channels * PREROLL_MS as usize) / 1000;
-                        if video_ok && audio_ok {
+                        let audio_ok = sample_tx.len() >= min_samples;
+                        let queue_capacity = out_rate as usize * out_channels * 4;
+                        if audio_ok && (video_ok || sample_tx.len() >= queue_capacity * 3 / 4) {
                             let resume = shared.resume_intent.load(Ordering::Acquire);
                             shared.is_playing.store(resume, Ordering::Release);
                             {
@@ -1517,7 +1542,8 @@ fn decode_file_to_queue(
         if let Some(phase) = &seek_phase {
             let audio_ok = phase.audio_reached && sample_tx.len() >= phase.min_samples;
             let video_ok = video_preroll_ok(&shared);
-            if audio_ok && video_ok {
+            let queue_capacity = out_rate as usize * out_channels * 4;
+            if audio_ok && (video_ok || sample_tx.len() >= queue_capacity * 3 / 4) {
                 let resume = shared.resume_intent.load(Ordering::Acquire);
                 shared.is_playing.store(resume, Ordering::Release);
                 {
