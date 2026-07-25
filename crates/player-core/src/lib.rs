@@ -1559,6 +1559,9 @@ fn decode_file_to_queue(
                                 if let Some(vs) = &mut video_state {
                                     vs.decoder.reset();
                                     vs.need_keyframe = true;
+                                    vs.gcd_pts_ticks = 0;
+                                    vs.non_zero_pts_seen = 0;
+                                    vs.frame_duration_us = 0;
                                 }
                                 shared.video_frames_sent.store(0, Ordering::Release);
                                 let video_track_id = video_state.as_ref().map(|vs| vs.track_id);

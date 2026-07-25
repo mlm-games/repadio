@@ -24,8 +24,11 @@ fn pts_s_to_dbg(pts: Duration) -> String {
 
 #[test]
 fn test_pts_monotonic() {
-    let path = "tests/fixtures/hevc_sample.mp4";
-    let file = File::open(path).expect("open mp4");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/hevc_sample.mp4");
+    let file = File::open(&path).unwrap_or_else(|e| {
+        panic!("open {}: {e}", path.display())
+    });
     let mss = MediaSourceStream::new(Box::new(file), MediaSourceStreamOptions::default());
 
     let hint = Hint::new();
