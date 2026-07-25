@@ -977,15 +977,8 @@ fn handle_video_packet(
             load_serial
         );
         shared.video_frames_sent.fetch_add(1, Ordering::Release);
-        match video_tx.send_timeout(frame, Duration::from_millis(100)) {
-            Err(crossbeam_channel::SendTimeoutError::Timeout(_)) => {
-                log::warn!("[hvp] video_tx full, skipping frame (blocked 100ms)");
-                continue;
-            }
-            Err(crossbeam_channel::SendTimeoutError::Disconnected(_)) => {
-                break;
-            }
-            Ok(()) => {}
+        if video_tx.try_send(frame).is_err() {
+            log::trace!("[hvp] video_tx full, dropping frame (non-blocking)");
         }
     }
 }

@@ -105,40 +105,48 @@ impl VideoDecoder {
         self.inner.set_frame_duration_micros(us);
     }
 
-    fn plane_u8(
-        &self,
+    fn plane_to_arc(
         data: &videoson::PlaneData,
         width: usize,
         height: usize,
         stride: usize,
     ) -> Arc<[u8]> {
-        let plane: Vec<u8> = match data {
+        let size = width * height;
+        let mut arc = Arc::new_uninit_slice(size);
+        // Safety: freshly created Arc has refcount 1.
+        let uninit = Arc::get_mut(&mut arc).unwrap();
+        // Cast MaybeUninit<u8> → u8 (same layout) for direct writing.
+        let dst: &mut [u8] = unsafe {
+            std::slice::from_raw_parts_mut(uninit.as_mut_ptr().cast(), size)
+        };
+        match data {
             videoson::PlaneData::U8(s) => {
-                let mut plane = Vec::with_capacity(width * height);
                 for row in 0..height {
-                    let start = row * stride;
-                    if start + width > s.len() {
+                    let src_start = row * stride;
+                    let dst_start = row * width;
+                    let avail = width.min(s.len().saturating_sub(src_start));
+                    if avail == 0 {
                         break;
                     }
-                    plane.extend_from_slice(&s[start..start + width]);
+                    dst[dst_start..dst_start + avail]
+                        .copy_from_slice(&s[src_start..src_start + avail]);
                 }
-                plane
             }
             videoson::PlaneData::U16(s) => {
-                let mut plane = Vec::with_capacity(width * height);
                 for row in 0..height {
-                    let start = row * stride;
+                    let src_start = row * stride;
+                    let dst_start = row * width;
                     for col in 0..width {
-                        if start + col >= s.len() {
+                        if src_start + col >= s.len() {
                             break;
                         }
-                        plane.push((s[start + col] >> 2) as u8);
+                        dst[dst_start + col] = (s[src_start + col] >> 2) as u8;
                     }
                 }
-                plane
             }
-        };
-        Arc::from(plane)
+        }
+        // Safety: all `size` elements were written above.
+        unsafe { arc.assume_init() }
     }
 
     pub fn drain_frames(
@@ -160,8 +168,8 @@ impl VideoDecoder {
             let uv_w = ((frame.width + 1) / 2 * 2) as usize;
             let uv_h = ((frame.height + 1) / 2) as usize;
 
-            let y_plane = self.plane_u8(&frame.plane_data[0].data, w, h, y_stride);
-            let uv_plane = self.plane_u8(&frame.plane_data[1].data, uv_w, uv_h, uv_stride);
+            let y_plane = Self::plane_to_arc(&frame.plane_data[0].data, w, h, y_stride);
+            let uv_plane = Self::plane_to_arc(&frame.plane_data[1].data, uv_w, uv_h, uv_stride);
 
             // PTS from container may be non-monotonic when the muxer assumed
             // B-frame reordering but the bitstream has none.  Recompute from

@@ -149,11 +149,16 @@ impl VideoSink {
             while self.rx.try_recv().is_ok() {}
         }
 
-        // Drain available frames into buffer, filtering by load_serial
-        while let Ok(frame) = self.rx.try_recv() {
-            if frame.load_serial == current_load_serial {
-                self.aspect = frame.width as f32 / frame.height.max(1) as f32;
-                self.buffered.push(frame);
+        // Drain a limited batch per poll so the channel provides natural
+        // back-pressure against the decoder.
+        for _ in 0..16 {
+            match self.rx.try_recv() {
+                Ok(frame) if frame.load_serial == current_load_serial => {
+                    self.aspect = frame.width as f32 / frame.height.max(1) as f32;
+                    self.buffered.push(frame);
+                }
+                Ok(_) => {}
+                Err(_) => break,
             }
         }
 
@@ -161,6 +166,8 @@ impl VideoSink {
         self.buffered.sort_by_key(|f| f.pts);
 
         if self.buffered.is_empty() {
+            // Still request a frame in case more are coming on the channel.
+            request_frame();
             return;
         }
 
@@ -199,7 +206,8 @@ impl VideoSink {
 
             let gap = now_clock.saturating_sub(pts);
             let drop_threshold = Duration::from_secs_f64(self.frame_duration * 1.5);
-            let action = if gap > drop_threshold {
+            let is_last = self.buffered.len() == 1;
+            let action = if gap > drop_threshold && !is_last {
                 player_sync::FrameAction::Drop
             } else if pts <= now_clock {
                 player_sync::FrameAction::PresentNow
@@ -212,23 +220,23 @@ impl VideoSink {
 
             match action {
                 player_sync::FrameAction::Drop => {
-                    if self.buffered.len() > 1 {
-                        self.buffered.remove(0);
-                        continue;
-                    } else {
-                        break;
-                    }
+                    log::trace!("[vs] drop frame pts={:?} gap={:?}", pts, gap);
+                    self.buffered.remove(0);
+                    request_frame();
+                    continue;
                 }
                 // Wait for the next poll unless we're >1 frame behind the audio
                 // clock (catch-up).  This prevents presenting frames in the
                 // future during pause when the audio clock has stopped.
                 player_sync::FrameAction::WaitFor(_) if !catch_up => {
+                    request_frame();
                     break;
                 }
                 player_sync::FrameAction::WaitFor(_) | player_sync::FrameAction::PresentNow => {
                     // Soft wall-clock pacing: skip if not enough time has elapsed
                     // since the last presented frame.
                     if !wall_ok {
+                        request_frame();
                         break;
                     }
 
