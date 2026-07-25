@@ -1095,7 +1095,7 @@ fn EmptyPlaylist(pending: PendingFiles) -> View {
         )),
         Row(Modifier::new().fill_max_width()).child((
             Spacer(),
-            Text("Tap + to add audio files")
+            Text("Tap + to add media files")
                 .size(13.0)
                 .color(theme().on_surface.with_alpha(150)),
             Spacer(),

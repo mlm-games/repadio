@@ -15,11 +15,25 @@ pub fn init() {
     rlobkit_dialogs::init();
 }
 
-pub const AUDIO_EXTENSIONS: &[&str] = &[
-    "mp3", "flac", "wav", "ogg", "oga", "m4a", "aac", "mp4", "mka", "webm", "aiff", "caf",
+pub const MEDIA_EXTENSIONS: &[&str] = &[
+    // audio
+    "mp3", "flac", "wav", "ogg", "oga", "m4a", "aac", "aiff", "caf",
+    // containers / video
+    "mp4", "m4v", "mkv", "webm", "mov", "mka",
 ];
 
-/// Open a native multi-file picker filtered to audio formats.
+/// Back-compat alias.
+pub const AUDIO_EXTENSIONS: &[&str] = MEDIA_EXTENSIONS;
+
+#[allow(dead_code)]
+const MEDIA_MIME_TYPES: &[&str] = &["audio/*", "video/*"];
+
+#[allow(dead_code)]
+fn media_mime_types() -> Vec<String> {
+    MEDIA_MIME_TYPES.iter().map(|s| (*s).to_string()).collect()
+}
+
+/// Open a native multi-file picker filtered to audio/video formats.
 /// Returns an empty Vec if the user cancels.
 ///
 /// NOTE: blocks the calling thread on desktop. On WASM the synchronous
@@ -27,7 +41,7 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
 pub fn pick_audio_files() -> Vec<PickedFile> {
     #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     {
-        rlobkit_dialogs::blocking_pick_files("Add audio files", AUDIO_EXTENSIONS)
+        rlobkit_dialogs::blocking_pick_files("Add media files", MEDIA_EXTENSIONS)
             .into_iter()
             .map(PickedFile::Path)
             .collect()
@@ -51,15 +65,15 @@ pub fn pick_audio_files_async(on_done: impl FnOnce(Vec<PickedFile>) + Send + 'st
             use rlobkit_dialogs::picker::OpenFileOptions;
             use rlobkit_dialogs::{RlobKit, RlobKitMode, RlobKitType};
 
-            let exts: Vec<String> = AUDIO_EXTENSIONS.iter().map(|s| s.to_string()).collect();
+            let exts: Vec<String> = MEDIA_EXTENSIONS.iter().map(|s| s.to_string()).collect();
             let result =
                 futures_lite::future::block_on(RlobKit::open_file_picker(OpenFileOptions {
                     file_type: RlobKitType::Custom {
                         extensions: exts,
-                        mime_types: vec!["audio/*".to_string()],
+                        mime_types: media_mime_types(),
                     },
                     mode: RlobKitMode::Multiple { limit: None },
-                    title: Some("Add audio files".to_string()),
+                    title: Some("Add media files".to_string()),
                     initial_directory: None,
                 }));
 
@@ -83,12 +97,12 @@ pub fn pick_audio_files_async(on_done: impl FnOnce(Vec<PickedFile>) + Send + 'st
                     .collect(),
 
                 Ok(None) => {
-                    log::info!("Android audio picker cancelled");
+                    log::info!("Android media picker cancelled");
                     Vec::new()
                 }
 
                 Err(err) => {
-                    log::error!("Android audio picker failed: {err}");
+                    log::error!("Android media picker failed: {err}");
                     Vec::new()
                 }
             };
@@ -106,7 +120,7 @@ pub fn pick_audio_files_async(on_done: impl FnOnce(Vec<PickedFile>) + Send + 'st
 
     #[cfg(target_arch = "wasm32")]
     {
-        let exts: Vec<String> = AUDIO_EXTENSIONS.iter().map(|s| s.to_string()).collect();
+        let exts: Vec<String> = MEDIA_EXTENSIONS.iter().map(|s| s.to_string()).collect();
         wasm_bindgen_futures::spawn_local(async move {
             use rlobkit_dialogs::picker::OpenFileOptions;
             use rlobkit_dialogs::{RlobKit, RlobKitMode, RlobKitType};
@@ -114,10 +128,10 @@ pub fn pick_audio_files_async(on_done: impl FnOnce(Vec<PickedFile>) + Send + 'st
             let result = RlobKit::open_file_picker(OpenFileOptions {
                 file_type: RlobKitType::Custom {
                     extensions: exts,
-                    mime_types: vec!["audio/*".to_string()],
+                    mime_types: media_mime_types(),
                 },
                 mode: RlobKitMode::Multiple { limit: None },
-                title: Some("Add audio files".to_string()),
+                title: Some("Add media files".to_string()),
                 initial_directory: None,
             })
             .await;

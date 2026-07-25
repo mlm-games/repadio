@@ -61,7 +61,6 @@ impl VideoDecoder {
         Ok(Self {
             inner: Box::new(inner),
             reorder: Vec::new(),
-
         })
     }
 
@@ -73,7 +72,7 @@ impl VideoDecoder {
             extradata: extradata.to_vec(),
             nal_format: None,
         };
-        let opts =         VideoDecoderOptions {
+        let opts = VideoDecoderOptions {
             verify: false,
             output_format: VideoOutputFormat::Nv12,
             tolerate_truncated_chroma: false,
@@ -83,7 +82,6 @@ impl VideoDecoder {
         Ok(Self {
             inner: Box::new(inner),
             reorder: Vec::new(),
-
         })
     }
 
@@ -105,7 +103,13 @@ impl VideoDecoder {
         self.inner.set_frame_duration_micros(us);
     }
 
-    fn plane_u8(&self, data: &videoson::PlaneData, width: usize, height: usize, stride: usize) -> Vec<u8> {
+    fn plane_u8(
+        &self,
+        data: &videoson::PlaneData,
+        width: usize,
+        height: usize,
+        stride: usize,
+    ) -> Vec<u8> {
         match data {
             videoson::PlaneData::U8(s) => {
                 let mut plane = Vec::with_capacity(width * height);
@@ -223,7 +227,7 @@ impl VideoDecoder {
             extradata: extradata.to_vec(),
             nal_format: Some(NalFormat::Hvcc { nal_len_size }),
         };
-        let opts =         VideoDecoderOptions {
+        let opts = VideoDecoderOptions {
             verify: false,
             output_format: VideoOutputFormat::Nv12,
             tolerate_truncated_chroma: false,
@@ -233,7 +237,6 @@ impl VideoDecoder {
         Ok(Self {
             inner: Box::new(inner),
             reorder: Vec::new(),
-
         })
     }
 

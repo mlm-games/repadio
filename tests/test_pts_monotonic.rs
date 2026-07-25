@@ -1,8 +1,8 @@
 use std::fs::File;
 use std::time::Duration;
 
-use symphonia::core::codecs::video::well_known::{CODEC_ID_HEVC, extra_data as ed_ids};
 use symphonia::core::codecs::CodecParameters;
+use symphonia::core::codecs::video::well_known::{CODEC_ID_HEVC, extra_data as ed_ids};
 use symphonia::core::formats::{FormatOptions, probe::Hint};
 use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
 use symphonia::core::meta::MetadataOptions;
@@ -31,7 +31,12 @@ fn test_pts_monotonic() {
     let hint = Hint::new();
 
     let mut reader = symphonia::default::get_probe()
-        .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
+        .probe(
+            &hint,
+            mss,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
         .expect("probe");
 
     let tracks = reader.tracks().to_vec();
@@ -134,7 +139,11 @@ fn test_pts_monotonic() {
             .send_packet(&packet.data, pts_us, is_sync)
             .expect("send_packet");
 
-        let fd = if non_zero_pts_seen >= 2 { frame_duration_us } else { 0 };
+        let fd = if non_zero_pts_seen >= 2 {
+            frame_duration_us
+        } else {
+            0
+        };
         let frames = decoder.drain_frames(fallback_pts, 0, fd);
 
         drain_batch_sizes.push(frames.len());
@@ -159,10 +168,7 @@ fn test_pts_monotonic() {
                 if let Some(poc) = f.poc {
                     if poc < prev {
                         poc_non_monotonic += 1;
-                        eprintln!(
-                            "POC dip: frame#{} POC {} < prev {}",
-                            global_idx, poc, prev
-                        );
+                        eprintln!("POC dip: frame#{} POC {} < prev {}", global_idx, poc, prev);
                     }
                 }
             }
@@ -184,7 +190,11 @@ fn test_pts_monotonic() {
         }
     }
 
-    let finish_fd = if non_zero_pts_seen >= 2 { frame_duration_us } else { 0 };
+    let finish_fd = if non_zero_pts_seen >= 2 {
+        frame_duration_us
+    } else {
+        0
+    };
     let final_frames = decoder.finish(finish_fd).expect("finish");
     for f in &final_frames {
         let global_idx = output_frames.len();
@@ -286,10 +296,10 @@ fn test_pts_monotonic() {
 
     assert!(
         pts_dips == 0,
-        "Found {pts_dips} PTS dips — PTS is NOT monotonic in decoder output"
+        "Found {pts_dips} PTS dips. PTS is NOT monotonic in decoder output"
     );
     assert!(
         poc_non_monotonic == 0,
-        "Found {poc_non_monotonic} POC dips — POC is NOT monotonic"
+        "Found {poc_non_monotonic} POC dips. POC is NOT monotonic"
     );
 }

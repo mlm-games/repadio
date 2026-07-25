@@ -1,10 +1,11 @@
-Repadio is a cross-platform audio player built as a reference example for the Repose GUI framework.
+Repadio is a cross-platform audio and video player built as a reference example for the Repose GUI framework.
 
 Features:
 • Audio decoding via Symphonia (MP3, FLAC, OGG, WAV, AAC, and more)
+• Video decoding via videoson (H.264, H.265, AV1)
 • Low-latency playback via CPAL
 • Embedded metadata and album art display
 • Playlist management with track reordering
 • Cross-platform: Linux, macOS, Windows, Web (WASM), Android
-• Native file open dialogs
-• Open source (LGPL-2.1)
+• Native file open dialogs and Android share/open intents
+• Open source (GPL-3.0-or-later)

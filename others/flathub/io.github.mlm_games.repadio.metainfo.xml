@@ -2,19 +2,20 @@
 <component type="desktop-application">
   <id>io.github.mlm_games.repadio</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>LGPL-2.1-or-later</project_license>
+  <project_license>GPL-3.0-or-later</project_license>
   <developer id="io.github.mlm_games">
     <name>MLM Games</name>
   </developer>
   <name>Repadio</name>
-  <summary>Pure-Rust audio player built with Symphonia and CPAL on the Repose GUI framework</summary>
+  <summary>Pure-Rust audio and video player on the Repose GUI framework</summary>
   <description>
     <p>
-      Repadio is a cross-platform audio player built as a reference example
+      Repadio is a cross-platform audio and video player built as a reference example
       for the Repose GUI framework.
     </p>
     <ul>
       <li>Audio decoding via Symphonia (MP3, FLAC, OGG, WAV, AAC, and more)</li>
+      <li>Video decoding via videoson (H.264, H.265, AV1)</li>
       <li>Low-latency playback via CPAL</li>
       <li>Embedded metadata and album art display</li>
       <li>Playlist management with drag-to-reorder</li>
@@ -29,6 +30,7 @@
   </categories>
   <keywords>
     <keyword>audio</keyword>
+    <keyword>video</keyword>
     <keyword>player</keyword>
     <keyword>music</keyword>
     <keyword>repose</keyword>
@@ -36,8 +38,8 @@
     <keyword>cpal</keyword>
   </keywords>
   <icon type="stock" width="512" height="512">io.github.mlm_games.repadio</icon>
-  <url type="homepage">https://github.com/mlm-games/repose-audio-player</url>
-  <url type="bugtracker">https://github.com/mlm-games/repose-audio-player/issues</url>
+  <url type="homepage">https://github.com/mlm-games/repadio</url>
+  <url type="bugtracker">https://github.com/mlm-games/repadio/issues</url>
   <url type="donation">https://github.com/sponsors/mlm-games</url>
   <screenshots>
     <screenshot type="default">
@@ -47,6 +49,11 @@
   <provides>
     <binary>repadio</binary>
     <mediatype>audio/mpeg</mediatype>
+    <mediatype>audio/flac</mediatype>
+    <mediatype>audio/ogg</mediatype>
+    <mediatype>video/mp4</mediatype>
+    <mediatype>video/webm</mediatype>
+    <mediatype>video/x-matroska</mediatype>
   </provides>
   <requires>
     <display_length compare="ge">480</display_length>
@@ -57,7 +64,7 @@
     <control>touch</control>
   </supports>
   <releases>
-    <release version="0.1.0" date="2026-07-08"/>
+    <release version="0.2.0" date="2026-07-08"/>
   </releases>
   <content_rating type="oars-1.1"/>
 </component>

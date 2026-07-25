@@ -44,8 +44,8 @@ fn get_codecs() -> &'static CodecRegistry {
         let mut registry = CodecRegistry::new();
         symphonia::default::register_enabled_codecs(&mut registry);
         registry.register_audio_decoder::<symphonia_adapter_oporus::OpusDecoder>();
-    registry
-        })
+        registry
+    })
 }
 
 const MIN_VIDEO_FRAMES_PREROLL: u64 = 8;
@@ -383,7 +383,7 @@ fn media_source_stream(src: MediaSource) -> Result<(MediaSourceStream<'static>, 
             ))
         }
         MediaSource::Bytes { name, bytes } => {
-            let cursor = Cursor::new(bytes.to_vec());
+            let cursor = Cursor::new(bytes);
             let mut hint = Hint::new();
             if let Some(ext) = std::path::Path::new(&name)
                 .extension()
@@ -546,7 +546,7 @@ fn audio_thread_wasm(
             .map_err(|_| anyhow!("audio stream already initialized"))
     })?;
 
-    // Real thread (Web Worker) via web_thread — blocking I/O, channel
+    // Real thread (Web Worker) via web_thread. blocking I/O, channel
     // sends, and thread::sleep all work correctly here.
     let thread_video_tx = video_tx.clone();
     web_thread::spawn(move || {
@@ -943,10 +943,7 @@ fn handle_video_packet(
         }
     }
 
-    if let Err(e) = state
-        .decoder
-        .send_packet(&packet.data, pts_us, is_sync)
-    {
+    if let Err(e) = state.decoder.send_packet(&packet.data, pts_us, is_sync) {
         log::warn!("video decode error: {e}, resetting decoder");
         state.decoder.reset();
         state.need_keyframe = true;
@@ -955,16 +952,25 @@ fn handle_video_packet(
         state.frame_duration_us = 0;
         return;
     }
-    let fd = if state.non_zero_pts_seen >= 2 { state.frame_duration_us } else { 0 };
+    let fd = if state.non_zero_pts_seen >= 2 {
+        state.frame_duration_us
+    } else {
+        0
+    };
     let frames = state.decoder.drain_frames(fallback, load_serial, fd);
     for (i, frame) in frames.into_iter().enumerate() {
         if let Some(min) = min_pts {
             if frame.pts + Duration::from_millis(500) < min {
-                log::info!("[hvp] skip frame {} pts={:?} (min={:?})", i, frame.pts, min);
+                log::trace!("[hvp] skip frame {} pts={:?} (min={:?})", i, frame.pts, min);
                 continue;
             }
         }
-        log::info!("[hvp] sending frame {} pts={:?} load_serial={}", i, frame.pts, load_serial);
+        log::trace!(
+            "[hvp] sending frame {} pts={:?} load_serial={}",
+            i,
+            frame.pts,
+            load_serial
+        );
         shared.video_frames_sent.fetch_add(1, Ordering::Release);
         if video_tx.try_send(frame).is_err() {
             log::warn!("[hvp] video_tx full, breaking");
@@ -1034,7 +1040,7 @@ fn decode_file_to_queue(
         s.art = meta.art;
     }
 
-    // Audio track is optional — video-only files are valid.
+    // Audio track is optional. video-only files are valid.
     let audio_track = format
         .default_track(TrackType::Audio)
         .or_else(|| format.first_track_known_codec(TrackType::Audio));
@@ -1198,12 +1204,18 @@ fn decode_file_to_queue(
 
     // Push silence samples up to a target position (for video-only clock).
     // Returns None when done, or Some(action) if a command interrupted.
-    let push_silence_to = |target: Duration, seek_base: Duration, silence_pushed: &mut u64| -> Option<CommandAction> {
+    let push_silence_to = |target: Duration,
+                           seek_base: Duration,
+                           silence_pushed: &mut u64|
+     -> Option<CommandAction> {
         let relative = target.saturating_sub(seek_base);
-        let target_samples = (relative.as_secs_f64() * out_rate as f64) as u64 * out_channels as u64;
+        let target_samples =
+            (relative.as_secs_f64() * out_rate as f64) as u64 * out_channels as u64;
         while *silence_pushed < target_samples {
             match sample_tx.try_send(0.0f32) {
-                Ok(()) => { *silence_pushed += 1; }
+                Ok(()) => {
+                    *silence_pushed += 1;
+                }
                 Err(TrySendError::Full(_)) => {
                     match drain_commands(cmd_rx, &shared) {
                         CommandAction::Continue => {}
@@ -1269,8 +1281,12 @@ fn decode_file_to_queue(
                             loop {
                                 match sample_tx.try_send(sample) {
                                     Ok(()) => break,
-                                    Err(TrySendError::Full(s)) => { sample = s; }
-                                    Err(TrySendError::Disconnected(_)) => return Ok(DecodeOutcome::Shutdown),
+                                    Err(TrySendError::Full(s)) => {
+                                        sample = s;
+                                    }
+                                    Err(TrySendError::Disconnected(_)) => {
+                                        return Ok(DecodeOutcome::Shutdown);
+                                    }
                                 }
                             }
                         }
@@ -1279,7 +1295,9 @@ fn decode_file_to_queue(
                     if let Some(action) = (push_silence_to)(dur, seek_base, &mut silence_pushed) {
                         match action {
                             CommandAction::Load(p) => return Ok(DecodeOutcome::Load(p)),
-                            CommandAction::Seek(target, serial) => return Ok(DecodeOutcome::Seek(target, serial)),
+                            CommandAction::Seek(target, serial) => {
+                                return Ok(DecodeOutcome::Seek(target, serial));
+                            }
                             CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
                             CommandAction::Continue => {}
                         }
@@ -1292,7 +1310,9 @@ fn decode_file_to_queue(
                     s.state = PlaybackState::Playing;
                 }
                 match wait_until_queue_drained(cmd_rx, &shared, flush_rx) {
-                    DecodeOutcome::Seek(target, serial) => return Ok(DecodeOutcome::Seek(target, serial)),
+                    DecodeOutcome::Seek(target, serial) => {
+                        return Ok(DecodeOutcome::Seek(target, serial));
+                    }
                     other => return Ok(other),
                 }
             }
@@ -1304,8 +1324,12 @@ fn decode_file_to_queue(
                             loop {
                                 match sample_tx.try_send(sample) {
                                     Ok(()) => break,
-                                    Err(TrySendError::Full(s)) => { sample = s; }
-                                    Err(TrySendError::Disconnected(_)) => return Ok(DecodeOutcome::Shutdown),
+                                    Err(TrySendError::Full(s)) => {
+                                        sample = s;
+                                    }
+                                    Err(TrySendError::Disconnected(_)) => {
+                                        return Ok(DecodeOutcome::Shutdown);
+                                    }
                                 }
                             }
                         }
@@ -1314,7 +1338,9 @@ fn decode_file_to_queue(
                     if let Some(action) = (push_silence_to)(dur, seek_base, &mut silence_pushed) {
                         match action {
                             CommandAction::Load(p) => return Ok(DecodeOutcome::Load(p)),
-                            CommandAction::Seek(target, serial) => return Ok(DecodeOutcome::Seek(target, serial)),
+                            CommandAction::Seek(target, serial) => {
+                                return Ok(DecodeOutcome::Seek(target, serial));
+                            }
                             CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
                             CommandAction::Continue => {}
                         }
@@ -1327,7 +1353,9 @@ fn decode_file_to_queue(
                     s.state = PlaybackState::Playing;
                 }
                 match wait_until_queue_drained(cmd_rx, &shared, flush_rx) {
-                    DecodeOutcome::Seek(target, serial) => return Ok(DecodeOutcome::Seek(target, serial)),
+                    DecodeOutcome::Seek(target, serial) => {
+                        return Ok(DecodeOutcome::Seek(target, serial));
+                    }
                     other => return Ok(other),
                 }
             }
@@ -1393,7 +1421,8 @@ fn decode_file_to_queue(
                 if video_only {
                     let pts_us = packet_pts_us(&packet, &vs.time_base);
                     let pkt_pts = Duration::from_micros(pts_us.max(0) as u64);
-                    if let Some(action) = (push_silence_to)(pkt_pts, seek_base, &mut silence_pushed) {
+                    if let Some(action) = (push_silence_to)(pkt_pts, seek_base, &mut silence_pushed)
+                    {
                         match action {
                             CommandAction::Load(p) => return Ok(DecodeOutcome::Load(p)),
                             CommandAction::Seek(target, serial) => {
@@ -1404,28 +1433,37 @@ fn decode_file_to_queue(
                                     vs2.non_zero_pts_seen = 0;
                                     vs2.frame_duration_us = 0;
                                 }
-                                 shared.video_frames_sent.store(0, Ordering::Release);
-                                 let video_track_id = video_state.as_ref().map(|vs| vs.track_id);
-                                 perform_seek(
-                                     &mut *format, &mut decoder,
-                                     video_track_id,
-                                     target, serial, duration, &shared, flush_rx, out_rate,
-                                 );
-                                 if let Some(r) = &mut resampler { r.reset(); }
-                                 seek_phase = Some(SeekPhase::new(target, out_rate, out_channels));
-                                 silence_pushed = 0;
-                                 seek_base = target;
-                             }
-                             CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
-                             CommandAction::Continue => {}
-                         }
-                     }
-                 }
+                                shared.video_frames_sent.store(0, Ordering::Release);
+                                let video_track_id = video_state.as_ref().map(|vs| vs.track_id);
+                                perform_seek(
+                                    &mut *format,
+                                    &mut decoder,
+                                    video_track_id,
+                                    target,
+                                    serial,
+                                    duration,
+                                    &shared,
+                                    flush_rx,
+                                    out_rate,
+                                );
+                                if let Some(r) = &mut resampler {
+                                    r.reset();
+                                }
+                                seek_phase = Some(SeekPhase::new(target, out_rate, out_channels));
+                                silence_pushed = 0;
+                                seek_base = target;
+                            }
+                            CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
+                            CommandAction::Continue => {}
+                        }
+                    }
+                }
 
-                 // Preroll gate (checked after every video packet)
+                // Preroll gate (checked after every video packet)
                 if video_only {
                     if let Some(_phase) = &seek_phase {
-                        let min_samples = (out_rate as usize * out_channels * PREROLL_MS as usize) / 1000;
+                        let min_samples =
+                            (out_rate as usize * out_channels * PREROLL_MS as usize) / 1000;
                         let video_ok = video_preroll_ok(&shared);
                         let audio_ok = sample_tx.len() >= min_samples;
                         let queue_capacity = out_rate as usize * out_channels * 4;
@@ -1434,7 +1472,11 @@ fn decode_file_to_queue(
                             shared.is_playing.store(resume, Ordering::Release);
                             {
                                 let mut s = lock_status(&shared);
-                                s.state = if resume { PlaybackState::Playing } else { PlaybackState::Paused };
+                                s.state = if resume {
+                                    PlaybackState::Playing
+                                } else {
+                                    PlaybackState::Paused
+                                };
                             }
                             seek_phase = None;
                         }
@@ -1451,7 +1493,9 @@ fn decode_file_to_queue(
         }
         // Reaching here means we have an audio packet.
         let Some(ref mut dec) = decoder else { continue };
-        let Some(ref mut res) = resampler else { continue };
+        let Some(ref mut res) = resampler else {
+            continue;
+        };
 
         let decoded = match dec.decode(&packet) {
             Ok(decoded) => decoded,
@@ -1519,11 +1563,19 @@ fn decode_file_to_queue(
                                 shared.video_frames_sent.store(0, Ordering::Release);
                                 let video_track_id = video_state.as_ref().map(|vs| vs.track_id);
                                 perform_seek(
-                                    &mut *format, &mut decoder,
+                                    &mut *format,
+                                    &mut decoder,
                                     video_track_id,
-                                    target, serial, duration, &shared, flush_rx, out_rate,
+                                    target,
+                                    serial,
+                                    duration,
+                                    &shared,
+                                    flush_rx,
+                                    out_rate,
                                 );
-                                if let Some(r) = &mut resampler { r.reset(); }
+                                if let Some(r) = &mut resampler {
+                                    r.reset();
+                                }
                                 seek_phase = Some(SeekPhase::new(target, out_rate, out_channels));
                                 silence_pushed = 0;
                                 seek_base = target;

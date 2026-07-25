@@ -6,7 +6,7 @@ resolver = "3"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.93"
-license = "LGPL-2.1-or-later"
+license = "GPL-3.0-or-later"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -143,6 +143,14 @@ mime_type = "audio/*"
 [[package.metadata.android.application.activity.intent_filter.data]]
 scheme = "file"
 mime_type = "audio/*"
+
+[[package.metadata.android.application.activity.intent_filter.data]]
+scheme = "content"
+mime_type = "video/*"
+
+[[package.metadata.android.application.activity.intent_filter.data]]
+scheme = "file"
+mime_type = "video/*"
 
 [dependencies]
 anyhow.workspace = true

@@ -1,16 +1,16 @@
 name: repadio
 base: core24
-version: '0.1.0'
-summary: Pure-Rust audio player built with Symphonia and CPAL
+version: '0.2.0'
+summary: Pure-Rust audio & video player built with Symphonia, videoson and CPAL
 description: |
-  Repadio is a cross-platform audio player built as a reference example
-  for the Repose GUI framework. It uses Symphonia for decoding and CPAL for
-  low-latency playback, all in pure Rust.
+  Repadio is a cross-platform audio and video player built as a reference
+  example for the Repose GUI framework. It uses Symphonia for audio, videoson
+  for H.264/H.265/AV1, and CPAL for low-latency playback, all in pure Rust.
 grade: stable
 confinement: strict
 icon: snap/gui/icon.png
 title: Repadio
-license: LGPL-2.1-or-later
+license: GPL-3.0-or-later
 platforms:
   amd64:
   arm64:
