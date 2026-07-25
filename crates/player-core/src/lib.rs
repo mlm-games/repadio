@@ -9,6 +9,8 @@ use std::{
     time::Duration,
 };
 
+use web_time::Instant;
+
 #[cfg(not(target_arch = "wasm32"))]
 use std::thread;
 #[cfg(target_arch = "wasm32")]
@@ -823,11 +825,13 @@ struct VideoDecodeState {
 
 /// State for the two-phase accurate seek / buffering.
 /// Decoded output before `target` is discarded; playback starts once the
-/// audio stream reaches `target` AND at least `min_samples` are queued.
+/// audio stream reaches `target` AND at least `min_samples` are queued
+/// AND video has produced a few presentable frames (or a timeout fires).
 struct SeekPhase {
     target: Duration,
     min_samples: usize,
     audio_reached: bool,
+    started: Instant,
 }
 
 impl SeekPhase {
@@ -836,6 +840,7 @@ impl SeekPhase {
             target,
             min_samples: (out_rate as usize * out_channels * PREROLL_MS as usize) / 1000,
             audio_reached: target.is_zero(),
+            started: Instant::now(),
         }
     }
 }
@@ -1459,32 +1464,32 @@ fn decode_file_to_queue(
                     }
                 }
 
-                // Preroll gate (checked after every video packet)
-                if video_only {
-                    if let Some(_phase) = &seek_phase {
-                        let min_samples =
-                            (out_rate as usize * out_channels * PREROLL_MS as usize) / 1000;
-                        let video_ok = video_preroll_ok(&shared);
-                        let audio_ok = sample_tx.len() >= min_samples;
-                        let queue_capacity = out_rate as usize * out_channels * 4;
-                        if audio_ok && (video_ok || sample_tx.len() >= queue_capacity * 3 / 4) {
-                            let resume = shared.resume_intent.load(Ordering::Acquire);
-                            shared.is_playing.store(resume, Ordering::Release);
-                            {
-                                let mut s = lock_status(&shared);
-                                s.state = if resume {
-                                    PlaybackState::Playing
-                                } else {
-                                    PlaybackState::Paused
-                                };
-                            }
-                            seek_phase = None;
+            // Preroll gate (checked after every video packet)
+            if video_only {
+                if let Some(_phase) = &seek_phase {
+                    let min_samples =
+                        (out_rate as usize * out_channels * PREROLL_MS as usize) / 1000;
+                    let video_ok = video_preroll_ok(&shared);
+                    let audio_ok = sample_tx.len() >= min_samples;
+                    let queue_capacity = out_rate as usize * out_channels * 4;
+                    if audio_ok && (video_ok || sample_tx.len() >= queue_capacity * 3 / 4) {
+                        let resume = shared.resume_intent.load(Ordering::Acquire);
+                        shared.is_playing.store(resume, Ordering::Release);
+                        {
+                            let mut s = lock_status(&shared);
+                            s.state = if resume {
+                                PlaybackState::Playing
+                            } else {
+                                PlaybackState::Paused
+                            };
                         }
+                        seek_phase = None;
                     }
                 }
-
-                continue;
             }
+
+            continue;
+        }
         }
 
         // Non-video packet: skip if it's not our audio track.

@@ -17,6 +17,7 @@ use player_core::{AudioPlayer, MediaSource, PlaybackState, TrackMeta, probe_medi
 use repose_core::modifier::PaddingValues;
 use repose_core::prelude::*;
 use repose_material::material3 as m3;
+use repose_core::text::FontWeight;
 use repose_material::{Icon, material_symbols};
 use repose_platform::render::RenderContext;
 use repose_ui::TextStyle;
@@ -42,6 +43,10 @@ material_symbols! {
     error_icon     : '\u{E000}',
     close          : '\u{E5CD}',
     graphic_eq     : '\u{E1B8}',
+    fullscreen     : '\u{E5D0}',
+    fullscreen_exit: '\u{E5D1}',
+    replay_10      : '\u{E059}',
+    forward_10     : '\u{E056}',
 }
 use repose_ui::lazy_states::LazyColumnState;
 use repose_ui::{
@@ -206,8 +211,14 @@ impl VideoSink {
 
             match action {
                 player_sync::FrameAction::Drop => {
-                    self.buffered.remove(0);
-                    continue;
+                    if self.buffered.len() > 1 {
+                        self.buffered.remove(0);
+                        continue;
+                    } else {
+                        // If only one frame buffered and it's stale, then keep showing it
+                        // rather than going blank; wait for the next real frame.
+                        break;
+                    }
                 }
                 // Wait for the next poll unless we're >1 frame behind the audio
                 // clock (catch-up).  This prevents presenting frames in the
@@ -500,7 +511,13 @@ fn App(player: AudioPlayer, pending: PendingFiles, video_sink: &Rc<RefCell<Video
         }
     }
 
+    let is_fullscreen = remember(|| signal(false));
+    let has_video = video_sink.borrow().active_handle().is_some();
     let snap = player.snapshot();
+
+    if is_fullscreen.get() && has_video {
+        return FullscreenVideo(player.clone(), snap.clone(), video_sink, is_fullscreen);
+    }
 
     if matches!(
         snap.state,
@@ -610,7 +627,13 @@ fn App(player: AudioPlayer, pending: PendingFiles, video_sink: &Rc<RefCell<Video
             )
             .child((
                 ErrorBanner(snap.error.clone(), dismissed_error.clone()),
-                NowPlayingCard(player.clone(), snap.clone(), scrubbing.clone(), video_sink),
+                NowPlayingCard(
+                    player.clone(),
+                    snap.clone(),
+                    scrubbing.clone(),
+                    video_sink,
+                    is_fullscreen.clone(),
+                ),
                 TransportBar(
                     player.clone(),
                     playlist.clone(),
@@ -683,6 +706,7 @@ fn NowPlayingCard(
     snap: player_core::PlayerSnapshot,
     scrubbing: Rc<Signal<Option<f32>>>,
     video_sink: &Rc<RefCell<VideoSink>>,
+    is_fullscreen: Rc<Signal<bool>>,
 ) -> View {
     let title = snap
         .title
@@ -738,25 +762,57 @@ fn NowPlayingCard(
                     .aspect_ratio(aspect)
                     .clip_rounded(20.0)
                     .background(art_bg))
-                .child(ZStack(Modifier::new().fill_max_size()).child((
-                    Image(Modifier::new().fill_max_size(), video_handle.unwrap()),
-                    if snap.state == PlaybackState::Buffering {
+                .child(
+                    ZStack(Modifier::new().fill_max_size().on_double_click({
+                        let is_fullscreen = is_fullscreen.clone();
+                        move || is_fullscreen.set(true)
+                    })).child((
+                        Image(Modifier::new().fill_max_size(), video_handle.unwrap()),
+                        if snap.state == PlaybackState::Buffering {
+                            Box(Modifier::new()
+                                .fill_max_size()
+                                .background(theme().surface.with_alpha(100))
+                                .align_items(AlignItems::CENTER)
+                                .justify_content(JustifyContent::CENTER))
+                            .child(m3::CircularProgressIndicator(
+                                None,
+                                m3::CircularProgressIndicatorConfig {
+                                    color: theme().primary,
+                                    ..Default::default()
+                                },
+                            ))
+                        } else {
+                            Box(Modifier::new().height(0.0))
+                        },
                         Box(Modifier::new()
                             .fill_max_size()
-                            .background(theme().surface.with_alpha(100))
-                            .align_items(AlignItems::CENTER)
-                            .justify_content(JustifyContent::CENTER))
-                        .child(m3::CircularProgressIndicator(
-                            None,
-                            m3::CircularProgressIndicatorConfig {
-                                color: theme().primary,
-                                ..Default::default()
-                            },
-                        ))
-                    } else {
-                        Box(Modifier::new().height(0.0))
-                    },
-                ))),
+                            .align_items(AlignItems::FLEX_END)
+                            .justify_content(JustifyContent::FLEX_END)
+                            .padding(10.0)
+                            .hit_passthrough())
+                        .child(
+                            Box(Modifier::new()
+                                .background(Color::BLACK.with_alpha(120))
+                                .clip_rounded(20.0)
+                                .padding(4.0))
+                            .child(
+                                m3::IconButton(
+                                    Icon(Symbols::fullscreen)
+                                        .size(20.0)
+                                        .color(Color::WHITE),
+                                    {
+                                        let is_fullscreen = is_fullscreen.clone();
+                                        move || is_fullscreen.set(true)
+                                    },
+                                    m3::IconButtonConfig {
+                                        container_size: Some(36.0),
+                                        ..Default::default()
+                                    },
+                                ),
+                            ),
+                        ),
+                    )),
+                ),
                 Row(Modifier::new()
                     .fill_max_width()
                     .gap(16.0)
@@ -859,6 +915,409 @@ fn NowPlayingCard(
                     .color(theme().on_surface.with_alpha(150)),
             )),
         )),
+    ))
+}
+
+fn FullscreenVideo(
+    player: AudioPlayer,
+    snap: player_core::PlayerSnapshot,
+    video_sink: &Rc<RefCell<VideoSink>>,
+    is_fullscreen: Rc<Signal<bool>>,
+) -> View {
+    let handle = video_sink.borrow().active_handle();
+    let aspect = video_sink.borrow().aspect();
+    let slider_value = progress_ratio(snap.position, snap.duration);
+
+    let controls_visible = remember(|| signal(true));
+    let last_activity = remember(|| signal(Instant::now()));
+    let scrubbing = remember(|| signal(false));
+    let osd = remember(|| signal(Option::<(String, Instant)>::None));
+
+    let bump_activity = {
+        let controls_visible = controls_visible.clone();
+        let last_activity = last_activity.clone();
+        Rc::new(move || {
+            last_activity.set(Instant::now());
+            controls_visible.set(true);
+            request_frame();
+        })
+    };
+
+    let show_osd = {
+        let osd = osd.clone();
+        let bump = bump_activity.clone();
+        Rc::new(move |msg: String| {
+            osd.set(Some((msg, Instant::now())));
+            bump();
+            request_frame();
+        })
+    };
+
+    {
+        let playing = snap.state == PlaybackState::Playing;
+        let scrub = scrubbing.get();
+        if controls_visible.get() && playing && !scrub {
+            if last_activity.get().elapsed() >= FS_HIDE_AFTER {
+                controls_visible.set(false);
+            } else {
+                request_frame();
+            }
+        }
+        if let Some((_, t)) = osd.get() {
+            if t.elapsed() >= Duration::from_millis(OSD_MS) {
+                osd.set(None);
+            } else {
+                request_frame();
+            }
+        }
+    }
+
+    let show_chrome = controls_visible.get() || scrubbing.get() || snap.state != PlaybackState::Playing;
+
+    let title = snap
+        .title
+        .clone()
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| "Now playing".into());
+
+    let pos_label = format_position(snap.position);
+    let dur_label = snap
+        .duration
+        .map(format_position)
+        .unwrap_or_else(|| "--:--".into());
+
+    let osd_pos = pos_label.clone();
+    let osd_dur = dur_label.clone();
+
+    let key_handler = {
+        let player = player.clone();
+        let is_fullscreen = is_fullscreen.clone();
+        let snap = snap.clone();
+        let bump = bump_activity.clone();
+        let show_osd = show_osd.clone();
+        move |ev: KeyEvent| -> bool {
+            if ev.event_type != KeyEventType::Down {
+                return false;
+            }
+            bump();
+            match &ev.key {
+                Key::Escape | Key::Character('f') | Key::Character('F') | Key::F(11) => {
+                    is_fullscreen.set(false);
+                    true
+                }
+                Key::Space | Key::Character('p') | Key::Character('P') => {
+                    let _ = player.toggle();
+                    true
+                }
+                Key::ArrowLeft if !ev.modifiers.shift => {
+                    relative_seek(&player, &snap, if ev.modifiers.ctrl { -1.0 } else { -5.0 });
+                    show_osd(format!("Seek {}", if ev.modifiers.ctrl { "-1s" } else { "-5s" }));
+                    true
+                }
+                Key::ArrowRight if !ev.modifiers.shift => {
+                    relative_seek(&player, &snap, if ev.modifiers.ctrl { 1.0 } else { 5.0 });
+                    show_osd(format!("Seek {}", if ev.modifiers.ctrl { "+1s" } else { "+5s" }));
+                    true
+                }
+                Key::ArrowLeft if ev.modifiers.shift => {
+                    relative_seek(&player, &snap, -1.0);
+                    show_osd("Seek -1s".into());
+                    true
+                }
+                Key::ArrowRight if ev.modifiers.shift => {
+                    relative_seek(&player, &snap, 1.0);
+                    show_osd("Seek +1s".into());
+                    true
+                }
+                Key::ArrowUp => {
+                    relative_seek(&player, &snap, 60.0);
+                    show_osd("Seek +1m".into());
+                    true
+                }
+                Key::ArrowDown => {
+                    relative_seek(&player, &snap, -60.0);
+                    show_osd("Seek -1m".into());
+                    true
+                }
+                Key::Character('m') | Key::Character('M') => {
+                    show_osd("Mute (wire player API)".into());
+                    true
+                }
+                Key::Home => {
+                    let _ = player.seek(Duration::ZERO);
+                    show_osd("Start".into());
+                    true
+                }
+                Key::Character('o') | Key::Character('O') => {
+                    bump();
+                    show_osd(format!("{osd_pos} / {osd_dur}"));
+                    true
+                }
+                _ => false,
+            }
+        }
+    };
+
+    ZStack(Modifier::new()
+        .fill_max_size()
+        .background(Color::BLACK)
+        .focusable(true)
+        .focus_target()
+        .on_key_event(key_handler)
+        .on_pointer_move({
+            let bump = bump_activity.clone();
+            move |_| bump()
+        })
+        .on_click({
+            let player = player.clone();
+            let bump = bump_activity.clone();
+            move || {
+                bump();
+                let _ = player.toggle();
+            }
+        })
+        .on_double_click({
+            let is_fullscreen = is_fullscreen.clone();
+            move || is_fullscreen.set(false)
+        }))
+    .child((
+        Box(Modifier::new()
+            .fill_max_size()
+            .align_items(AlignItems::CENTER)
+            .justify_content(JustifyContent::CENTER)
+            .hit_passthrough())
+        .child(
+            Box(Modifier::new().fill_max_width().aspect_ratio(aspect).hit_passthrough()).child(
+                handle
+                    .map(|h| Image(Modifier::new().fill_max_size().hit_passthrough(), h))
+                    .unwrap_or_else(|| Box(Modifier::new().fill_max_size())),
+            ),
+        ),
+        if snap.state == PlaybackState::Buffering || snap.state == PlaybackState::Loading {
+            Box(Modifier::new()
+                .fill_max_size()
+                .background(theme().surface.with_alpha(80))
+                .align_items(AlignItems::CENTER)
+                .justify_content(JustifyContent::CENTER))
+            .child(m3::CircularProgressIndicator(
+                None,
+                m3::CircularProgressIndicatorConfig {
+                    color: theme().primary,
+                    ..Default::default()
+                },
+            ))
+        } else {
+            Box(Modifier::new().height(0.0))
+        },
+        if let Some((ref msg, _)) = osd.get() {
+            Box(Modifier::new()
+                .fill_max_size()
+                .align_items(AlignItems::CENTER)
+                .justify_content(JustifyContent::CENTER)
+                .hit_passthrough())
+            .child(
+                Box(Modifier::new()
+                    .padding_values(PaddingValues {
+                        left: 16.0,
+                        right: 16.0,
+                        top: 10.0,
+                        bottom: 10.0,
+                    })
+                    .background(Color::BLACK.with_alpha(180))
+                    .clip_rounded(8.0))
+                .child(
+                    Text(msg.clone())
+                        .size(18.0)
+                        .color(Color::WHITE)
+                        .font_weight(FontWeight::MEDIUM),
+                ),
+            )
+        } else {
+            Box(Modifier::new().height(0.0))
+        },
+        if show_chrome {
+            ZStack(Modifier::new().fill_max_size()).child((
+                Column(
+                    Modifier::new()
+                        .fill_max_width()
+                        .align_self(AlignSelf::START)
+                        .background(Color::BLACK.with_alpha(160))
+                        .padding_values(PaddingValues {
+                            left: 16.0,
+                            right: 8.0,
+                            top: 10.0,
+                            bottom: 12.0,
+                        }),
+                )
+                .child(
+                    Row(Modifier::new()
+                        .fill_max_width()
+                        .align_items(AlignItems::CENTER)
+                        .gap(12.0))
+                    .child((
+                        Text(title)
+                            .size(16.0)
+                            .color(Color::WHITE)
+                            .font_weight(FontWeight::MEDIUM)
+                            .max_lines(1)
+                            .overflow_ellipsize(),
+                        Spacer(),
+                        StatusChip(snap.state),
+                        m3::IconButton(
+                            Icon(Symbols::fullscreen_exit)
+                                .size(22.0)
+                                .color(Color::WHITE),
+                            {
+                                let is_fullscreen = is_fullscreen.clone();
+                                move || is_fullscreen.set(false)
+                            },
+                            m3::IconButtonConfig {
+                                container_size: Some(40.0),
+                                ..Default::default()
+                            },
+                        ),
+                    )),
+                ),
+                Column(
+                    Modifier::new()
+                        .fill_max_width()
+                        .align_self(AlignSelf::END)
+                        .background(Color::BLACK.with_alpha(170))
+                        .padding_values(PaddingValues {
+                            left: 16.0,
+                            right: 16.0,
+                            top: 10.0,
+                            bottom: 14.0,
+                        })
+                        .gap(6.0)
+                        .on_pointer_enter({
+                            let bump = bump_activity.clone();
+                            move |_| bump()
+                        })
+                        .on_pointer_move({
+                            let bump = bump_activity.clone();
+                            move |_| bump()
+                        })
+                        .on_pointer_up({
+                            let scrubbing = scrubbing.clone();
+                            move |_| scrubbing.set(false)
+                        }),
+                )
+                .child((
+                    Row(Modifier::new()
+                        .fill_max_width()
+                        .align_items(AlignItems::CENTER)
+                        .gap(10.0))
+                    .child((
+                        Text(pos_label)
+                            .size(13.0)
+                            .color(Color::WHITE.with_alpha(220))
+                            .font_family("monospace")
+                            .single_line(),
+                        m3::Slider(
+                            slider_value,
+                            (0.0, 1.0),
+                            None,
+                            {
+                                let player = player.clone();
+                                let duration = snap.duration;
+                                let scrubbing = scrubbing.clone();
+                                let bump = bump_activity.clone();
+                                move |ratio: f32| {
+                                    scrubbing.set(true);
+                                    bump();
+                                    if let Some(d) = duration {
+                                        let target = Duration::from_secs_f64(
+                                            d.as_secs_f64() * ratio as f64,
+                                        );
+                                        let _ = player.seek(target);
+                                    }
+                                }
+                            },
+                            m3::SliderConfig {
+                                enabled: snap.duration.is_some(),
+                                modifier: Modifier::new().fill_max_width().flex_grow(1.0),
+                                ..Default::default()
+                            },
+                        ),
+                        Text(dur_label)
+                            .size(13.0)
+                            .color(Color::WHITE.with_alpha(220))
+                            .font_family("monospace")
+                            .single_line(),
+                    )),
+                    Row(Modifier::new()
+                        .fill_max_width()
+                        .align_items(AlignItems::CENTER)
+                        .justify_content(JustifyContent::CENTER)
+                        .gap(8.0))
+                    .child((
+                        m3::IconButton(
+                            Icon(Symbols::replay_10)
+                                .size(24.0)
+                                .color(Color::WHITE),
+                            {
+                                let player = player.clone();
+                                let snap = snap.clone();
+                                let show_osd = show_osd.clone();
+                                let bump = bump_activity.clone();
+                                move || {
+                                    bump();
+                                    relative_seek(&player, &snap, -10.0);
+                                    show_osd("−10s".into());
+                                }
+                            },
+                            m3::IconButtonConfig {
+                                container_size: Some(44.0),
+                                ..Default::default()
+                            },
+                        ),
+                        m3::FilledIconButton(
+                            Icon(if snap.state == PlaybackState::Playing {
+                                Symbols::pause
+                            } else {
+                                Symbols::play_arrow
+                            })
+                            .size(28.0),
+                            {
+                                let player = player.clone();
+                                let bump = bump_activity.clone();
+                                move || {
+                                    bump();
+                                    let _ = player.toggle();
+                                }
+                            },
+                            m3::IconButtonConfig {
+                                container_size: Some(56.0),
+                                ..Default::default()
+                            },
+                        ),
+                        m3::IconButton(
+                            Icon(Symbols::forward_10)
+                                .size(24.0)
+                                .color(Color::WHITE),
+                            {
+                                let player = player.clone();
+                                let snap = snap.clone();
+                                let show_osd = show_osd.clone();
+                                let bump = bump_activity.clone();
+                                move || {
+                                    bump();
+                                    relative_seek(&player, &snap, 10.0);
+                                    show_osd("+10s".into());
+                                }
+                            },
+                            m3::IconButtonConfig {
+                                container_size: Some(44.0),
+                                ..Default::default()
+                            },
+                        ),
+                    )),
+                )),
+            ))
+        } else {
+            Box(Modifier::new().height(0.0))
+        },
     ))
 }
 
@@ -1288,3 +1747,25 @@ fn format_duration(d: Duration) -> String {
         format!("{:02}:{:02}", m, s)
     }
 }
+
+fn format_position(d: Duration) -> String {
+    let secs = d.as_secs();
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+fn relative_seek(player: &AudioPlayer, snap: &player_core::PlayerSnapshot, delta: f64) {
+    let Some(dur) = snap.duration else { return };
+    let pos = snap.position.as_secs_f64();
+    let target = (pos + delta).clamp(0.0, dur.as_secs_f64());
+    let _ = player.seek(Duration::from_secs_f64(target));
+}
+
+const FS_HIDE_AFTER: Duration = Duration::from_millis(2500);
+const OSD_MS: u64 = 1200;
