@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use web_time::Duration;
 
 use anyhow::Result;
@@ -21,9 +23,9 @@ pub struct DecodedVideoFrame {
     pub width: u32,
     pub height: u32,
     /// Packed luma: `width * height` bytes.
-    pub y_plane: Vec<u8>,
+    pub y_plane: Arc<[u8]>,
     /// Packed chroma: `width * ceil(height/2)` bytes, U/V interleaved.
-    pub uv_plane: Vec<u8>,
+    pub uv_plane: Arc<[u8]>,
     pub pts: Duration,
     pub load_serial: u64,
     pub color_info: ColorInfo,
@@ -109,8 +111,8 @@ impl VideoDecoder {
         width: usize,
         height: usize,
         stride: usize,
-    ) -> Vec<u8> {
-        match data {
+    ) -> Arc<[u8]> {
+        let plane: Vec<u8> = match data {
             videoson::PlaneData::U8(s) => {
                 let mut plane = Vec::with_capacity(width * height);
                 for row in 0..height {
@@ -135,7 +137,8 @@ impl VideoDecoder {
                 }
                 plane
             }
-        }
+        };
+        Arc::from(plane)
     }
 
     pub fn drain_frames(

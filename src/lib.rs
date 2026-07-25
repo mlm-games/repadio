@@ -198,7 +198,8 @@ impl VideoSink {
             }
 
             let gap = now_clock.saturating_sub(pts);
-            let action = if gap > Duration::from_millis(50) {
+            let drop_threshold = Duration::from_secs_f64(self.frame_duration * 1.5);
+            let action = if gap > drop_threshold {
                 player_sync::FrameAction::Drop
             } else if pts <= now_clock {
                 player_sync::FrameAction::PresentNow
@@ -215,8 +216,6 @@ impl VideoSink {
                         self.buffered.remove(0);
                         continue;
                     } else {
-                        // If only one frame buffered and it's stale, then keep showing it
-                        // rather than going blank; wait for the next real frame.
                         break;
                     }
                 }
@@ -227,9 +226,8 @@ impl VideoSink {
                     break;
                 }
                 player_sync::FrameAction::WaitFor(_) | player_sync::FrameAction::PresentNow => {
-                    // Wall-clock pacing: skip if not enough time has elapsed
-                    // since the last presented frame (smooths over audio clock
-                    // granularity and prevents frame-doubling).
+                    // Soft wall-clock pacing: skip if not enough time has elapsed
+                    // since the last presented frame.
                     if !wall_ok {
                         break;
                     }
@@ -454,6 +452,7 @@ fn App(player: AudioPlayer, pending: PendingFiles, video_sink: &Rc<RefCell<Video
     let ended_index = remember(|| signal(None::<usize>));
     let scrubbing = remember(|| signal(None::<f32>));
     let dismissed_error = remember(|| signal(None::<String>));
+    let ui_tick = remember(|| signal(Instant::now()));
     {
         let needs_wake = pending.needs_wake.swap(false, Ordering::AcqRel);
 
@@ -524,7 +523,10 @@ fn App(player: AudioPlayer, pending: PendingFiles, video_sink: &Rc<RefCell<Video
         PlaybackState::Playing | PlaybackState::Loading | PlaybackState::Buffering
     ) || scrubbing.get().is_some()
     {
-        request_frame();
+        if ui_tick.get().elapsed() >= Duration::from_millis(125) {
+            ui_tick.set(Instant::now());
+            request_frame();
+        }
     }
 
     // Keep frame alive if probe thread posted results
