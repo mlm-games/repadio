@@ -24,7 +24,7 @@ fn pts_s_to_dbg(pts: Duration) -> String {
 
 #[test]
 fn test_pts_monotonic() {
-    let path = "/home/ymsr/Videos/Big_Buck_Bunny_720_10s_1MB-h265.mp4";
+    let path = "tests/fixtures/hevc_sample.mp4";
     let file = File::open(path).expect("open mp4");
     let mss = MediaSourceStream::new(Box::new(file), MediaSourceStreamOptions::default());
 
