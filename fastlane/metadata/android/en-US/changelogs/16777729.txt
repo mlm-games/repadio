@@ -1,0 +1,32 @@
+- update to 0.24.3 (repose)
+- better player
+- add the sample to loc
+- fix: remove coi-serviceworker data-trunk ref (deleted file)
+- refactor: use reusable pages workflow from ci repo
+- save before correction removal
+- save better test, and delete
+- Revert "delete the test"
+- fix duration display for video-only files
+- delete the test
+- fix play, but need to fix few from the h265 decode commit
+- rm vp9
+- fix h265 decode. Save test in git history, along with broken player changes (revert afterwards)
+- video-only handling impl
+- change LICENSE for rav1d-safe
+- add 2 more codecs
+- missed more
+- std::ime err
+- add ogg/opus support
+- missed
+- add web_time and also use nv12 frames directly from videoson
+- bump ver
+- bump repose and merge pr
+- rm rav1d-safe for license
+- SeekPhase impl
+- color codec changes (for repose 0.23, saving)
+- Add a buffering state, and freeze the last frame on seek, so that vid view doesn't vanish
+- fix the scaffold being too big on android
+- switch to rlobkit activity
+- extract out the seek logic for flush_rx calls and fix end decode errors
+- seek near the end issue
+- partial video testing, should not be continued until repose player is stable enough for videos? Plays well (in release build, but has a white shade, with occasional green frames when seeking)
