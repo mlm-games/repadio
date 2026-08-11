@@ -16,8 +16,8 @@ use player_core::video::DecodedVideoFrame;
 use player_core::{AudioPlayer, MediaSource, PlaybackState, TrackMeta, probe_media_source};
 use repose_core::modifier::PaddingValues;
 use repose_core::prelude::*;
-use repose_material::material3 as m3;
 use repose_core::text::FontWeight;
+use repose_material::material3 as m3;
 use repose_material::{Icon, material_symbols};
 use repose_platform::render::RenderContext;
 use repose_ui::TextStyle;
@@ -47,6 +47,9 @@ material_symbols! {
     fullscreen_exit: '\u{E5D1}',
     replay_10      : '\u{E059}',
     forward_10     : '\u{E056}',
+    settings       : '\u{E8B8}',
+    speed          : '\u{E9E4}',
+    movie          : '\u{E02C}',
 }
 use repose_ui::lazy_states::LazyColumnState;
 use repose_ui::{
@@ -83,14 +86,191 @@ struct PendingState {
     probed_meta: Mutex<Vec<(MediaSource, TrackMeta)>>,
     needs_wake: AtomicBool,
     next_id: AtomicU64,
+    /// When true, the app enters fullscreen as soon as the current item is
+    /// video (by extension OR `player.has_video()`). Cleared on explicit exit.
+    auto_fullscreen: AtomicBool,
 }
 
 type PendingFiles = Arc<PendingState>;
 
-// ---------------------------------------------------------------------------
-// Video sink: receives decoded frames from the audio thread, applies A/V sync,
-// uploads to the GPU via ping-pong NV12 textures.
-// ---------------------------------------------------------------------------
+fn is_video_name(name: &str) -> bool {
+    const VID: &[&str] = &["mp4", "m4v", "mkv", "webm", "mov", "avi", "ts", "m2ts"];
+    std::path::Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| VID.iter().any(|v| e.eq_ignore_ascii_case(v)))
+        .unwrap_or(false)
+}
+
+fn is_video_source(src: &MediaSource) -> bool {
+    match src {
+        MediaSource::Path(p) => is_video_name(&p.to_string_lossy()),
+        MediaSource::Bytes { name, .. } => is_video_name(name),
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PlayerSettings {
+    auto_fullscreen_on_open: bool,
+    hide_controls_ms: u64,
+    seek_small_s: f64,
+    seek_medium_s: f64,
+    seek_large_s: f64,
+    volume_step: f32,
+    default_speed: f32,
+    remember_speed: bool,
+    show_playlist_thumbs: bool,
+}
+
+impl Default for PlayerSettings {
+    fn default() -> Self {
+        Self {
+            auto_fullscreen_on_open: true,
+            hide_controls_ms: 2500,
+            seek_small_s: 1.0,
+            seek_medium_s: 5.0,
+            seek_large_s: 60.0,
+            volume_step: 0.05,
+            default_speed: 1.0,
+            remember_speed: true,
+            show_playlist_thumbs: true,
+        }
+    }
+}
+
+impl PlayerSettings {
+    fn to_json(&self) -> String {
+        format!(
+            r#"{{"auto_fullscreen_on_open":{},"hide_controls_ms":{},"seek_small_s":{},"seek_medium_s":{},"seek_large_s":{},"volume_step":{},"default_speed":{},"remember_speed":{},"show_playlist_thumbs":{}}}"#,
+            self.auto_fullscreen_on_open,
+            self.hide_controls_ms,
+            self.seek_small_s,
+            self.seek_medium_s,
+            self.seek_large_s,
+            self.volume_step,
+            self.default_speed,
+            self.remember_speed,
+            self.show_playlist_thumbs,
+        )
+    }
+
+    fn from_json(s: &str) -> Self {
+        let mut out = Self::default();
+        let get_bool = |k: &str| s.contains(&format!("\"{k}\":true"));
+        let get_f = |k: &str, default: f64| {
+            s.split(&format!("\"{k}\":"))
+                .nth(1)
+                .and_then(|rest| {
+                    rest.split([',', '}'])
+                        .next()
+                        .and_then(|n| n.trim().parse().ok())
+                })
+                .unwrap_or(default)
+        };
+        out.auto_fullscreen_on_open = get_bool("auto_fullscreen_on_open");
+        out.hide_controls_ms = get_f("hide_controls_ms", 2500.0) as u64;
+        out.seek_small_s = get_f("seek_small_s", 1.0);
+        out.seek_medium_s = get_f("seek_medium_s", 5.0);
+        out.seek_large_s = get_f("seek_large_s", 60.0);
+        out.volume_step = get_f("volume_step", 0.05) as f32;
+        out.default_speed = get_f("default_speed", 1.0) as f32;
+        out.remember_speed = !s.contains("\"remember_speed\":false");
+        out.show_playlist_thumbs = !s.contains("\"show_playlist_thumbs\":false");
+        out
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn settings_path() -> Option<std::path::PathBuf> {
+    if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from) {
+        return Some(dir.join("repadio").join("settings.json"));
+    }
+    std::env::var_os("HOME").map(|h| {
+        std::path::PathBuf::from(h)
+            .join(".config")
+            .join("repadio")
+            .join("settings.json")
+    })
+}
+
+fn load_settings_sync() -> PlayerSettings {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Some(p) = settings_path()
+            && let Ok(s) = std::fs::read_to_string(p)
+        {
+            return PlayerSettings::from_json(&s);
+        }
+    }
+    PlayerSettings::default()
+}
+
+fn save_settings_sync(s: &PlayerSettings) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Some(p) = settings_path() {
+            if let Some(parent) = p.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(p, s.to_json());
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let json = s.to_json();
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = player_platform::wasm_persist::write("config/settings.json", &json).await;
+        });
+    }
+}
+
+// when the encoded bytes change (fingerprint), to avoid handle leaks.
+struct ArtCache {
+    map: std::collections::HashMap<u64, ImageHandle>,
+    fingerprints: std::collections::HashMap<u64, u64>,
+}
+
+impl ArtCache {
+    fn new() -> Self {
+        Self {
+            map: Default::default(),
+            fingerprints: Default::default(),
+        }
+    }
+
+    fn fingerprint(bytes: &[u8]) -> u64 {
+        let mut h = 0xcbf29ce484222325u64;
+        for &b in bytes.iter().take(4096) {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h ^ (bytes.len() as u64)
+    }
+
+    fn ensure(
+        &mut self,
+        ctx: &RenderContext,
+        id: u64,
+        art: &Option<Arc<Vec<u8>>>,
+    ) -> Option<ImageHandle> {
+        let bytes = art.as_ref()?;
+        let fp = Self::fingerprint(bytes);
+        if self.fingerprints.get(&id) == Some(&fp) {
+            return self.map.get(&id).copied();
+        }
+        let handle = match self.map.get(&id) {
+            Some(&h) => h,
+            None => {
+                let h = ctx.alloc_image_handle();
+                self.map.insert(id, h);
+                h
+            }
+        };
+        ctx.set_image_encoded(handle, bytes.as_ref().clone(), true);
+        self.fingerprints.insert(id, fp);
+        Some(handle)
+    }
+}
 
 struct VideoSink {
     rx: crossbeam_channel::Receiver<DecodedVideoFrame>,
@@ -292,21 +472,22 @@ pub fn run_desktop() -> anyhow::Result<()> {
         player.video_rx(),
         player.clone(),
     )));
+    let args: Vec<MediaSource> = std::env::args()
+        .skip(1)
+        .map(|p| MediaSource::Path(std::path::PathBuf::from(p)))
+        .collect();
+    let auto_fs = args.first().map(is_video_source).unwrap_or(false);
     let pending: PendingFiles = Arc::new(PendingState {
-        files: Mutex::new(
-            std::env::args()
-                .skip(1)
-                .map(|p| MediaSource::Path(std::path::PathBuf::from(p)))
-                .collect(),
-        ),
+        files: Mutex::new(args),
         probed_meta: Mutex::new(Vec::new()),
         needs_wake: AtomicBool::new(false),
         next_id: AtomicU64::new(0),
+        auto_fullscreen: AtomicBool::new(auto_fs),
     });
 
     repose_platform::run_desktop_app(move |_sched, ctx| {
         video_sink.borrow_mut().poll(ctx);
-        App(player.clone(), pending.clone(), &video_sink)
+        App(player.clone(), pending.clone(), &video_sink, ctx)
     })
 }
 
@@ -332,6 +513,7 @@ pub async fn wasm_main() {
         probed_meta: Mutex::new(Vec::new()),
         needs_wake: AtomicBool::new(false),
         next_id: AtomicU64::new(0),
+        auto_fullscreen: AtomicBool::new(false),
     });
 
     let canvas = web_sys::window()
@@ -362,7 +544,7 @@ pub async fn wasm_main() {
         repose_platform::web::run_web_app(
             move |_sched, ctx| {
                 vs.borrow_mut().poll(ctx);
-                App(player.clone(), pending.clone(), &vs)
+                App(player.clone(), pending.clone(), &vs, ctx)
             },
             repose_platform::web::WebOptions::new(None),
         )
@@ -411,9 +593,11 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
     let data_dir = android_app.internal_data_path();
 
     let mut initial = Vec::new();
+    let mut auto_fs = false;
     if let Some(ref dir) = data_dir {
         if let Some(src) = intent_to_media_source(dir) {
             log::info!("loaded pending intent file");
+            auto_fs = is_video_source(&src);
             initial.push(src);
         }
     }
@@ -428,6 +612,7 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
         probed_meta: Mutex::new(Vec::new()),
         needs_wake: AtomicBool::new(false),
         next_id: AtomicU64::new(0),
+        auto_fullscreen: AtomicBool::new(auto_fs),
     });
 
     {
@@ -438,12 +623,15 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
                 if let Some(ref dir) = data_dir {
                     if let Some(src) = intent_to_media_source(dir) {
                         log::info!("loaded late pending intent");
+                        if is_video_source(&src) {
+                            pending.auto_fullscreen.store(true, Ordering::Release);
+                        }
                         pending.files.lock().unwrap().push(src);
                         request_frame();
                     }
                 }
                 vs.borrow_mut().poll(ctx);
-                App(player.clone(), pending.clone(), &vs)
+                App(player.clone(), pending.clone(), &vs, ctx)
             })
         {
             log::error!("Repadio failed: {err:?}");
@@ -451,7 +639,12 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
     }
 }
 
-fn App(player: AudioPlayer, pending: PendingFiles, video_sink: &Rc<RefCell<VideoSink>>) -> View {
+fn App(
+    player: AudioPlayer,
+    pending: PendingFiles,
+    video_sink: &Rc<RefCell<VideoSink>>,
+    ctx: &RenderContext,
+) -> View {
     let playlist = remember(|| signal(Vec::<Entry>::new()));
     let current = remember(|| signal(None::<usize>));
     let volume = remember(|| signal(1.0f32));
@@ -461,6 +654,11 @@ fn App(player: AudioPlayer, pending: PendingFiles, video_sink: &Rc<RefCell<Video
     let scrubbing = remember(|| signal(None::<f32>));
     let dismissed_error = remember(|| signal(None::<String>));
     let ui_tick = remember(|| signal(Instant::now()));
+    let settings = remember(|| signal(load_settings_sync()));
+    let show_settings = remember(|| signal(false));
+    let is_fullscreen = remember(|| signal(false));
+    let speed = remember(|| signal(player.playback_rate()));
+    let art_cache = remember(|| Rc::new(RefCell::new(ArtCache::new())));
     {
         let needs_wake = pending.needs_wake.swap(false, Ordering::AcqRel);
 
@@ -496,8 +694,16 @@ fn App(player: AudioPlayer, pending: PendingFiles, video_sink: &Rc<RefCell<Video
             playlist.set(list.clone());
             if was_empty && !list.is_empty() {
                 current.set(Some(0));
+                if settings.get().auto_fullscreen_on_open && is_video_source(&list[0].source) {
+                    pending.auto_fullscreen.store(true, Ordering::Release);
+                }
                 if let Err(e) = player.load(list[0].source.clone()) {
                     log::error!("load first track failed: {e}");
+                }
+                if settings.get().remember_speed {
+                    let s = settings.get().default_speed;
+                    let _ = player.set_speed(s);
+                    speed.set(s);
                 }
                 advance_armed.set(true);
             }
@@ -518,12 +724,58 @@ fn App(player: AudioPlayer, pending: PendingFiles, video_sink: &Rc<RefCell<Video
         }
     }
 
-    let is_fullscreen = remember(|| signal(false));
-    let has_video = video_sink.borrow().active_handle().is_some();
     let snap = player.snapshot();
+    let has_video_frame = video_sink.borrow().active_handle().is_some();
+    let has_video = has_video_frame || snap.has_video || player.has_video();
+
+    // Upload art thumbnails (long-lived handles, only re-uploaded on change).
+    if settings.get().show_playlist_thumbs {
+        let mut cache = art_cache.borrow_mut();
+        let list = playlist.get();
+        for e in list.iter() {
+            let _ = cache.ensure(ctx, e.id, &e.meta.art);
+        }
+        if let Some(idx) = current.get()
+            && let Some(e) = list.get(idx)
+        {
+            let art = snap.art.clone().or_else(|| e.meta.art.clone());
+            let _ = cache.ensure(ctx, e.id, &art);
+        }
+    }
+    let thumbs: Rc<std::collections::HashMap<u64, ImageHandle>> =
+        Rc::new(art_cache.borrow().map.clone());
+    let list = playlist.get();
+    let now_playing_thumb: Option<ImageHandle> = current
+        .get()
+        .and_then(|idx| list.get(idx))
+        .and_then(|e| thumbs.get(&e.id).copied());
+
+    // Enter fullscreen as soon as we know the item is video (or the first
+    // frame arrived). The flag stays set until the user explicitly exits so a
+    // transient Loading→Playing transition doesn't flicker the UI.
+    if pending.auto_fullscreen.load(Ordering::Acquire) && has_video && !is_fullscreen.get() {
+        is_fullscreen.set(true);
+    }
+
+    if show_settings.get() {
+        return SettingsScreen(
+            settings.clone(),
+            show_settings.clone(),
+            player.clone(),
+            speed.clone(),
+        );
+    }
 
     if is_fullscreen.get() && has_video {
-        return FullscreenVideo(player.clone(), snap.clone(), video_sink, is_fullscreen);
+        return FullscreenVideo(
+            player.clone(),
+            snap.clone(),
+            video_sink,
+            is_fullscreen.clone(),
+            pending.clone(),
+            settings.clone(),
+            speed.clone(),
+        );
     }
 
     if matches!(
@@ -586,7 +838,14 @@ fn App(player: AudioPlayer, pending: PendingFiles, video_sink: &Rc<RefCell<Video
         )),
         None,
         None,
-        vec![],
+        vec![m3::IconButton(
+            Icon(Symbols::settings).size(22.0),
+            {
+                let show_settings = show_settings.clone();
+                move || show_settings.set(true)
+            },
+            m3::IconButtonConfig::default(),
+        )],
         m3::TopAppBarConfig::default(),
     );
 
@@ -622,6 +881,17 @@ fn App(player: AudioPlayer, pending: PendingFiles, video_sink: &Rc<RefCell<Video
         m3::FABConfig::default(),
     );
 
+    let key_handler = make_player_key_handler(
+        player.clone(),
+        snap.clone(),
+        is_fullscreen.clone(),
+        has_video,
+        settings.clone(),
+        speed.clone(),
+        volume.clone(),
+        show_settings.clone(),
+    );
+
     m3::Scaffold(
         move |_padding| {
             Column(
@@ -643,19 +913,27 @@ fn App(player: AudioPlayer, pending: PendingFiles, video_sink: &Rc<RefCell<Video
                     scrubbing.clone(),
                     video_sink,
                     is_fullscreen.clone(),
+                    now_playing_thumb,
                 ),
                 TransportBar(
                     player.clone(),
                     playlist.clone(),
                     current.clone(),
                     snap.state,
+                    speed.clone(),
+                    settings.clone(),
                 ),
-                VolumeRow(player.clone(), volume.clone()),
+                VolumeRow(player.clone(), volume.clone(), snap.muted),
                 PlaylistHeader(playlist_len),
                 if playlist_len == 0 {
                     EmptyPlaylist(pending.clone())
                 } else {
-                    PlaylistList(playlist.clone(), current.clone(), player.clone())
+                    PlaylistList(
+                        playlist.clone(),
+                        current.clone(),
+                        player.clone(),
+                        thumbs.clone(),
+                    )
                 },
             ))
         },
@@ -664,6 +942,12 @@ fn App(player: AudioPlayer, pending: PendingFiles, video_sink: &Rc<RefCell<Video
             floating_action_button: Some(fab),
             ..Default::default()
         },
+    )
+    .modifier(
+        Modifier::new()
+            .focusable(true)
+            .focus_target()
+            .on_key_event(key_handler),
     )
 }
 
@@ -717,6 +1001,7 @@ fn NowPlayingCard(
     scrubbing: Rc<Signal<Option<f32>>>,
     video_sink: &Rc<RefCell<VideoSink>>,
     is_fullscreen: Rc<Signal<bool>>,
+    art_thumb: Option<ImageHandle>,
 ) -> View {
     let title = snap
         .title
@@ -776,7 +1061,8 @@ fn NowPlayingCard(
                     ZStack(Modifier::new().fill_max_size().on_double_click({
                         let is_fullscreen = is_fullscreen.clone();
                         move || is_fullscreen.set(true)
-                    })).child((
+                    }))
+                    .child((
                         Image(Modifier::new().fill_max_size(), video_handle.unwrap()),
                         if snap.state == PlaybackState::Buffering {
                             Box(Modifier::new()
@@ -805,21 +1091,17 @@ fn NowPlayingCard(
                                 .background(Color::BLACK.with_alpha(120))
                                 .clip_rounded(20.0)
                                 .padding(4.0))
-                            .child(
-                                m3::IconButton(
-                                    Icon(Symbols::fullscreen)
-                                        .size(20.0)
-                                        .color(Color::WHITE),
-                                    {
-                                        let is_fullscreen = is_fullscreen.clone();
-                                        move || is_fullscreen.set(true)
-                                    },
-                                    m3::IconButtonConfig {
-                                        container_size: Some(36.0),
-                                        ..Default::default()
-                                    },
-                                ),
-                            ),
+                            .child(m3::IconButton(
+                                Icon(Symbols::fullscreen).size(20.0).color(Color::WHITE),
+                                {
+                                    let is_fullscreen = is_fullscreen.clone();
+                                    move || is_fullscreen.set(true)
+                                },
+                                m3::IconButtonConfig {
+                                    container_size: Some(36.0),
+                                    ..Default::default()
+                                },
+                            )),
                         ),
                     )),
                 ),
@@ -850,15 +1132,17 @@ fn NowPlayingCard(
                     .background(art_bg)
                     .align_items(AlignItems::CENTER)
                     .justify_content(JustifyContent::CENTER))
-                .child(
+                .child(if let Some(h) = art_thumb {
+                    Image(Modifier::new().fill_max_size(), h)
+                } else {
                     Icon(if snap.art.is_some() {
                         Symbols::image
                     } else {
                         Symbols::music_note
                     })
                     .size(36.0)
-                    .color(art_fg),
-                ),
+                    .color(art_fg)
+                }),
                 Column(Modifier::new().weight(1.0).gap(6.0)).child((
                     Text(title).size(20.0).single_line().overflow_ellipsize(),
                     Text(sub_line)
@@ -933,6 +1217,9 @@ fn FullscreenVideo(
     snap: player_core::PlayerSnapshot,
     video_sink: &Rc<RefCell<VideoSink>>,
     is_fullscreen: Rc<Signal<bool>>,
+    pending: PendingFiles,
+    settings: Rc<Signal<PlayerSettings>>,
+    speed: Rc<Signal<f32>>,
 ) -> View {
     let handle = video_sink.borrow().active_handle();
     let aspect = video_sink.borrow().aspect();
@@ -942,6 +1229,17 @@ fn FullscreenVideo(
     let last_activity = remember(|| signal(Instant::now()));
     let scrubbing = remember(|| signal(false));
     let osd = remember(|| signal(Option::<(String, Instant)>::None));
+
+    let exit_fs = {
+        let is_fullscreen = is_fullscreen.clone();
+        let pending = pending.clone();
+        Rc::new(move || {
+            is_fullscreen.set(false);
+            pending.auto_fullscreen.store(false, Ordering::Release);
+        })
+    };
+
+    let hide_after = Duration::from_millis(settings.get().hide_controls_ms.max(500));
 
     let bump_activity = {
         let controls_visible = controls_visible.clone();
@@ -967,7 +1265,7 @@ fn FullscreenVideo(
         let playing = snap.state == PlaybackState::Playing;
         let scrub = scrubbing.get();
         if controls_visible.get() && playing && !scrub {
-            if last_activity.get().elapsed() >= FS_HIDE_AFTER {
+            if last_activity.get().elapsed() >= hide_after {
                 controls_visible.set(false);
             } else {
                 request_frame();
@@ -982,7 +1280,8 @@ fn FullscreenVideo(
         }
     }
 
-    let show_chrome = controls_visible.get() || scrubbing.get() || snap.state != PlaybackState::Playing;
+    let show_chrome =
+        controls_visible.get() || scrubbing.get() || snap.state != PlaybackState::Playing;
 
     let title = snap
         .title
@@ -1001,10 +1300,11 @@ fn FullscreenVideo(
 
     let key_handler = {
         let player = player.clone();
-        let is_fullscreen = is_fullscreen.clone();
         let snap = snap.clone();
         let bump = bump_activity.clone();
         let show_osd = show_osd.clone();
+        let exit_fs = exit_fs.clone();
+        let speed = speed.clone();
         move |ev: KeyEvent| -> bool {
             if ev.event_type != KeyEventType::Down {
                 return false;
@@ -1012,7 +1312,7 @@ fn FullscreenVideo(
             bump();
             match &ev.key {
                 Key::Escape | Key::Character('f') | Key::Character('F') | Key::F(11) => {
-                    is_fullscreen.set(false);
+                    exit_fs();
                     true
                 }
                 Key::Space | Key::Character('p') | Key::Character('P') => {
@@ -1021,12 +1321,18 @@ fn FullscreenVideo(
                 }
                 Key::ArrowLeft if !ev.modifiers.shift => {
                     relative_seek(&player, &snap, if ev.modifiers.ctrl { -1.0 } else { -5.0 });
-                    show_osd(format!("Seek {}", if ev.modifiers.ctrl { "-1s" } else { "-5s" }));
+                    show_osd(format!(
+                        "Seek {}",
+                        if ev.modifiers.ctrl { "-1s" } else { "-5s" }
+                    ));
                     true
                 }
                 Key::ArrowRight if !ev.modifiers.shift => {
                     relative_seek(&player, &snap, if ev.modifiers.ctrl { 1.0 } else { 5.0 });
-                    show_osd(format!("Seek {}", if ev.modifiers.ctrl { "+1s" } else { "+5s" }));
+                    show_osd(format!(
+                        "Seek {}",
+                        if ev.modifiers.ctrl { "+1s" } else { "+5s" }
+                    ));
                     true
                 }
                 Key::ArrowLeft if ev.modifiers.shift => {
@@ -1050,7 +1356,26 @@ fn FullscreenVideo(
                     true
                 }
                 Key::Character('m') | Key::Character('M') => {
-                    show_osd("Mute (wire player API)".into());
+                    let _ = player.toggle_mute();
+                    show_osd(if snap.muted {
+                        "Unmuted".into()
+                    } else {
+                        "Muted".into()
+                    });
+                    true
+                }
+                Key::Character('[') => {
+                    let next = step_speed(speed.get(), false);
+                    speed.set(next);
+                    let _ = player.set_speed(next);
+                    show_osd(format!("Speed {next:.2}x"));
+                    true
+                }
+                Key::Character(']') => {
+                    let next = step_speed(speed.get(), true);
+                    speed.set(next);
+                    let _ = player.set_speed(next);
+                    show_osd(format!("Speed {next:.2}x"));
                     true
                 }
                 Key::Home => {
@@ -1068,28 +1393,30 @@ fn FullscreenVideo(
         }
     };
 
-    ZStack(Modifier::new()
-        .fill_max_size()
-        .background(Color::BLACK)
-        .focusable(true)
-        .focus_target()
-        .on_key_event(key_handler)
-        .on_pointer_move({
-            let bump = bump_activity.clone();
-            move |_| bump()
-        })
-        .on_click({
-            let player = player.clone();
-            let bump = bump_activity.clone();
-            move || {
-                bump();
-                let _ = player.toggle();
-            }
-        })
-        .on_double_click({
-            let is_fullscreen = is_fullscreen.clone();
-            move || is_fullscreen.set(false)
-        }))
+    ZStack(
+        Modifier::new()
+            .fill_max_size()
+            .background(Color::BLACK)
+            .focusable(true)
+            .focus_target()
+            .on_key_event(key_handler)
+            .on_pointer_move({
+                let bump = bump_activity.clone();
+                move |_| bump()
+            })
+            .on_click({
+                let player = player.clone();
+                let bump = bump_activity.clone();
+                move || {
+                    bump();
+                    let _ = player.toggle();
+                }
+            })
+            .on_double_click({
+                let exit_fs = exit_fs.clone();
+                move || exit_fs()
+            }),
+    )
     .child((
         Box(Modifier::new()
             .fill_max_size()
@@ -1097,7 +1424,11 @@ fn FullscreenVideo(
             .justify_content(JustifyContent::CENTER)
             .hit_passthrough())
         .child(
-            Box(Modifier::new().fill_max_width().aspect_ratio(aspect).hit_passthrough()).child(
+            Box(Modifier::new()
+                .fill_max_width()
+                .aspect_ratio(aspect)
+                .hit_passthrough())
+            .child(
                 handle
                     .map(|h| Image(Modifier::new().fill_max_size().hit_passthrough(), h))
                     .unwrap_or_else(|| Box(Modifier::new().fill_max_size())),
@@ -1178,8 +1509,8 @@ fn FullscreenVideo(
                                 .size(22.0)
                                 .color(Color::WHITE),
                             {
-                                let is_fullscreen = is_fullscreen.clone();
-                                move || is_fullscreen.set(false)
+                                let exit_fs = exit_fs.clone();
+                                move || exit_fs()
                             },
                             m3::IconButtonConfig {
                                 container_size: Some(40.0),
@@ -1237,9 +1568,8 @@ fn FullscreenVideo(
                                     scrubbing.set(true);
                                     bump();
                                     if let Some(d) = duration {
-                                        let target = Duration::from_secs_f64(
-                                            d.as_secs_f64() * ratio as f64,
-                                        );
+                                        let target =
+                                            Duration::from_secs_f64(d.as_secs_f64() * ratio as f64);
                                         let _ = player.seek(target);
                                     }
                                 }
@@ -1263,9 +1593,7 @@ fn FullscreenVideo(
                         .gap(8.0))
                     .child((
                         m3::IconButton(
-                            Icon(Symbols::replay_10)
-                                .size(24.0)
-                                .color(Color::WHITE),
+                            Icon(Symbols::replay_10).size(24.0).color(Color::WHITE),
                             {
                                 let player = player.clone();
                                 let snap = snap.clone();
@@ -1303,9 +1631,7 @@ fn FullscreenVideo(
                             },
                         ),
                         m3::IconButton(
-                            Icon(Symbols::forward_10)
-                                .size(24.0)
-                                .color(Color::WHITE),
+                            Icon(Symbols::forward_10).size(24.0).color(Color::WHITE),
                             {
                                 let player = player.clone();
                                 let snap = snap.clone();
@@ -1315,6 +1641,54 @@ fn FullscreenVideo(
                                     bump();
                                     relative_seek(&player, &snap, 10.0);
                                     show_osd("+10s".into());
+                                }
+                            },
+                            m3::IconButtonConfig {
+                                container_size: Some(44.0),
+                                ..Default::default()
+                            },
+                        ),
+                        m3::AssistChip(
+                            {
+                                let player = player.clone();
+                                let speed = speed.clone();
+                                let show_osd = show_osd.clone();
+                                let bump = bump_activity.clone();
+                                move || {
+                                    bump();
+                                    let cur = speed.get();
+                                    let next = if (cur - *SPEED_STEPS.last().unwrap()).abs() < 0.01
+                                    {
+                                        SPEED_STEPS[0]
+                                    } else {
+                                        step_speed(cur, true)
+                                    };
+                                    speed.set(next);
+                                    let _ = player.set_speed(next);
+                                    show_osd(format!("Speed {next:.2}x"));
+                                }
+                            },
+                            Text(format!("{:.2}x", speed.get()))
+                                .size(13.0)
+                                .color(Color::WHITE),
+                            None,
+                            None,
+                            m3::ChipConfig::default(),
+                        ),
+                        m3::IconButton(
+                            Icon(if snap.muted {
+                                Symbols::volume_off
+                            } else {
+                                Symbols::volume_up
+                            })
+                            .size(22.0)
+                            .color(Color::WHITE),
+                            {
+                                let player = player.clone();
+                                let bump = bump_activity.clone();
+                                move || {
+                                    bump();
+                                    let _ = player.toggle_mute();
                                 }
                             },
                             m3::IconButtonConfig {
@@ -1383,6 +1757,8 @@ fn TransportBar(
     playlist: Rc<Signal<Vec<Entry>>>,
     current: Rc<Signal<Option<usize>>>,
     state: PlaybackState,
+    speed: Rc<Signal<f32>>,
+    settings: Rc<Signal<PlayerSettings>>,
 ) -> View {
     Row(Modifier::new()
         .fill_max_width()
@@ -1458,12 +1834,39 @@ fn TransportBar(
                 ..Default::default()
             },
         ),
+        m3::AssistChip(
+            {
+                let player = player.clone();
+                let speed = speed.clone();
+                let settings = settings.clone();
+                move || {
+                    let cur = speed.get();
+                    let next = if (cur - *SPEED_STEPS.last().unwrap()).abs() < 0.01 {
+                        SPEED_STEPS[0]
+                    } else {
+                        step_speed(cur, true)
+                    };
+                    speed.set(next);
+                    let _ = player.set_speed(next);
+                    if settings.get().remember_speed {
+                        let mut s = settings.get();
+                        s.default_speed = next;
+                        save_settings_sync(&s);
+                        settings.set(s);
+                    }
+                }
+            },
+            Text(format!("{:.2}x", speed.get())).size(12.0),
+            Some(Icon(Symbols::speed).size(16.0)),
+            None,
+            m3::ChipConfig::default(),
+        ),
     ))
 }
 
-fn VolumeRow(player: AudioPlayer, volume: Rc<Signal<f32>>) -> View {
+fn VolumeRow(player: AudioPlayer, volume: Rc<Signal<f32>>, muted: bool) -> View {
     let v = volume.get();
-    let icon = if v <= 0.001 {
+    let icon = if muted || v <= 0.001 {
         Symbols::volume_off
     } else if v < 0.6 {
         Symbols::volume_down
@@ -1482,9 +1885,21 @@ fn VolumeRow(player: AudioPlayer, volume: Rc<Signal<f32>>) -> View {
         .gap(10.0)
         .align_items(AlignItems::CENTER))
     .child((
-        Icon(icon)
-            .size(18.0)
-            .color(theme().on_surface.with_alpha(170)),
+        m3::IconButton(
+            Icon(icon)
+                .size(18.0)
+                .color(theme().on_surface.with_alpha(170)),
+            {
+                let player = player.clone();
+                move || {
+                    let _ = player.toggle_mute();
+                }
+            },
+            m3::IconButtonConfig {
+                container_size: Some(32.0),
+                ..Default::default()
+            },
+        ),
         m3::Slider(
             v,
             (0.0, 1.5),
@@ -1615,6 +2030,7 @@ fn PlaylistList(
     playlist: Rc<Signal<Vec<Entry>>>,
     current: Rc<Signal<Option<usize>>>,
     player: AudioPlayer,
+    thumbs: Rc<std::collections::HashMap<u64, ImageHandle>>,
 ) -> View {
     let list = playlist.get();
     let lazy_state: Rc<LazyColumnState> = remember(LazyColumnState::new);
@@ -1626,7 +2042,11 @@ fn PlaylistList(
         {
             let current = current.clone();
             let player = player.clone();
-            move |entry: Entry, idx: usize| TrackRow(entry, idx, current.clone(), player.clone())
+            let thumbs = thumbs.clone();
+            move |entry: Entry, idx: usize| {
+                let thumb = thumbs.get(&entry.id).copied();
+                TrackRow(entry, idx, current.clone(), player.clone(), thumb)
+            }
         },
         LazyColumnConfig {
             state: lazy_state.clone(),
@@ -1641,6 +2061,7 @@ fn TrackRow(
     idx: usize,
     current: Rc<Signal<Option<usize>>>,
     player: AudioPlayer,
+    thumb: Option<ImageHandle>,
 ) -> View {
     let is_current = current.get() == Some(idx);
     let row_source = entry.source.clone();
@@ -1686,8 +2107,12 @@ fn TrackRow(
                 .background(leading_bg)
                 .align_items(AlignItems::CENTER)
                 .justify_content(JustifyContent::CENTER))
-            .child(if is_current {
+            .child(if let Some(h) = thumb {
+                Image(Modifier::new().fill_max_size(), h)
+            } else if is_current {
                 Icon(Symbols::graphic_eq).size(18.0).color(leading_fg)
+            } else if is_video_source(&entry.source) {
+                Icon(Symbols::movie).size(18.0).color(leading_fg)
             } else {
                 Text(format!("{}", idx + 1)).size(13.0).color(leading_fg)
             }),
@@ -1777,5 +2202,333 @@ fn relative_seek(player: &AudioPlayer, snap: &player_core::PlayerSnapshot, delta
     let _ = player.seek(Duration::from_secs_f64(target));
 }
 
-const FS_HIDE_AFTER: Duration = Duration::from_millis(2500);
 const OSD_MS: u64 = 1200;
+
+const SPEED_STEPS: &[f32] = &[0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+
+fn step_speed(cur: f32, up: bool) -> f32 {
+    if up {
+        SPEED_STEPS
+            .iter()
+            .copied()
+            .find(|&s| s > cur + 0.01)
+            .unwrap_or(*SPEED_STEPS.last().unwrap())
+    } else {
+        SPEED_STEPS
+            .iter()
+            .copied()
+            .rev()
+            .find(|&s| s < cur - 0.01)
+            .unwrap_or(SPEED_STEPS[0])
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_player_key_handler(
+    player: AudioPlayer,
+    snap: player_core::PlayerSnapshot,
+    is_fullscreen: Rc<Signal<bool>>,
+    has_video: bool,
+    settings: Rc<Signal<PlayerSettings>>,
+    speed: Rc<Signal<f32>>,
+    volume: Rc<Signal<f32>>,
+    show_settings: Rc<Signal<bool>>,
+) -> impl Fn(KeyEvent) -> bool {
+    move |ev: KeyEvent| -> bool {
+        if ev.event_type != KeyEventType::Down {
+            return false;
+        }
+        let cfg = settings.get();
+        match &ev.key {
+            Key::Escape if is_fullscreen.get() => {
+                is_fullscreen.set(false);
+                true
+            }
+            Key::Character('f') | Key::Character('F') | Key::F(11) if has_video => {
+                is_fullscreen.set(!is_fullscreen.get());
+                true
+            }
+            Key::Space | Key::Character('p') | Key::Character('P') => {
+                let _ = player.toggle();
+                true
+            }
+            Key::ArrowLeft if ev.modifiers.shift => {
+                relative_seek(&player, &snap, -cfg.seek_small_s);
+                true
+            }
+            Key::ArrowRight if ev.modifiers.shift => {
+                relative_seek(&player, &snap, cfg.seek_small_s);
+                true
+            }
+            Key::ArrowLeft => {
+                let d = if ev.modifiers.ctrl {
+                    cfg.seek_small_s
+                } else {
+                    cfg.seek_medium_s
+                };
+                relative_seek(&player, &snap, -d);
+                true
+            }
+            Key::ArrowRight => {
+                let d = if ev.modifiers.ctrl {
+                    cfg.seek_small_s
+                } else {
+                    cfg.seek_medium_s
+                };
+                relative_seek(&player, &snap, d);
+                true
+            }
+            Key::ArrowUp => {
+                relative_seek(&player, &snap, cfg.seek_large_s);
+                true
+            }
+            Key::ArrowDown => {
+                relative_seek(&player, &snap, -cfg.seek_large_s);
+                true
+            }
+            Key::Character('m') | Key::Character('M') => {
+                let _ = player.toggle_mute();
+                true
+            }
+            Key::Character('0') | Key::Home => {
+                let _ = player.seek(Duration::ZERO);
+                true
+            }
+            Key::Character('[') => {
+                let next = step_speed(speed.get(), false);
+                speed.set(next);
+                let _ = player.set_speed(next);
+                true
+            }
+            Key::Character(']') => {
+                let next = step_speed(speed.get(), true);
+                speed.set(next);
+                let _ = player.set_speed(next);
+                true
+            }
+            Key::Character(',') | Key::Character('<') => {
+                let v = (volume.get() - cfg.volume_step).clamp(0.0, 1.5);
+                volume.set(v);
+                let _ = player.set_volume(v);
+                true
+            }
+            Key::Character('.') | Key::Character('>') => {
+                let v = (volume.get() + cfg.volume_step).clamp(0.0, 1.5);
+                volume.set(v);
+                let _ = player.set_volume(v);
+                true
+            }
+            Key::Character('s') | Key::Character('S') if ev.modifiers.ctrl => {
+                show_settings.set(true);
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+fn SettingsScreen(
+    settings: Rc<Signal<PlayerSettings>>,
+    show: Rc<Signal<bool>>,
+    player: AudioPlayer,
+    speed: Rc<Signal<f32>>,
+) -> View {
+    let s = settings.get();
+    m3::Scaffold(
+        move |_| {
+            Column(Modifier::new().fill_max_size().padding(16.0).gap(16.0)).child((
+                Row(
+                    Modifier::new()
+                        .fill_max_width()
+                        .align_items(AlignItems::CENTER)
+                        .gap(8.0),
+                )
+                .child((
+                    m3::IconButton(
+                        Icon(Symbols::close).size(22.0),
+                        {
+                            let show = show.clone();
+                            move || show.set(false)
+                        },
+                        m3::IconButtonConfig::default(),
+                    ),
+                    Text("Settings").size(20.0),
+                )),
+                Column(Modifier::new().fill_max_width().gap(10.0)).child((
+                    Text("Playback").size(14.0).color(theme().primary),
+                    Row(
+                        Modifier::new()
+                            .fill_max_width()
+                            .align_items(AlignItems::CENTER),
+                    )
+                    .child((
+                        Text("Auto full-window for video")
+                            .modifier(Modifier::new().weight(1.0)),
+                        m3::Switch(
+                            s.auto_fullscreen_on_open,
+                            {
+                                let settings = settings.clone();
+                                move |v| {
+                                    let mut s = settings.get();
+                                    s.auto_fullscreen_on_open = v;
+                                    save_settings_sync(&s);
+                                    settings.set(s);
+                                }
+                            },
+                            m3::SwitchConfig::default(),
+                        ),
+                    )),
+                    Row(
+                        Modifier::new()
+                            .fill_max_width()
+                            .align_items(AlignItems::CENTER),
+                    )
+                    .child((
+                        Text("Playlist thumbnails").modifier(Modifier::new().weight(1.0)),
+                        m3::Switch(
+                            s.show_playlist_thumbs,
+                            {
+                                let settings = settings.clone();
+                                move |v| {
+                                    let mut s = settings.get();
+                                    s.show_playlist_thumbs = v;
+                                    save_settings_sync(&s);
+                                    settings.set(s);
+                                }
+                            },
+                            m3::SwitchConfig::default(),
+                        ),
+                    )),
+                    Row(
+                        Modifier::new()
+                            .fill_max_width()
+                            .align_items(AlignItems::CENTER),
+                    )
+                    .child((
+                        Text("Remember speed").modifier(Modifier::new().weight(1.0)),
+                        m3::Switch(
+                            s.remember_speed,
+                            {
+                                let settings = settings.clone();
+                                move |v| {
+                                    let mut s = settings.get();
+                                    s.remember_speed = v;
+                                    save_settings_sync(&s);
+                                    settings.set(s);
+                                }
+                            },
+                            m3::SwitchConfig::default(),
+                        ),
+                    )),
+                )),
+                Column(Modifier::new().fill_max_width().gap(6.0)).child((
+                    Text("Controls").size(14.0).color(theme().primary),
+                    Text(format!("Controls hide after: {} ms", s.hide_controls_ms)).size(13.0),
+                    m3::Slider(
+                        s.hide_controls_ms as f32,
+                        (800.0, 8000.0),
+                        None,
+                        {
+                            let settings = settings.clone();
+                            move |v| {
+                                let mut s = settings.get();
+                                s.hide_controls_ms = v as u64;
+                                settings.set(s);
+                            }
+                        },
+                        m3::SliderConfig {
+                            on_value_change_finished: Some(Rc::new({
+                                let settings = settings.clone();
+                                move || save_settings_sync(&settings.get())
+                            })),
+                            modifier: Modifier::new().fill_max_width(),
+                            ..Default::default()
+                        },
+                    ),
+                    Text(format!("Seek (arrows), seconds: {:.0}", s.seek_medium_s)).size(13.0),
+                    m3::Slider(
+                        s.seek_medium_s as f32,
+                        (1.0, 30.0),
+                        None,
+                        {
+                            let settings = settings.clone();
+                            move |v| {
+                                let mut s = settings.get();
+                                s.seek_medium_s = v as f64;
+                                settings.set(s);
+                            }
+                        },
+                        m3::SliderConfig {
+                            on_value_change_finished: Some(Rc::new({
+                                let settings = settings.clone();
+                                move || save_settings_sync(&settings.get())
+                            })),
+                            modifier: Modifier::new().fill_max_width(),
+                            ..Default::default()
+                        },
+                    ),
+                    Text(format!("Seek (up/down), seconds: {:.0}", s.seek_large_s)).size(13.0),
+                    m3::Slider(
+                        s.seek_large_s as f32,
+                        (10.0, 180.0),
+                        None,
+                        {
+                            let settings = settings.clone();
+                            move |v| {
+                                let mut s = settings.get();
+                                s.seek_large_s = v as f64;
+                                settings.set(s);
+                            }
+                        },
+                        m3::SliderConfig {
+                            on_value_change_finished: Some(Rc::new({
+                                let settings = settings.clone();
+                                move || save_settings_sync(&settings.get())
+                            })),
+                            modifier: Modifier::new().fill_max_width(),
+                            ..Default::default()
+                        },
+                    ),
+                )),
+                Column(Modifier::new().fill_max_width().gap(8.0)).child((
+                    Text(format!("Default speed: {:.2}x", s.default_speed)).size(13.0),
+                    Row(Modifier::new().gap(8.0)).child(
+                        SPEED_STEPS
+                            .iter()
+                            .map(|&step| {
+                                let selected = (s.default_speed - step).abs() < 0.01;
+                                let settings = settings.clone();
+                                let player = player.clone();
+                                let speed = speed.clone();
+                                m3::FilterChip(
+                                    selected,
+                                    move || {
+                                        let mut s = settings.get();
+                                        s.default_speed = step;
+                                        save_settings_sync(&s);
+                                        settings.set(s);
+                                        let _ = player.set_speed(step);
+                                        speed.set(step);
+                                    },
+                                    Text(format!("{step:.2}x")).size(12.0),
+                                    None,
+                                    None,
+                                    m3::ChipConfig::default(),
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
+                )),
+                Column(Modifier::new().fill_max_width().gap(8.0)).child((
+                    Text("Hotkeys").size(14.0).color(theme().primary),
+                    Text(
+                        "Space/P play·pause · F fullscreen · M mute · [/] speed · ←/→ seek · ↑/↓ ±1m · Ctrl+S settings · ,/. volume",
+                    )
+                    .size(12.0)
+                    .color(theme().on_surface.with_alpha(160)),
+                )),
+            ))
+        },
+        m3::ScaffoldConfig::default(),
+    )
+}

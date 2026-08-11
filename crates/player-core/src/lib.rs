@@ -121,6 +121,9 @@ pub struct PlayerSnapshot {
     pub position: Duration,
     pub duration: Option<Duration>,
     pub volume: f32,
+    pub muted: bool,
+    pub playback_rate: f32,
+    pub has_video: bool,
     pub error: Option<String>,
 }
 
@@ -136,6 +139,9 @@ impl Default for PlayerSnapshot {
             position: Duration::ZERO,
             duration: None,
             volume: 1.0,
+            muted: false,
+            playback_rate: 1.0,
+            has_video: false,
             error: None,
         }
     }
@@ -149,6 +155,9 @@ enum Command {
     Toggle,
     Seek(Duration, u64),
     SetVolume(f32),
+    SetMuted(bool),
+    ToggleMute,
+    SetSpeed(f32),
     Shutdown,
 }
 
@@ -195,10 +204,19 @@ struct Shared {
     is_playing: AtomicBool,
     /// Frames played at the OUTPUT sample rate since the last position base.
     played_frames: AtomicU64,
-    /// Position base in output frames (set on seek), added to played_frames.
-    base_frames: AtomicU64,
+    /// Media-time position base in output frames (set on seek), added to
+    /// `played_frames * playback_rate` to derive the current position.
+    base_media_frames: AtomicU64,
     output_sample_rate: AtomicU32,
+    /// Current output gain applied in the CPAL callback. Zeroed while muted.
     volume_bits: AtomicU32,
+    /// Logical volume to restore on unmute (never zeroed by mute).
+    unmute_volume_bits: AtomicU32,
+    muted: AtomicBool,
+    /// Playback rate in (0.25 ..= 4.0), 1.0 = normal.
+    playback_rate_bits: AtomicU32,
+    /// Bumped on every `set_speed` so the decode loop rebuilds the resampler.
+    speed_serial: AtomicU64,
     /// Incremented on every `decode_file_to_queue` call to signal a new
     /// file load. VideoSink uses this to distinguish new-file from seek.
     load_serial: AtomicU64,
@@ -229,9 +247,13 @@ impl AudioPlayer {
             status: Mutex::new(PlayerSnapshot::default()),
             is_playing: AtomicBool::new(false),
             played_frames: AtomicU64::new(0),
-            base_frames: AtomicU64::new(0),
+            base_media_frames: AtomicU64::new(0),
             output_sample_rate: AtomicU32::new(48_000),
             volume_bits: AtomicU32::new(1.0f32.to_bits()),
+            unmute_volume_bits: AtomicU32::new(1.0f32.to_bits()),
+            muted: AtomicBool::new(false),
+            playback_rate_bits: AtomicU32::new(1.0f32.to_bits()),
+            speed_serial: AtomicU64::new(0),
             load_serial: AtomicU64::new(0),
             seek_serial: AtomicU64::new(0),
             resume_intent: AtomicBool::new(true),
@@ -329,7 +351,7 @@ impl AudioPlayer {
         let shared = &self.inner.shared;
         let rate = shared.output_sample_rate.load(Ordering::Acquire).max(1);
         let base = (position.as_secs_f64() * rate as f64) as u64;
-        shared.base_frames.store(base, Ordering::Release);
+        shared.base_media_frames.store(base, Ordering::Release);
         shared.played_frames.store(0, Ordering::Release);
         let serial = shared.seek_serial.fetch_add(1, Ordering::AcqRel) + 1;
         self.send(Command::Seek(position, serial))
@@ -337,22 +359,63 @@ impl AudioPlayer {
     pub fn set_volume(&self, volume: f32) -> Result<()> {
         let v = volume.clamp(0.0, 2.0);
         let shared = &self.inner.shared;
-        shared.volume_bits.store(v.to_bits(), Ordering::Release);
+        // Keep the logical volume independent of mute so unmute restores it.
+        shared.unmute_volume_bits.store(v.to_bits(), Ordering::Release);
+        if !shared.muted.load(Ordering::Acquire) {
+            shared.volume_bits.store(v.to_bits(), Ordering::Release);
+        }
         {
             let mut s = lock_status(shared);
             s.volume = v;
         }
         self.send(Command::SetVolume(v))
     }
+    pub fn set_muted(&self, muted: bool) -> Result<()> {
+        self.send(Command::SetMuted(muted))
+    }
+    pub fn toggle_mute(&self) -> Result<()> {
+        self.send(Command::ToggleMute)
+    }
+    /// Playback rate in `0.25 ..= 4.0`; `1.0` is normal speed.
+    pub fn set_speed(&self, speed: f32) -> Result<()> {
+        let s = speed.clamp(0.25, 4.0);
+        // Fold wall progress into the media base so the clock doesn't jump.
+        let shared = &self.inner.shared;
+        let old = f32::from_bits(shared.playback_rate_bits.load(Ordering::Acquire));
+        let played = shared.played_frames.load(Ordering::Acquire);
+        let add = (played as f64 * old as f64).round() as u64;
+        shared.base_media_frames.fetch_add(add, Ordering::AcqRel);
+        shared.played_frames.store(0, Ordering::Release);
+        shared.playback_rate_bits.store(s.to_bits(), Ordering::Release);
+        shared.speed_serial.fetch_add(1, Ordering::Release);
+        {
+            let mut st = lock_status(shared);
+            st.playback_rate = s;
+        }
+        self.send(Command::SetSpeed(s))
+    }
+    pub fn playback_rate(&self) -> f32 {
+        f32::from_bits(
+            self.inner
+                .shared
+                .playback_rate_bits
+                .load(Ordering::Acquire),
+        )
+    }
+    pub fn has_video(&self) -> bool {
+        self.inner.shared.has_video.load(Ordering::Acquire)
+    }
 
     /// Current playback position derived from output frames.
     /// For video-only files this advances via injected silence samples.
+    /// Advances at `wall_seconds * playback_rate`.
     pub fn position(&self) -> Duration {
         let shared = &self.inner.shared;
-        let rate = shared.output_sample_rate.load(Ordering::Acquire).max(1);
-        let frames = shared.base_frames.load(Ordering::Acquire)
-            + shared.played_frames.load(Ordering::Acquire);
-        Duration::from_secs_f64(frames as f64 / rate as f64)
+        let rate = shared.output_sample_rate.load(Ordering::Acquire).max(1) as f64;
+        let speed = f32::from_bits(shared.playback_rate_bits.load(Ordering::Acquire)) as f64;
+        let frames = shared.base_media_frames.load(Ordering::Acquire) as f64
+            + shared.played_frames.load(Ordering::Acquire) as f64 * speed;
+        Duration::from_secs_f64(frames / rate)
     }
 
     pub fn is_playing(&self) -> bool {
@@ -364,7 +427,10 @@ impl AudioPlayer {
 
         let mut snap = lock_status(shared).clone();
         snap.position = self.position();
-        snap.volume = f32::from_bits(shared.volume_bits.load(Ordering::Acquire));
+        snap.volume = f32::from_bits(shared.unmute_volume_bits.load(Ordering::Acquire));
+        snap.muted = shared.muted.load(Ordering::Acquire);
+        snap.playback_rate = f32::from_bits(shared.playback_rate_bits.load(Ordering::Acquire));
+        snap.has_video = shared.has_video.load(Ordering::Acquire);
         snap
     }
 }
@@ -1143,6 +1209,7 @@ fn decode_file_to_queue(
     let mut track_id = u32::MAX;
     let mut decoder: Option<Box<dyn AudioDecoder>> = None;
     let mut resampler: Option<RubatoResampler> = None;
+    let mut audio_in_rate: Option<u32> = None;
     let mut audio_tb = TimeBase::default();
 
     if let Some(track) = audio_track {
@@ -1163,8 +1230,11 @@ fn decode_file_to_queue(
                 .make_audio_decoder(&params, &AudioDecoderOptions::default())
                 .context("failed to create decoder")?,
         );
-        resampler = Some(RubatoResampler::new(
+        audio_in_rate = Some(params.sample_rate.unwrap_or(out_rate));
+        let speed = f32::from_bits(shared.playback_rate_bits.load(Ordering::Acquire));
+        resampler = Some(rebuild_resampler(
             params.sample_rate.unwrap_or(out_rate),
+            speed,
             out_rate,
             out_channels,
         )?);
@@ -1239,7 +1309,20 @@ fn decode_file_to_queue(
 
     let mut seek_base = initial_seek.map(|(t, _)| t).unwrap_or(Duration::ZERO);
 
+    // Speed-change tracking: rebuild the resampler when the target rate changes
+    // so wall clock advances at `speed` relative to media time.
+    let mut last_speed_serial = shared.speed_serial.load(Ordering::Acquire);
+
     loop {
+        let ss = shared.speed_serial.load(Ordering::Acquire);
+        if ss != last_speed_serial {
+            last_speed_serial = ss;
+            if let (Some(in_rate), Some(r)) = (audio_in_rate, resampler.as_mut()) {
+                let speed = f32::from_bits(shared.playback_rate_bits.load(Ordering::Acquire));
+                *r = rebuild_resampler(in_rate, speed, out_rate, out_channels)?;
+            }
+        }
+
         match drain_commands(cmd_rx, &shared) {
             CommandAction::Continue => {}
             CommandAction::Load(path) => return Ok(DecodeOutcome::Load(path)),
@@ -1396,8 +1479,11 @@ fn decode_file_to_queue(
                             .make_audio_decoder(&params, &AudioDecoderOptions::default())
                             .context("failed to create decoder after reset")?,
                     );
-                    resampler = Some(RubatoResampler::new(
+                    audio_in_rate = Some(params.sample_rate.unwrap_or(out_rate));
+                    let speed = f32::from_bits(shared.playback_rate_bits.load(Ordering::Acquire));
+                    resampler = Some(rebuild_resampler(
                         params.sample_rate.unwrap_or(out_rate),
+                        speed,
                         out_rate,
                         out_channels,
                     )?);
@@ -1661,7 +1747,7 @@ fn perform_seek(
             }
             if shared.seek_serial.load(Ordering::Acquire) == serial {
                 let base = (clamped.as_secs_f64() * out_rate as f64) as u64;
-                shared.base_frames.store(base, Ordering::Release);
+                shared.base_media_frames.store(base, Ordering::Release);
             }
         }
         Err(err) => {
@@ -1759,9 +1845,45 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>) -> CommandAction {
 
         Command::SetVolume(v) => {
             let v = v.clamp(0.0, 2.0);
-            shared.volume_bits.store(v.to_bits(), Ordering::Release);
+            shared.unmute_volume_bits.store(v.to_bits(), Ordering::Release);
+            if !shared.muted.load(Ordering::Acquire) {
+                shared.volume_bits.store(v.to_bits(), Ordering::Release);
+            }
             let mut s = lock_status(shared);
             s.volume = v;
+            CommandAction::Continue
+        }
+
+        Command::SetMuted(m) => {
+            shared.muted.store(m, Ordering::Release);
+            if m {
+                shared.volume_bits.store(0.0f32.to_bits(), Ordering::Release);
+            } else {
+                let v = shared.unmute_volume_bits.load(Ordering::Acquire);
+                shared.volume_bits.store(v, Ordering::Release);
+            }
+            let mut s = lock_status(shared);
+            s.muted = m;
+            CommandAction::Continue
+        }
+
+        Command::ToggleMute => {
+            let m = !shared.muted.load(Ordering::Acquire);
+            shared.muted.store(m, Ordering::Release);
+            if m {
+                shared.volume_bits.store(0.0f32.to_bits(), Ordering::Release);
+            } else {
+                let v = shared.unmute_volume_bits.load(Ordering::Acquire);
+                shared.volume_bits.store(v, Ordering::Release);
+            }
+            let mut s = lock_status(shared);
+            s.muted = m;
+            CommandAction::Continue
+        }
+
+        Command::SetSpeed(s) => {
+            let mut st = lock_status(shared);
+            st.playback_rate = s.clamp(0.25, 4.0);
             CommandAction::Continue
         }
 
@@ -1777,7 +1899,7 @@ fn reset_audio_queue_and_clock(shared: &Shared, flush_rx: &Receiver<f32>) {
     shared.is_playing.store(false, Ordering::Release);
     flush_audio_queue(flush_rx);
     shared.played_frames.store(0, Ordering::Release);
-    shared.base_frames.store(0, Ordering::Release);
+    shared.base_media_frames.store(0, Ordering::Release);
 }
 
 fn wait_until_queue_drained(
@@ -1804,6 +1926,19 @@ fn wait_until_queue_drained(
 
         thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// Build a resampler whose output target is `out_rate / speed`, so the wall
+/// clock consumes the media's audio in `1/speed` real seconds.
+fn rebuild_resampler(
+    in_rate: u32,
+    speed: f32,
+    out_rate: u32,
+    out_channels: usize,
+) -> anyhow::Result<RubatoResampler> {
+    let speed = speed.clamp(0.25, 4.0);
+    let target = ((out_rate as f64) / speed as f64).round().max(8000.0) as u32;
+    RubatoResampler::new(in_rate, target, out_channels)
 }
 
 struct RubatoResampler {
