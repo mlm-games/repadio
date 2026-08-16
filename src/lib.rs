@@ -56,6 +56,10 @@ use repose_ui::{
     Box, Column, Image, LazyColumn, LazyColumnConfig, Row, Spacer, Text, ViewExt, ZStack,
 };
 
+fn surface_tint(fg: Color, alpha: u8) -> Color {
+    fg.with_alpha(alpha).composite_over(theme().background)
+}
+
 #[derive(Clone)]
 struct Entry {
     id: u64,
@@ -464,6 +468,7 @@ impl VideoSink {
 #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 pub fn run_desktop() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    repose_core::locals::set_theme_default(repose_core::locals::Theme::dark());
 
     player_platform::init();
 
@@ -496,6 +501,7 @@ pub fn run_desktop() -> anyhow::Result<()> {
 pub async fn wasm_main() {
     console_error_panic_hook::set_once();
     console_log::init_with_level(log::Level::Info).ok();
+    repose_core::locals::set_theme_default(repose_core::locals::Theme::dark());
 
     if let Err(e) = player_platform::wasm_persist::init().await {
         log::error!("OPFS init failed: {e}");
@@ -516,26 +522,17 @@ pub async fn wasm_main() {
         auto_fullscreen: AtomicBool::new(false),
     });
 
-    let canvas = web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.get_element_by_id("repadio_canvas"))
-        .or_else(|| {
-            web_sys::window()
-                .and_then(|w| w.document())
-                .and_then(|d| d.body().map(web_sys::Element::from))
-        });
-    if let Some(el) = canvas {
+    {
         use wasm_bindgen::JsCast;
-        let mut resumed = false;
-        let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
-            if !resumed {
-                resumed = true;
-                AudioPlayer::resume_audio();
-            }
-        }) as Box<dyn FnMut()>);
+        let window = web_sys::window().expect("window");
+        let document = window.document().expect("document");
+        let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |_ev: web_sys::Event| {
+            AudioPlayer::resume_audio();
+        }) as Box<dyn FnMut(_)>);
         let cb: &js_sys::Function = closure.as_ref().unchecked_ref();
-        let _ = el.add_event_listener_with_callback("click", cb);
-        let _ = el.add_event_listener_with_callback("touchstart", cb);
+        let _ = document.add_event_listener_with_callback_and_bool("pointerdown", cb, true);
+        let _ = document.add_event_listener_with_callback_and_bool("touchstart", cb, true);
+        let _ = document.add_event_listener_with_callback_and_bool("keydown", cb, true);
         closure.forget();
     }
 
@@ -567,6 +564,7 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
     android_logger::init_once(
         android_logger::Config::default().with_max_level(log::LevelFilter::Info),
     );
+    repose_core::locals::set_theme_default(repose_core::locals::Theme::dark());
     rlobkit_dialogs::init_shared_pending_state();
     rlobkit_dialogs::init_with_android_context(
         android_app.vm_as_ptr().cast(),
@@ -940,6 +938,8 @@ fn App(
         m3::ScaffoldConfig {
             top_bar: Some(top_bar),
             floating_action_button: Some(fab),
+            container_color: theme().background,
+            content_color: theme().on_background,
             ..Default::default()
         },
     )
@@ -1045,7 +1045,7 @@ fn NowPlayingCard(
             .fill_max_width()
             .padding(20.0)
             .clip_rounded(24.0)
-            .background(theme().surface_variant.with_alpha(70))
+            .background(theme().surface_container)
             .gap(16.0),
     )
     .child((
@@ -2083,7 +2083,7 @@ fn TrackRow(
             .padding(10.0)
             .clip_rounded(14.0)
             .background(if is_current {
-                theme().primary_container.with_alpha(60)
+                surface_tint(theme().primary_container, 60)
             } else {
                 theme().surface.with_alpha(0)
             })
@@ -2529,6 +2529,10 @@ fn SettingsScreen(
                 )),
             ))
         },
-        m3::ScaffoldConfig::default(),
+        m3::ScaffoldConfig {
+            container_color: theme().background,
+            content_color: theme().on_background,
+            ..Default::default()
+        },
     )
 }

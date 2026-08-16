@@ -316,12 +316,16 @@ impl AudioPlayer {
     }
 
     /// MUST be called from a user-gesture handler on WASM (click/touch)
-    /// to satisfy browser autoplay policy. No-op on desktop.
+    /// to satisfy browser autoplay policy. Safe to call repeatedly. No-op on desktop.
     pub fn resume_audio() {
         #[cfg(target_arch = "wasm32")]
         AUDIO_STREAM.with(|cell| {
             if let Some(stream) = cell.get() {
-                let _ = stream.play();
+                if let Err(e) = stream.play() {
+                    web_sys::console::log_1(&format!("resume_audio: stream.play() failed: {e:?}").into());
+                }
+            } else {
+                web_sys::console::log_1(&"resume_audio: stream not ready yet".into());
             }
         });
     }
@@ -334,15 +338,19 @@ impl AudioPlayer {
     }
 
     pub fn load(&self, path: impl Into<MediaSource>) -> Result<()> {
+        // User-driven load (file pick / playlist tap) is a gesture; unlock WebAudio.
+        Self::resume_audio();
         self.send(Command::Load(path.into()))
     }
     pub fn play(&self) -> Result<()> {
+        Self::resume_audio();
         self.send(Command::Play)
     }
     pub fn pause(&self) -> Result<()> {
         self.send(Command::Pause)
     }
     pub fn toggle(&self) -> Result<()> {
+        Self::resume_audio();
         self.send(Command::Toggle)
     }
     pub fn seek(&self, position: Duration) -> Result<()> {
@@ -612,6 +620,10 @@ fn audio_thread_wasm(
         cell.set(stream)
             .map_err(|_| anyhow!("audio stream already initialized"))
     })?;
+
+    log::info!(
+        "WASM audio host ready, channels={out_channels}, rate={out_sample_rate:?} (awaiting user gesture for stream.play)"
+    );
 
     // Real thread (Web Worker) via web_workers. blocking I/O, channel
     // sends, and thread::sleep all work correctly here.
