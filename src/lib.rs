@@ -23,7 +23,7 @@ use repose_platform::render::RenderContext;
 use repose_ui::TextStyle;
 
 #[cfg(target_arch = "wasm32")]
-use web_thread as thread;
+use web_workers as thread;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::thread;

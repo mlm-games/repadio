@@ -14,7 +14,7 @@ use web_time::Instant;
 #[cfg(not(target_arch = "wasm32"))]
 use std::thread;
 #[cfg(target_arch = "wasm32")]
-use web_thread as thread;
+use web_workers as thread;
 
 use anyhow::{Context, Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -360,7 +360,9 @@ impl AudioPlayer {
         let v = volume.clamp(0.0, 2.0);
         let shared = &self.inner.shared;
         // Keep the logical volume independent of mute so unmute restores it.
-        shared.unmute_volume_bits.store(v.to_bits(), Ordering::Release);
+        shared
+            .unmute_volume_bits
+            .store(v.to_bits(), Ordering::Release);
         if !shared.muted.load(Ordering::Acquire) {
             shared.volume_bits.store(v.to_bits(), Ordering::Release);
         }
@@ -386,7 +388,9 @@ impl AudioPlayer {
         let add = (played as f64 * old as f64).round() as u64;
         shared.base_media_frames.fetch_add(add, Ordering::AcqRel);
         shared.played_frames.store(0, Ordering::Release);
-        shared.playback_rate_bits.store(s.to_bits(), Ordering::Release);
+        shared
+            .playback_rate_bits
+            .store(s.to_bits(), Ordering::Release);
         shared.speed_serial.fetch_add(1, Ordering::Release);
         {
             let mut st = lock_status(shared);
@@ -395,12 +399,7 @@ impl AudioPlayer {
         self.send(Command::SetSpeed(s))
     }
     pub fn playback_rate(&self) -> f32 {
-        f32::from_bits(
-            self.inner
-                .shared
-                .playback_rate_bits
-                .load(Ordering::Acquire),
-        )
+        f32::from_bits(self.inner.shared.playback_rate_bits.load(Ordering::Acquire))
     }
     pub fn has_video(&self) -> bool {
         self.inner.shared.has_video.load(Ordering::Acquire)
@@ -545,7 +544,7 @@ fn track_duration_secs(track: &symphonia::core::formats::Track) -> Option<Durati
 
 /// WASM entry point: sets up CPAL synchronously, stores the stream in a
 /// static `OnceLock`, and spawns the decode/command loop onto a real
-/// Web Worker via `web_thread` so that blocking I/O and channel waits
+/// Web Worker via `web_workers` so that blocking I/O and channel waits
 
 #[cfg(target_arch = "wasm32")]
 fn audio_thread_wasm(
@@ -614,10 +613,10 @@ fn audio_thread_wasm(
             .map_err(|_| anyhow!("audio stream already initialized"))
     })?;
 
-    // Real thread (Web Worker) via web_thread. blocking I/O, channel
+    // Real thread (Web Worker) via web_workers. blocking I/O, channel
     // sends, and thread::sleep all work correctly here.
     let thread_video_tx = video_tx.clone();
-    web_thread::spawn(move || {
+    web_workers::spawn(move || {
         let result = run_command_loop(
             &cmd_rx,
             &sample_tx,
@@ -1549,32 +1548,32 @@ fn decode_file_to_queue(
                     }
                 }
 
-            // Preroll gate (checked after every video packet)
-            if video_only {
-                if let Some(_phase) = &seek_phase {
-                    let min_samples =
-                        (out_rate as usize * out_channels * PREROLL_MS as usize) / 1000;
-                    let video_ok = video_preroll_ok(&shared);
-                    let audio_ok = sample_tx.len() >= min_samples;
-                    let queue_capacity = out_rate as usize * out_channels * 4;
-                    if audio_ok && (video_ok || sample_tx.len() >= queue_capacity * 3 / 4) {
-                        let resume = shared.resume_intent.load(Ordering::Acquire);
-                        shared.is_playing.store(resume, Ordering::Release);
-                        {
-                            let mut s = lock_status(&shared);
-                            s.state = if resume {
-                                PlaybackState::Playing
-                            } else {
-                                PlaybackState::Paused
-                            };
+                // Preroll gate (checked after every video packet)
+                if video_only {
+                    if let Some(_phase) = &seek_phase {
+                        let min_samples =
+                            (out_rate as usize * out_channels * PREROLL_MS as usize) / 1000;
+                        let video_ok = video_preroll_ok(&shared);
+                        let audio_ok = sample_tx.len() >= min_samples;
+                        let queue_capacity = out_rate as usize * out_channels * 4;
+                        if audio_ok && (video_ok || sample_tx.len() >= queue_capacity * 3 / 4) {
+                            let resume = shared.resume_intent.load(Ordering::Acquire);
+                            shared.is_playing.store(resume, Ordering::Release);
+                            {
+                                let mut s = lock_status(&shared);
+                                s.state = if resume {
+                                    PlaybackState::Playing
+                                } else {
+                                    PlaybackState::Paused
+                                };
+                            }
+                            seek_phase = None;
                         }
-                        seek_phase = None;
                     }
                 }
-            }
 
-            continue;
-        }
+                continue;
+            }
         }
 
         // Non-video packet: skip if it's not our audio track.
@@ -1845,7 +1844,9 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>) -> CommandAction {
 
         Command::SetVolume(v) => {
             let v = v.clamp(0.0, 2.0);
-            shared.unmute_volume_bits.store(v.to_bits(), Ordering::Release);
+            shared
+                .unmute_volume_bits
+                .store(v.to_bits(), Ordering::Release);
             if !shared.muted.load(Ordering::Acquire) {
                 shared.volume_bits.store(v.to_bits(), Ordering::Release);
             }
@@ -1857,7 +1858,9 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>) -> CommandAction {
         Command::SetMuted(m) => {
             shared.muted.store(m, Ordering::Release);
             if m {
-                shared.volume_bits.store(0.0f32.to_bits(), Ordering::Release);
+                shared
+                    .volume_bits
+                    .store(0.0f32.to_bits(), Ordering::Release);
             } else {
                 let v = shared.unmute_volume_bits.load(Ordering::Acquire);
                 shared.volume_bits.store(v, Ordering::Release);
@@ -1871,7 +1874,9 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>) -> CommandAction {
             let m = !shared.muted.load(Ordering::Acquire);
             shared.muted.store(m, Ordering::Release);
             if m {
-                shared.volume_bits.store(0.0f32.to_bits(), Ordering::Release);
+                shared
+                    .volume_bits
+                    .store(0.0f32.to_bits(), Ordering::Release);
             } else {
                 let v = shared.unmute_volume_bits.load(Ordering::Acquire);
                 shared.volume_bits.store(v, Ordering::Release);

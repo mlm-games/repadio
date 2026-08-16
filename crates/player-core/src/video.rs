@@ -116,9 +116,8 @@ impl VideoDecoder {
         // Safety: freshly created Arc has refcount 1.
         let uninit = Arc::get_mut(&mut arc).unwrap();
         // Cast MaybeUninit<u8> → u8 (same layout) for direct writing.
-        let dst: &mut [u8] = unsafe {
-            std::slice::from_raw_parts_mut(uninit.as_mut_ptr().cast(), size)
-        };
+        let dst: &mut [u8] =
+            unsafe { std::slice::from_raw_parts_mut(uninit.as_mut_ptr().cast(), size) };
         match data {
             videoson::PlaneData::U8(s) => {
                 for row in 0..height {
