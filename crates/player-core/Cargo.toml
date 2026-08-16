@@ -25,4 +25,4 @@ js-sys.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 web-sys = { workspace = true, features = ["Window", "console"] }
-web-thread = { git = "https://github.com/mlm-games/wasm-worker" }
+web-workers.workspace = true

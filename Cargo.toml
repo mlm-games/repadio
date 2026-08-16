@@ -21,10 +21,12 @@ rlobkit-dialogs = "0.5"
 rlobkit-app-events = { version = "0.5" }
 futures-lite = "2"
 
-repose-core = "0.24"
-repose-ui = "0.24"
-repose-material = "0.24"
-repose-platform = "0.24"
+repose-core = "0.27"
+repose-ui = "0.27"
+repose-material = "0.27"
+repose-platform = "0.27"
+
+web-workers = "0.2"
 
 console_error_panic_hook = "0.1"
 console_log = "1"
@@ -115,7 +117,7 @@ icon = "@drawable/ic_launcher_monochrome"
 [package.metadata.android.sdk]
 min_sdk_version = 26
 target_sdk_version = 36
-version_code = 1
+version_code = 16789738
 
 [[package.metadata.android.uses_permission]]
 name = "android.permission.INTERNET"
@@ -192,4 +194,4 @@ console_error_panic_hook.workspace = true
 console_log.workspace = true
 getrandom.workspace = true
 wgpu.workspace = true
-web-thread = { git = "https://github.com/mlm-games/wasm-worker" }
+web-workers.workspace = true
