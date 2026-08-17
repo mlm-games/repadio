@@ -26,7 +26,7 @@ repose-ui = "0.27"
 repose-material = "0.27"
 repose-platform = "0.27"
 
-web-workers = "0.2"
+web-workers = "0.3"
 
 console_error_panic_hook = "0.1"
 console_log = "1"
