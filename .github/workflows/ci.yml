@@ -108,15 +108,15 @@ jobs:
         run: |
           sdkmanager --install \
             "platform-tools" \
-            "platforms;android-36" \
-            "build-tools;36.0.0" \
-            "ndk;28.2.13676358"
+            "platforms;android-37.0" \
+            "build-tools;37.0.0" \
+            "ndk;29.0.14206865"
 
       - name: Install Rust target
         run: rustup target add ${{ matrix.target }}
 
       - name: Install cargo-rapk
-        run: cargo install cargo-rapk --locked
+        run: cargo install cargo-rapk@0.19.5 --locked
 
       - name: Build Android APK
         env:
