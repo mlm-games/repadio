@@ -56,6 +56,27 @@ use repose_ui::{
     Box, Column, Image, LazyColumn, LazyColumnConfig, Row, Spacer, Text, ViewExt, ZStack,
 };
 
+fn app_theme() -> repose_core::locals::Theme {
+    let mut colors = repose_core::locals::ColorScheme::dark();
+    colors.background = Color::from_hex("#000000");
+    colors.on_background = Color::from_hex("#E6E1E5");
+    colors.surface = Color::from_hex("#000000");
+    colors.on_surface = Color::from_hex("#E6E1E5");
+    colors.surface_dim = Color::from_hex("#000000");
+    colors.surface_bright = Color::from_hex("#1C1C1E");
+    colors.surface_container_lowest = Color::from_hex("#000000");
+    colors.surface_container_low = Color::from_hex("#0A0A0A");
+    colors.surface_container = Color::from_hex("#141414");
+    colors.surface_container_high = Color::from_hex("#1E1E1E");
+    colors.surface_container_highest = Color::from_hex("#262628");
+    colors.surface_variant = Color::from_hex("#232326");
+    colors.on_surface_variant = Color::from_hex("#C8C6CE");
+    colors.outline = Color::from_hex("#3A3A3E");
+    colors.outline_variant = Color::from_hex("#232326");
+    colors.scrim = Color::from_hex("#000000");
+    repose_core::locals::Theme::default().with_colors(colors)
+}
+
 fn surface_tint(fg: Color, alpha: u8) -> Color {
     fg.with_alpha(alpha).composite_over(theme().background)
 }
@@ -468,7 +489,7 @@ impl VideoSink {
 #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 pub fn run_desktop() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    repose_core::locals::set_theme_default(repose_core::locals::Theme::dark());
+    repose_core::locals::set_theme_default(app_theme());
 
     player_platform::init();
 
@@ -501,7 +522,7 @@ pub fn run_desktop() -> anyhow::Result<()> {
 pub async fn wasm_main() {
     console_error_panic_hook::set_once();
     console_log::init_with_level(log::Level::Info).ok();
-    repose_core::locals::set_theme_default(repose_core::locals::Theme::dark());
+    repose_core::locals::set_theme_default(app_theme());
 
     if let Err(e) = player_platform::wasm_persist::init().await {
         log::error!("OPFS init failed: {e}");
@@ -564,7 +585,7 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
     android_logger::init_once(
         android_logger::Config::default().with_max_level(log::LevelFilter::Info),
     );
-    repose_core::locals::set_theme_default(repose_core::locals::Theme::dark());
+    repose_core::locals::set_theme_default(app_theme());
     rlobkit_dialogs::init_shared_pending_state();
     rlobkit_dialogs::init_with_android_context(
         android_app.vm_as_ptr().cast(),
