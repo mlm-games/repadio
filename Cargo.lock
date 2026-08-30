@@ -3414,9 +3414,9 @@ dependencies = [
 
 [[package]]
 name = "repose-app"
-version = "0.28.10"
+version = "0.28.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fe3a2da348379530e963cbf9aed5768babe5160f914eff074b27bccab1a7da5"
+checksum = "decf96c45e75d8b530179ea64c2e089174b997ab0169aa355cef5de983e34e22"
 dependencies = [
  "log",
  "repose-core",
@@ -3428,9 +3428,9 @@ dependencies = [
 
 [[package]]
 name = "repose-core"
-version = "0.28.10"
+version = "0.28.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60a95a696bc9aa575b54916147bb2772268e97c174041151c4d7d635f93d06e4"
+checksum = "0ab438bcbe75ca6221aac21c1b79a338d1a72e34407fb1d27a8e16a46e99cc61"
 dependencies = [
  "accesskit",
  "bitflags 2.13.1",
@@ -3447,9 +3447,9 @@ dependencies = [
 
 [[package]]
 name = "repose-devtools"
-version = "0.28.10"
+version = "0.28.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "364d26c49dcf810cfa2c361cc04a0bcf634fc0783e9db0c0477438959db32c67"
+checksum = "810e87f021a7123de27603f1958801aa58742f0ff930b1a709c6cffe46bc92a7"
 dependencies = [
  "log",
  "repose-core",
@@ -3458,9 +3458,9 @@ dependencies = [
 
 [[package]]
 name = "repose-macros"
-version = "0.28.10"
+version = "0.28.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c18521ebc9266fc3941f408fc0df8c97350c3cd5bdcc7c1fa9e13fbc5a2f13f"
+checksum = "fb8aacf1663c242b5a600f0665f66bed4391129050eb96e54d10b16553ab1e07"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3469,9 +3469,9 @@ dependencies = [
 
 [[package]]
 name = "repose-material"
-version = "0.28.10"
+version = "0.28.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "663db8cb7aa7f948e76c185f0ac404ced3b38b23ad9f4131e60372c968857af8"
+checksum = "4b6e551b838f7d982d365b6ff578d2c948c3d89d3a31940a0d24543a3e531340"
 dependencies = [
  "repose-core",
  "repose-text",
@@ -3481,9 +3481,9 @@ dependencies = [
 
 [[package]]
 name = "repose-navigation"
-version = "0.28.10"
+version = "0.28.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e65b5df409a213693c274735a47cc14816db9454de4815e0ea457bbd981aa88f"
+checksum = "84187dd85846eb4013fd8cf90d0f428803b8d51c3abbc4dfeacb4b105dd0f21f"
 dependencies = [
  "log",
  "repose-core",
@@ -3494,9 +3494,9 @@ dependencies = [
 
 [[package]]
 name = "repose-platform"
-version = "0.28.10"
+version = "0.28.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d527298c724687ecd24297dcd1c148cf193bb3a7af7ad42bae7c7bf65250a36"
+checksum = "810d0cb0bee9d67b916081b8df60d5f1d2eaf9b80bc5b38f63c88b9a72e5b9c1"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -3525,9 +3525,9 @@ dependencies = [
 
 [[package]]
 name = "repose-render-wgpu"
-version = "0.28.10"
+version = "0.28.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4da7bc34d1fdb655516a5df144ea2cbe379ff594c30382e2540e771448ea9b15"
+checksum = "9fd5ddd374f5dd0f28336bd0fbfd25a6e6c50f0c59648b4eff7c241632798468"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -3544,9 +3544,9 @@ dependencies = [
 
 [[package]]
 name = "repose-text"
-version = "0.28.10"
+version = "0.28.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2e3bdcff7b1a0ba162ff277f583fb6655e207f4e4466457775d3fa3660535c8"
+checksum = "642b92c419a6b8617295b8898d431dc68d3d8e512cfcafb7e928a6aaf9294c57"
 dependencies = [
  "font-awl",
  "js-sys",
@@ -3564,9 +3564,9 @@ dependencies = [
 
 [[package]]
 name = "repose-tree"
-version = "0.28.10"
+version = "0.28.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d52503872695e20f2b800d6f54961b885c7537200c04a84a2065ccff4256b91d"
+checksum = "2453e0fae954bbc9cffa6aefbdd1a2ce4568a0b683149f8e78c43998fedafdba"
 dependencies = [
  "log",
  "rapidhash",
@@ -3578,9 +3578,9 @@ dependencies = [
 
 [[package]]
 name = "repose-ui"
-version = "0.28.10"
+version = "0.28.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77acc8f1af0e3a16d1500f6bd9c206bb81ae063612f796c6250af315eaba4073"
+checksum = "9d52b9ef2eec6019ae5ea302c1e7ef75c62b4dbd09b9d79b9c5358e9fb373a80"
 dependencies = [
  "log",
  "repose-core",
