@@ -75,7 +75,10 @@ symphonia-format-isomp4 = { git = "https://github.com/mlm-games/symphonia", pack
 symphonia-format-mkv = { git = "https://github.com/mlm-games/symphonia", package = "symphonia-format-mkv" }
 symphonia-format-ogg = { git = "https://github.com/mlm-games/symphonia", package = "symphonia-format-ogg" }
 symphonia-format-riff = { git = "https://github.com/mlm-games/symphonia", package = "symphonia-format-riff" }
-
+# repose-core = { path = "../repose/crates/repose-core" }
+# repose-ui = { path = "../repose/crates/repose-ui" }
+# repose-material = { path = "../repose/crates/repose-material" }
+# repose-platform = { path = "../repose/crates/repose-platform" }
 
 [dev-dependencies]
 symphonia.workspace = true
