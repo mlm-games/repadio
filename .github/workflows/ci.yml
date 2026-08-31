@@ -96,6 +96,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Load pins from release.yml
+        run: |
+          API=$(sed -E -n 's/.*android-api.*"(.*)".*/\1/p' .github/workflows/release.yml)
+          BT=$(sed -E -n 's/.*android-build-tools.*"(.*)".*/\1/p' .github/workflows/release.yml | head -1)
+          NDK=$(sed -E -n 's/.*android-ndk-version.*"(.*)".*/\1/p' .github/workflows/release.yml)
+          RAPK=$(sed -E -n 's/.*cargo-rapk-version.*"(.*)".*/\1/p' .github/workflows/release.yml)
+          echo "ANDROID_API=$API" >> "$GITHUB_ENV"
+          echo "ANDROID_BUILD_TOOLS=$BT" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_VERSION=$NDK" >> "$GITHUB_ENV"
+          echo "CARGO_RAPK_VERSION=$RAPK" >> "$GITHUB_ENV"
+          echo "Loaded from release.yml: API=$API BT=$BT NDK=$NDK RAPK=$RAPK"
+
       - uses: actions/setup-java@v5
         with:
           java-version: ${{ env.JAVA_VERSION }}
@@ -108,15 +120,15 @@ jobs:
         run: |
           sdkmanager --install \
             "platform-tools" \
-            "platforms;android-37.0" \
-            "build-tools;37.0.0" \
-            "ndk;29.0.14206865"
+            "platforms;android-${{ env.ANDROID_API }}" \
+            "build-tools;${{ env.ANDROID_BUILD_TOOLS }}" \
+            "ndk;${{ env.ANDROID_NDK_VERSION }}"
 
       - name: Install Rust target
         run: rustup target add ${{ matrix.target }}
 
       - name: Install cargo-rapk
-        run: cargo install cargo-rapk@0.19.5 --locked
+        run: cargo install cargo-rapk@${{ env.CARGO_RAPK_VERSION }} --locked
 
       - name: Build Android APK
         env:
