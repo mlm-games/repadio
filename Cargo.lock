@@ -4859,7 +4859,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "videoson"
 version = "0.4.0"
-source = "git+https://github.com/mlm-games/videoson#f3e8e19d10ca11d370dbeaef3b037929e62bdd15"
+source = "git+https://github.com/mlm-games/videoson#82e442e0e9b9befc8d80dfc3770bfede14fd5340"
 dependencies = [
  "videoson-codec-h264",
  "videoson-codec-h265",
@@ -4874,7 +4874,7 @@ dependencies = [
 [[package]]
 name = "videoson-codec-h264"
 version = "0.4.0"
-source = "git+https://github.com/mlm-games/videoson#f3e8e19d10ca11d370dbeaef3b037929e62bdd15"
+source = "git+https://github.com/mlm-games/videoson#82e442e0e9b9befc8d80dfc3770bfede14fd5340"
 dependencies = [
  "rust_h264",
  "videoson-core",
@@ -4883,7 +4883,7 @@ dependencies = [
 [[package]]
 name = "videoson-codec-h265"
 version = "0.4.0"
-source = "git+https://github.com/mlm-games/videoson#f3e8e19d10ca11d370dbeaef3b037929e62bdd15"
+source = "git+https://github.com/mlm-games/videoson#82e442e0e9b9befc8d80dfc3770bfede14fd5340"
 dependencies = [
  "rust_h265",
  "videoson-common",
@@ -4893,7 +4893,7 @@ dependencies = [
 [[package]]
 name = "videoson-codec-rav1d"
 version = "0.4.0"
-source = "git+https://github.com/mlm-games/videoson#f3e8e19d10ca11d370dbeaef3b037929e62bdd15"
+source = "git+https://github.com/mlm-games/videoson#82e442e0e9b9befc8d80dfc3770bfede14fd5340"
 dependencies = [
  "rav1d-safe",
  "videoson-core",
@@ -4902,7 +4902,7 @@ dependencies = [
 [[package]]
 name = "videoson-codec-vp8"
 version = "0.4.0"
-source = "git+https://github.com/mlm-games/videoson#f3e8e19d10ca11d370dbeaef3b037929e62bdd15"
+source = "git+https://github.com/mlm-games/videoson#82e442e0e9b9befc8d80dfc3770bfede14fd5340"
 dependencies = [
  "oxideav-vp8",
  "videoson-core",
@@ -4911,7 +4911,7 @@ dependencies = [
 [[package]]
 name = "videoson-codec-vp9"
 version = "0.4.0"
-source = "git+https://github.com/mlm-games/videoson#f3e8e19d10ca11d370dbeaef3b037929e62bdd15"
+source = "git+https://github.com/mlm-games/videoson#82e442e0e9b9befc8d80dfc3770bfede14fd5340"
 dependencies = [
  "oxideav-core",
  "oxideav-vp9",
@@ -4921,17 +4921,17 @@ dependencies = [
 [[package]]
 name = "videoson-common"
 version = "0.4.0"
-source = "git+https://github.com/mlm-games/videoson#f3e8e19d10ca11d370dbeaef3b037929e62bdd15"
+source = "git+https://github.com/mlm-games/videoson#82e442e0e9b9befc8d80dfc3770bfede14fd5340"
 
 [[package]]
 name = "videoson-core"
 version = "0.4.0"
-source = "git+https://github.com/mlm-games/videoson#f3e8e19d10ca11d370dbeaef3b037929e62bdd15"
+source = "git+https://github.com/mlm-games/videoson#82e442e0e9b9befc8d80dfc3770bfede14fd5340"
 
 [[package]]
 name = "videoson-format-ivf"
 version = "0.4.0"
-source = "git+https://github.com/mlm-games/videoson#f3e8e19d10ca11d370dbeaef3b037929e62bdd15"
+source = "git+https://github.com/mlm-games/videoson#82e442e0e9b9befc8d80dfc3770bfede14fd5340"
 dependencies = [
  "oxideav-bitstream",
  "videoson-common",
