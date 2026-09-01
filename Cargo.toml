@@ -96,6 +96,11 @@ rust-version.workspace = true
 publish = false
 default-run = "repadio-desktop"
 
+[features]
+default = []
+hw = ["player-core/hw"]
+hw-linux = ["hw", "player-core/hw-linux"]
+
 [lib]
 name = "repadio"
 crate-type = ["cdylib", "rlib"]

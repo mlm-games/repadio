@@ -10,6 +10,15 @@ use videoson::{
     codec_rav1d::Rav1dSafeDecoder, codec_vp8::Vp8Decoder, codec_vp9::Vp9Decoder,
 };
 
+#[cfg(feature = "hw")]
+use baabaabaabaabababbababbaa::{
+    default_host, Dimensions, VideoCodecId as HwCodecId, VideoDecoderConfig, VideoOutputMode,
+};
+#[cfg(feature = "hw")]
+use baabaabaabaabababbababbaa::traits::{VideoDecoderInputBoxed, VideoDecoderOutputBoxed};
+#[cfg(feature = "hw")]
+use bytes::Bytes;
+
 #[derive(Debug, Clone)]
 pub struct VideoStreamInfo {
     pub width: u32,
@@ -34,15 +43,204 @@ pub struct DecodedVideoFrame {
     pub poc: Option<i32>,
 }
 
+enum DecoderInner {
+    Software(Box<dyn VideoDecoderTrait>),
+    #[cfg(feature = "hw")]
+    Hardware(Box<HwDecoder>),
+}
+
+#[cfg(feature = "hw")]
+struct HwDecoder {
+    input: Box<dyn VideoDecoderInputBoxed>,
+    output: Box<dyn VideoDecoderOutputBoxed>,
+    #[cfg(not(target_arch = "wasm32"))]
+    runtime: tokio::runtime::Runtime,
+}
+
+#[cfg(feature = "hw")]
+impl HwDecoder {
+    fn try_new(codec: HwCodecId, width: u32, height: u32, extradata: &[u8]) -> Option<Self> {
+        // `default_host` already gated by target (wasm/android/linux) and feature `linux`
+        let host = default_host();
+        let config = VideoDecoderConfig {
+            codec,
+            resolution: Some(Dimensions::new(width, height)),
+            description: if extradata.is_empty() {
+                None
+            } else {
+                Some(Bytes::copy_from_slice(extradata))
+            },
+            hardware_acceleration: Some(true),
+            output_mode: VideoOutputMode::PreferHardware,
+        };
+        // `create_video_decoder` is sync; if backend is `NoBackend` it returns `Err(NoBackend)`
+        let (input, output) = host.create_video_decoder(config).ok()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .ok()?;
+        Some(Self {
+            input: Box::new(input) as Box<dyn VideoDecoderInputBoxed>,
+            output: Box::new(output) as Box<dyn VideoDecoderOutputBoxed>,
+            #[cfg(not(target_arch = "wasm32"))]
+            runtime,
+        })
+    }
+
+    fn decode(&mut self, data: &[u8], pts: Duration, is_sync: bool) -> Result<()> {
+        let pkt = baabaabaabaabababbababbaa::EncodedVideoPacket {
+            payload: Bytes::copy_from_slice(data),
+            timestamp: pts,
+            keyframe: is_sync,
+        };
+        self.input
+            .decode(pkt)
+            .map_err(|e| anyhow::anyhow!("hw decode: {e:?}"))
+    }
+
+    fn try_drain_hw_frames(&mut self) -> Vec<baabaabaabaabababbababbaa::VideoFrame> {
+        let mut out = Vec::new();
+        loop {
+            match self.output.try_frame() {
+                Ok(Some(f)) => out.push(f),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+        out
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.runtime
+                .block_on(self.input.flush())
+                .map_err(|e| anyhow::anyhow!("hw flush: {e:?}"))?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            // WebCodecs flush is async but try_frame will drain anyway; no-op for now
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "hw")]
+fn hw_frame_to_decoded(
+    mut frame: baabaabaabaabababbababbaa::VideoFrame,
+    fallback_pts: Duration,
+    load_serial: u64,
+) -> Option<DecodedVideoFrame> {
+    // Ensure CPU accessible (copies DmaBuf/WebCodecs hardware buffers)
+    if frame.is_hardware() {
+        if frame.ensure_cpu().is_err() {
+            log::warn!("hw frame ensure_cpu failed");
+            return None;
+        }
+    }
+    let w = frame.dimensions.width;
+    let h = frame.dimensions.height;
+    let pts = if frame.timestamp != Duration::ZERO {
+        frame.timestamp
+    } else {
+        fallback_pts
+    };
+    // `VideoPlanes::Cpu(Vec<u8>)` holds packed planes according to `frame.format`
+    let data = match &frame.planes {
+        baabaabaabaabababbababbaa::VideoPlanes::Cpu(v) => v.clone(),
+        baabaabaabaabababbababbaa::VideoPlanes::Hardware(_) => {
+            log::warn!("hw frame still hardware after ensure_cpu");
+            return None;
+        }
+    };
+    let (y_plane, uv_plane) = match frame.format {
+        baabaabaabaabababbababbaa::PixelFormat::Nv12 => {
+            let y_size = (w as usize) * (h as usize);
+            let uv_size = (w as usize) * ((h as usize + 1) / 2);
+            if data.len() < y_size + uv_size {
+                log::warn!("hw Nv12 frame too short");
+                return None;
+            }
+            let y = &data[0..y_size];
+            let uv = &data[y_size..y_size + uv_size];
+            // Already NV12 interleaved
+            (Arc::<[u8]>::from(y.to_vec()), Arc::<[u8]>::from(uv.to_vec()))
+        }
+        baabaabaabaabababbababbaa::PixelFormat::Yuv420p => {
+            let y_size = (w as usize) * (h as usize);
+            let uv_w = (w as usize + 1) / 2;
+            let uv_h = (h as usize + 1) / 2;
+            let u_size = uv_w * uv_h;
+            let v_size = u_size;
+            if data.len() < y_size + u_size + v_size {
+                log::warn!("hw Yuv420p frame too short");
+                return None;
+            }
+            let y = &data[0..y_size];
+            let u = &data[y_size..y_size + u_size];
+            let v = &data[y_size + u_size..y_size + u_size + v_size];
+            let mut uv = Vec::with_capacity(u_size * 2);
+            for i in 0..u_size {
+                uv.push(u[i]);
+                uv.push(v[i]);
+            }
+            (Arc::<[u8]>::from(y.to_vec()), Arc::<[u8]>::from(uv))
+        }
+        _ => {
+            log::warn!("hw unsupported pixel format {:?}", frame.format);
+            return None;
+        }
+    };
+    Some(DecodedVideoFrame {
+        width: w,
+        height: h,
+        y_plane,
+        uv_plane,
+        pts,
+        load_serial,
+        color_info: ColorInfo::default(),
+        poc: None,
+    })
+}
+
 pub struct VideoDecoder {
-    inner: Box<dyn VideoDecoderTrait>,
+    inner: DecoderInner,
     /// Reorder buffer that holds frames by PTS and emits the smallest-PTS
     /// frame each call. Cross-batch reordering is handled by VideoSink::poll().
     reorder: Vec<DecodedVideoFrame>,
 }
 
 impl VideoDecoder {
-    pub fn new_h264(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
+    /// `true` if this instance is using a hardware backend (`vaapi`/`mediacodec`/`webcodecs`), `false` for `videoson` software.
+    /// Cheap to call; useful for `PlayerSnapshot` / `mpv`-like `hwdec-current` property.
+    pub fn is_hardware(&self) -> bool {
+        #[cfg(feature = "hw")]
+        {
+            matches!(self.inner, DecoderInner::Hardware(_))
+        }
+        #[cfg(not(feature = "hw"))]
+        {
+            false
+        }
+    }
+
+    /// Human-readable decoder backend label (`"hw"` / `"sw"`).
+    pub fn decoder_kind(&self) -> &'static str {
+        if self.is_hardware() {
+            "hw"
+        } else {
+            "sw"
+        }
+    }
+}
+
+impl VideoDecoder {
+    fn software_fallback_h264(
+        width: u32,
+        height: u32,
+        extradata: &[u8],
+    ) -> Result<Box<dyn VideoDecoderTrait>> {
         let nal_length_size = parse_nal_length_size(extradata);
         let params = VideoCodecParams {
             codec: videoson::CodecType::H264,
@@ -61,13 +259,41 @@ impl VideoDecoder {
         };
         let inner = H264Decoder::try_new(&params, &opts)
             .map_err(|e| anyhow::anyhow!("videoson H.264 init: {e:?}"))?;
+        Ok(Box::new(inner))
+    }
+
+    pub fn new_h264(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
+        #[cfg(feature = "hw")]
+        {
+            if let Some(hw) = HwDecoder::try_new(
+                HwCodecId::H264 {
+                    profile: None,
+                    level: None,
+                },
+                width,
+                height,
+                extradata,
+            ) {
+                log::info!("video: H.264 HW decoder selected [hw] hwdec-current=hw");
+                return Ok(Self {
+                    inner: DecoderInner::Hardware(Box::new(hw)),
+                    reorder: Vec::new(),
+                });
+            } else {
+                log::info!("video: H.264 HW unavailable, using SW [sw]");
+            }
+        }
         Ok(Self {
-            inner: Box::new(inner),
+            inner: DecoderInner::Software(Self::software_fallback_h264(width, height, extradata)?),
             reorder: Vec::new(),
         })
     }
 
-    pub fn new_av1(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
+    fn software_fallback_av1(
+        width: u32,
+        height: u32,
+        extradata: &[u8],
+    ) -> Result<Box<dyn VideoDecoderTrait>> {
         let params = VideoCodecParams {
             codec: videoson::CodecType::AV1,
             coded_width: width,
@@ -83,13 +309,33 @@ impl VideoDecoder {
         };
         let inner = Rav1dSafeDecoder::try_new(&params, &opts)
             .map_err(|e| anyhow::anyhow!("videoson AV1 init: {e:?}"))?;
+        Ok(Box::new(inner))
+    }
+
+    pub fn new_av1(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
+        #[cfg(feature = "hw")]
+        {
+            if let Some(hw) = HwDecoder::try_new(HwCodecId::Av1, width, height, extradata) {
+                log::info!("video: AV1 HW decoder selected [hw] hwdec-current=hw");
+                return Ok(Self {
+                    inner: DecoderInner::Hardware(Box::new(hw)),
+                    reorder: Vec::new(),
+                });
+            } else {
+                log::info!("video: AV1 HW unavailable, using SW [sw]");
+            }
+        }
         Ok(Self {
-            inner: Box::new(inner),
+            inner: DecoderInner::Software(Self::software_fallback_av1(width, height, extradata)?),
             reorder: Vec::new(),
         })
     }
 
-    pub fn new_vp8(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
+    fn software_fallback_vp8(
+        width: u32,
+        height: u32,
+        extradata: &[u8],
+    ) -> Result<Box<dyn VideoDecoderTrait>> {
         let params = VideoCodecParams {
             codec: videoson::CodecType::VP8,
             coded_width: width,
@@ -105,13 +351,33 @@ impl VideoDecoder {
         };
         let inner = Vp8Decoder::try_new(&params, &opts)
             .map_err(|e| anyhow::anyhow!("videoson VP8 init: {e:?}"))?;
+        Ok(Box::new(inner))
+    }
+
+    pub fn new_vp8(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
+        #[cfg(feature = "hw")]
+        {
+            if let Some(hw) = HwDecoder::try_new(HwCodecId::Vp8, width, height, extradata) {
+                log::info!("video: VP8 HW decoder selected [hw] hwdec-current=hw");
+                return Ok(Self {
+                    inner: DecoderInner::Hardware(Box::new(hw)),
+                    reorder: Vec::new(),
+                });
+            } else {
+                log::info!("video: VP8 HW unavailable, using SW [sw]");
+            }
+        }
         Ok(Self {
-            inner: Box::new(inner),
+            inner: DecoderInner::Software(Self::software_fallback_vp8(width, height, extradata)?),
             reorder: Vec::new(),
         })
     }
 
-    pub fn new_vp9(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
+    fn software_fallback_vp9(
+        width: u32,
+        height: u32,
+        extradata: &[u8],
+    ) -> Result<Box<dyn VideoDecoderTrait>> {
         let params = VideoCodecParams {
             codec: videoson::CodecType::VP9,
             coded_width: width,
@@ -119,7 +385,6 @@ impl VideoDecoder {
             extradata: extradata.to_vec(),
             nal_format: None,
         };
-        // Enable tile-parallel decode on desktop (4 threads); wasm stays serial.
         #[cfg(not(target_arch = "wasm32"))]
         let threads = Some(4);
         #[cfg(target_arch = "wasm32")]
@@ -133,28 +398,98 @@ impl VideoDecoder {
         };
         let inner = Vp9Decoder::try_new(&params, &opts)
             .map_err(|e| anyhow::anyhow!("videoson VP9 init: {e:?}"))?;
+        Ok(Box::new(inner))
+    }
+
+    pub fn new_vp9(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
+        #[cfg(feature = "hw")]
+        {
+            if let Some(hw) = HwDecoder::try_new(HwCodecId::Vp9, width, height, extradata) {
+                log::info!("video: VP9 HW decoder selected [hw] hwdec-current=hw");
+                return Ok(Self {
+                    inner: DecoderInner::Hardware(Box::new(hw)),
+                    reorder: Vec::new(),
+                });
+            } else {
+                log::info!("video: VP9 HW unavailable, using SW [sw]");
+            }
+        }
         Ok(Self {
-            inner: Box::new(inner),
+            inner: DecoderInner::Software(Self::software_fallback_vp9(width, height, extradata)?),
+            reorder: Vec::new(),
+        })
+    }
+
+    fn software_fallback_hevc(
+        width: u32,
+        height: u32,
+        extradata: &[u8],
+    ) -> Result<Box<dyn VideoDecoderTrait>> {
+        let nal_len_size = parse_nal_length_size_hevc(extradata);
+        let params = VideoCodecParams {
+            codec: videoson::CodecType::H265,
+            coded_width: width,
+            coded_height: height,
+            extradata: extradata.to_vec(),
+            nal_format: Some(NalFormat::Hvcc { nal_len_size }),
+        };
+        let opts = VideoDecoderOptions {
+            verify: false,
+            output_format: VideoOutputFormat::Nv12,
+            tolerate_truncated_chroma: false,
+            ..Default::default()
+        };
+        let inner = H265Decoder::try_new(&params, &opts)
+            .map_err(|e| anyhow::anyhow!("videoson H.265 init: {e:?}"))?;
+        Ok(Box::new(inner))
+    }
+
+    pub fn new_hevc(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
+        #[cfg(feature = "hw")]
+        {
+            if let Some(hw) = HwDecoder::try_new(HwCodecId::Hevc, width, height, extradata) {
+                log::info!("video: HEVC HW decoder selected [hw] hwdec-current=hw");
+                return Ok(Self {
+                    inner: DecoderInner::Hardware(Box::new(hw)),
+                    reorder: Vec::new(),
+                });
+            } else {
+                log::info!("video: HEVC HW unavailable, using SW [sw]");
+            }
+        }
+        Ok(Self {
+            inner: DecoderInner::Software(Self::software_fallback_hevc(width, height, extradata)?),
             reorder: Vec::new(),
         })
     }
 
     pub fn send_packet(&mut self, data: &[u8], pts_us: i64, is_sync: bool) -> Result<()> {
-        let packet = videoson::Packet {
-            track_id: 0,
-            pts: Some(pts_us),
-            dts: None,
-            duration: None,
-            is_sync,
-            data: data.to_vec(),
-        };
-        self.inner
-            .send_packet(&packet)
-            .map_err(|e| anyhow::anyhow!("videoson send: {e:?}"))
+        match &mut self.inner {
+            DecoderInner::Software(inner) => {
+                let packet = videoson::Packet {
+                    track_id: 0,
+                    pts: Some(pts_us),
+                    dts: None,
+                    duration: None,
+                    is_sync,
+                    data: data.to_vec(),
+                };
+                inner
+                    .send_packet(&packet)
+                    .map_err(|e| anyhow::anyhow!("videoson send: {e:?}"))
+            }
+            #[cfg(feature = "hw")]
+            DecoderInner::Hardware(hw) => hw
+                .decode(data, Duration::from_micros(pts_us.max(0) as u64), is_sync),
+        }
     }
 
     pub fn set_frame_duration_micros(&mut self, us: u64) {
-        self.inner.set_frame_duration_micros(us);
+        match &mut self.inner {
+            DecoderInner::Software(inner) => inner.set_frame_duration_micros(us),
+            #[cfg(feature = "hw")]
+            DecoderInner::Hardware(_) => {}
+        }
     }
 
     fn plane_to_arc(
@@ -206,53 +541,66 @@ impl VideoDecoder {
         load_serial: u64,
         frame_duration_us: u64,
     ) -> Vec<DecodedVideoFrame> {
-        while let Ok(Some(frame)) = self.inner.receive_frame() {
-            if frame.plane_data.len() < 2 {
-                log::warn!("video drain: frame with <2 planes, skipping");
-                continue;
+        // HW path: poll try_frame
+        match &mut self.inner {
+            #[cfg(feature = "hw")]
+            DecoderInner::Hardware(hw) => {
+                for frame in hw.try_drain_hw_frames() {
+                    if let Some(decoded) = hw_frame_to_decoded(frame, fallback_pts, load_serial) {
+                        self.reorder.push(decoded);
+                    }
+                }
             }
+            DecoderInner::Software(inner) => {
+                while let Ok(Some(frame)) = inner.receive_frame() {
+                if frame.plane_data.len() < 2 {
+                    log::warn!("video drain: frame with <2 planes, skipping");
+                    continue;
+                }
 
-            let w = frame.width as usize;
-            let h = frame.height as usize;
-            let y_stride = frame.plane_data[0].stride;
-            let uv_stride = frame.plane_data[1].stride;
-            let uv_w = ((frame.width + 1) / 2 * 2) as usize;
-            let uv_h = ((frame.height + 1) / 2) as usize;
+                let w = frame.width as usize;
+                let h = frame.height as usize;
+                let y_stride = frame.plane_data[0].stride;
+                let uv_stride = frame.plane_data[1].stride;
+                let uv_w = ((frame.width + 1) / 2 * 2) as usize;
+                let uv_h = ((frame.height + 1) / 2) as usize;
 
-            let y_plane = Self::plane_to_arc(&frame.plane_data[0].data, w, h, y_stride);
-            let uv_plane = Self::plane_to_arc(&frame.plane_data[1].data, uv_w, uv_h, uv_stride);
+                let y_plane = Self::plane_to_arc(&frame.plane_data[0].data, w, h, y_stride);
+                let uv_plane = Self::plane_to_arc(&frame.plane_data[1].data, uv_w, uv_h, uv_stride);
 
-            // PTS from container may be non-monotonic when the muxer assumed
-            // B-frame reordering but the bitstream has none.  Recompute from
-            // POC when frame_duration_us is provided.
-            let pts = if frame_duration_us > 0 {
-                frame
-                    .poc
-                    .filter(|&p| p >= 0)
-                    .map(|p| Duration::from_micros(p as u64 * frame_duration_us))
-                    .unwrap_or(
-                        frame
-                            .pts
-                            .map(|p| Duration::from_micros(p.max(0) as u64))
-                            .unwrap_or(fallback_pts),
-                    )
-            } else {
-                frame
-                    .pts
-                    .map(|p| Duration::from_micros(p.max(0) as u64))
-                    .unwrap_or(fallback_pts)
-            };
+                // PTS from container may be non-monotonic when the muxer assumed
+                // B-frame reordering but the bitstream has none.  Recompute from
+                // POC when frame_duration_us is provided.
+                let pts = if frame_duration_us > 0 {
+                    frame
+                        .poc
+                        .filter(|&p| p >= 0)
+                        .map(|p| Duration::from_micros(p as u64 * frame_duration_us))
+                        .unwrap_or(
+                            frame
+                                .pts
+                                .map(|p| Duration::from_micros(p.max(0) as u64))
+                                .unwrap_or(fallback_pts),
+                        )
+                } else {
+                    frame
+                        .pts
+                        .map(|p| Duration::from_micros(p.max(0) as u64))
+                        .unwrap_or(fallback_pts)
+                };
 
-            self.reorder.push(DecodedVideoFrame {
-                width: frame.width,
-                height: frame.height,
-                y_plane,
-                uv_plane,
-                pts,
-                load_serial,
-                color_info: ColorInfo::default(),
-                poc: frame.poc,
-            });
+                self.reorder.push(DecodedVideoFrame {
+                    width: frame.width,
+                    height: frame.height,
+                    y_plane,
+                    uv_plane,
+                    pts,
+                    load_serial,
+                    color_info: ColorInfo::default(),
+                    poc: frame.poc,
+                });
+            }
+            }
         }
 
         if self.reorder.is_empty() {
@@ -265,13 +613,21 @@ impl VideoDecoder {
         // No hold-back: frames leave immediately so the renderer's
         // VideoSink can schedule them by PTS without a 1-frame delay.
         self.reorder.sort_by_key(|f| f.pts);
-        return self.reorder.drain(..).collect();
+        self.reorder.drain(..).collect()
     }
 
     pub fn finish(&mut self, frame_duration_us: u64) -> Result<Vec<DecodedVideoFrame>> {
-        self.inner
-            .send_eos()
-            .map_err(|e| anyhow::anyhow!("videoson eos: {e:?}"))?;
+        match &mut self.inner {
+            DecoderInner::Software(inner) => {
+                inner
+                    .send_eos()
+                    .map_err(|e| anyhow::anyhow!("videoson eos: {e:?}"))?;
+            }
+            #[cfg(feature = "hw")]
+            DecoderInner::Hardware(hw) => {
+                hw.flush()?;
+            }
+        }
         // Drain remaining frames from decoder (including decoder's pending
         // frames flushed by send_eos).  No hold-back in drain_frames, so
         // self.reorder is always empty after the call.
@@ -280,31 +636,17 @@ impl VideoDecoder {
         Ok(result)
     }
 
-    pub fn new_hevc(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
-        let nal_len_size = parse_nal_length_size_hevc(extradata);
-        let params = VideoCodecParams {
-            codec: videoson::CodecType::H265,
-            coded_width: width,
-            coded_height: height,
-            extradata: extradata.to_vec(),
-            nal_format: Some(NalFormat::Hvcc { nal_len_size }),
-        };
-        let opts = VideoDecoderOptions {
-            verify: false,
-            output_format: VideoOutputFormat::Nv12,
-            tolerate_truncated_chroma: false,
-            ..Default::default()
-        };
-        let inner = H265Decoder::try_new(&params, &opts)
-            .map_err(|e| anyhow::anyhow!("videoson H.265 init: {e:?}"))?;
-        Ok(Self {
-            inner: Box::new(inner),
-            reorder: Vec::new(),
-        })
-    }
-
     pub fn reset(&mut self) {
-        let _ = self.inner.reset();
+        match &mut self.inner {
+            DecoderInner::Software(inner) => {
+                let _ = inner.reset();
+            }
+            #[cfg(feature = "hw")]
+            DecoderInner::Hardware(hw) => {
+                // HW decoders don't expose reset; flush and clear reorder
+                let _ = hw.flush();
+            }
+        }
         self.reorder.clear();
     }
 }

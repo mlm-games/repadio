@@ -15,6 +15,14 @@ rubato.workspace = true
 videoson.workspace = true
 repose-core.workspace = true
 web-time.workspace = true
+baabaabaabaabababbababbaa = { git = "https://github.com/mlm-games/baa4bababab2baa", optional = true }
+bytes = { version = "1", optional = true }
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"], optional = true }
+
+[features]
+default = ["hw-linux"]
+hw = ["dep:baabaabaabaabababbababbaa", "dep:bytes", "dep:tokio"]
+hw-linux = ["hw", "baabaabaabaabababbababbaa/linux"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 cpal.workspace = true

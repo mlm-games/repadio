@@ -124,6 +124,8 @@ pub struct PlayerSnapshot {
     pub muted: bool,
     pub playback_rate: f32,
     pub has_video: bool,
+    pub video_codec: Option<String>,
+    pub video_hw: bool,
     pub error: Option<String>,
 }
 
@@ -142,6 +144,8 @@ impl Default for PlayerSnapshot {
             muted: false,
             playback_rate: 1.0,
             has_video: false,
+            video_codec: None,
+            video_hw: false,
             error: None,
         }
     }
@@ -322,7 +326,9 @@ impl AudioPlayer {
         AUDIO_STREAM.with(|cell| {
             if let Some(stream) = cell.get() {
                 if let Err(e) = stream.play() {
-                    web_sys::console::log_1(&format!("resume_audio: stream.play() failed: {e:?}").into());
+                    web_sys::console::log_1(
+                        &format!("resume_audio: stream.play() failed: {e:?}").into(),
+                    );
                 }
             } else {
                 web_sys::console::log_1(&"resume_audio: stream not ready yet".into());
@@ -1232,8 +1238,22 @@ fn decode_file_to_queue(
                 break 'video_init;
             }
         };
+        let is_hw = dec.is_hardware();
         video_duration = track_duration_secs(vtrack);
-        log::info!("video: {name} {}x{}", w, h);
+        log::info!(
+            "video: {} {}x{} [{}] hwdec-current={} video-codec={}",
+            name,
+            w,
+            h,
+            dec.decoder_kind(),
+            if is_hw { "hw" } else { "sw" },
+            name
+        );
+        {
+            let mut s = lock_status(&shared);
+            s.video_codec = Some(name.to_string());
+            s.video_hw = is_hw;
+        }
         let nal_len_size = match vp.codec {
             c if c == video_codec_ids::CODEC_ID_HEVC => {
                 video::parse_nal_length_size_hevc(extradata) as usize
@@ -1261,6 +1281,11 @@ fn decode_file_to_queue(
     shared
         .has_video
         .store(video_state.is_some(), Ordering::Release);
+    if video_state.is_none() {
+        let mut s = lock_status(&shared);
+        s.video_codec = None;
+        s.video_hw = false;
+    }
     if audio_track.is_none() && video_state.is_none() {
         anyhow::bail!("no supported audio or video track in this file");
     }
