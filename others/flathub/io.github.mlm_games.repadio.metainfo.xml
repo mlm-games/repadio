@@ -64,6 +64,22 @@
     <control>touch</control>
   </supports>
   <releases>
+    <release version="0.2.2" date="2026-09-01" type="stable">
+      <description>
+        <ul>
+          <li>bump repose</li>
+          <li>fix: later bump to 0.28.11 to fix icon color issue</li>
+          <li>chec</li>
+          <li>cargo bump vers</li>
+          <li>use web-workers 0.3</li>
+          <li>theme</li>
+          <li>fix wasm err and fmt</li>
+          <li>update repose version</li>
+          <li>partial qol stuff</li>
+          <li>screenshots</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-07-08"/>
   </releases>
   <content_rating type="oars-1.1"/>

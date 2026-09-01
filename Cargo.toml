@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 rust-version = "1.93"
 license = "GPL-3.0-or-later"
@@ -120,7 +120,7 @@ icon = "@drawable/ic_launcher_monochrome"
 [package.metadata.android.sdk]
 min_sdk_version = 26
 target_sdk_version = 37
-version_code = 16789738
+version_code = 16777730
 
 [[package.metadata.android.uses_permission]]
 name = "android.permission.INTERNET"
