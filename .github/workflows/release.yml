@@ -26,6 +26,17 @@ on:
           - patch
           - minor
           - major
+      play_track:
+        description: "Google Play track"
+        required: true
+        default: "none"
+        type: choice
+        options:
+          - none
+          - internal
+          - alpha
+          - beta
+          - production
 
 concurrency:
   group: release-bin-${{ github.ref }}
@@ -48,6 +59,9 @@ jobs:
       java-version: '21'
       java-distribution: 'temurin'
       include-android: true
+      include-universal: true
+      play-track: ${{ inputs.play_track }}
+      play-package-name: "org.mlm.repadio"
       prerelease: ${{ inputs.mark_prerelease }}
       bump-type: ${{ inputs.bump_type }}
       generate-release-notes: true
