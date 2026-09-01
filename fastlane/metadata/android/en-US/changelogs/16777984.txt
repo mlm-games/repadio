@@ -1,0 +1,4 @@
+- fix: gate hw deps for wasm, add linux vaapi deps
+- fix: gate hw deps for wasm, add linux vaapi deps
+- hw crate test
+- add vp8/9

@@ -1,3 +1,11 @@
+## v0.3.0
+
+- fix: gate hw deps for wasm, add linux vaapi deps
+- fix: gate hw deps for wasm, add linux vaapi deps
+- hw crate test
+- add vp8/9
+
+
 ## v0.2.3
 
 - cargo update
