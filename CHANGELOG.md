@@ -1,3 +1,8 @@
+## v0.2.3
+
+- cargo update
+
+
 # Changelog
 
 ## v0.2.2

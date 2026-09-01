@@ -64,6 +64,13 @@
     <control>touch</control>
   </supports>
   <releases>
+    <release version="0.2.3" date="2026-09-01" type="stable">
+      <description>
+        <ul>
+          <li>cargo update</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.2" date="2026-09-01" type="stable">
       <description>
         <ul>
