@@ -71,9 +71,9 @@ fn test_pts_monotonic() {
         "Video track {}: {}x{}, time_base={}/{}",
         track_id, width, height, time_base.numer, time_base.denom
     );
-
-    let mut decoder =
-        VideoDecoder::new_hevc(width, height, &extradata).expect("create H.265 decoder");
+    let mut decoder = VideoDecoder::new_hevc_software(width, height, &extradata)
+        .expect("create H.265 software decoder");
+    eprintln!("decoder kind: {}", decoder.decoder_kind());
 
     let mut gcd_pts_ticks: u64 = 0;
     let mut non_zero_pts_seen: u64 = 0;

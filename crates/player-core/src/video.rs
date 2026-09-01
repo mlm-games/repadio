@@ -11,11 +11,11 @@ use videoson::{
 };
 
 #[cfg(feature = "hw")]
-use baabaabaabaabababbababbaa::{
-    default_host, Dimensions, VideoCodecId as HwCodecId, VideoDecoderConfig, VideoOutputMode,
-};
-#[cfg(feature = "hw")]
 use baabaabaabaabababbababbaa::traits::{VideoDecoderInputBoxed, VideoDecoderOutputBoxed};
+#[cfg(feature = "hw")]
+use baabaabaabaabababbababbaa::{
+    Dimensions, VideoCodecId as HwCodecId, VideoDecoderConfig, VideoOutputMode, default_host,
+};
 #[cfg(feature = "hw")]
 use bytes::Bytes;
 
@@ -55,44 +55,83 @@ struct HwDecoder {
     output: Box<dyn VideoDecoderOutputBoxed>,
     #[cfg(not(target_arch = "wasm32"))]
     runtime: tokio::runtime::Runtime,
+    nal_len_size: usize,
+    pending_config: Option<Vec<u8>>,
+    initial_config: Vec<u8>,
 }
 
 #[cfg(feature = "hw")]
 impl HwDecoder {
     fn try_new(codec: HwCodecId, width: u32, height: u32, extradata: &[u8]) -> Option<Self> {
-        // `default_host` already gated by target (wasm/android/linux) and feature `linux`
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (codec, width, height, extradata);
+            return None;
+        }
+        let description = if extradata.is_empty() {
+            None
+        } else {
+            Some(Bytes::copy_from_slice(extradata))
+        };
         let host = default_host();
         let config = VideoDecoderConfig {
-            codec,
+            codec: codec.clone(),
             resolution: Some(Dimensions::new(width, height)),
-            description: if extradata.is_empty() {
-                None
-            } else {
-                Some(Bytes::copy_from_slice(extradata))
-            },
+            description,
             hardware_acceleration: Some(true),
-            output_mode: VideoOutputMode::PreferHardware,
+            output_mode: VideoOutputMode::Cpu,
         };
-        // `create_video_decoder` is sync; if backend is `NoBackend` it returns `Err(NoBackend)`
         let (input, output) = host.create_video_decoder(config).ok()?;
         #[cfg(not(target_arch = "wasm32"))]
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .ok()?;
+        let (initial_config, nal_len_size) = match &codec {
+            HwCodecId::H264 { .. } => (
+                parse_avcc(extradata),
+                parse_nal_length_size(extradata) as usize,
+            ),
+            HwCodecId::Hevc => (
+                parse_hvcc(extradata),
+                parse_nal_length_size_hevc(extradata) as usize,
+            ),
+            _ => (Vec::new(), 0),
+        };
+        let pending_config = if initial_config.is_empty() {
+            None
+        } else {
+            Some(initial_config.clone())
+        };
         Some(Self {
             input: Box::new(input) as Box<dyn VideoDecoderInputBoxed>,
             output: Box::new(output) as Box<dyn VideoDecoderOutputBoxed>,
             #[cfg(not(target_arch = "wasm32"))]
             runtime,
+            nal_len_size,
+            pending_config,
+            initial_config,
         })
     }
 
     fn decode(&mut self, data: &[u8], pts: Duration, is_sync: bool) -> Result<()> {
+        let mut payload: Vec<u8> = if self.nal_len_size > 0 && !has_annexb_start_code(data) {
+            avcc_to_annexb_with_len(data, self.nal_len_size)
+        } else {
+            data.to_vec()
+        };
+        let mut send_sync = is_sync;
+        if let Some(cfg) = self.pending_config.take() {
+            let mut prefixed = Vec::with_capacity(cfg.len() + payload.len());
+            prefixed.extend_from_slice(&cfg);
+            prefixed.extend_from_slice(&payload);
+            payload = prefixed;
+            send_sync = true;
+        }
         let pkt = baabaabaabaabababbababbaa::EncodedVideoPacket {
-            payload: Bytes::copy_from_slice(data),
+            payload: Bytes::from(payload),
             timestamp: pts,
-            keyframe: is_sync,
+            keyframe: send_sync,
         };
         self.input
             .decode(pkt)
@@ -123,6 +162,20 @@ impl HwDecoder {
             // WebCodecs flush is async but try_frame will drain anyway; no-op for now
         }
         Ok(())
+    }
+
+    fn reset(&mut self) {
+        let _ = self.flush();
+        if !self.initial_config.is_empty() {
+            self.pending_config = Some(self.initial_config.clone());
+        }
+        loop {
+            match self.output.try_frame() {
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
     }
 }
 
@@ -164,8 +217,10 @@ fn hw_frame_to_decoded(
             }
             let y = &data[0..y_size];
             let uv = &data[y_size..y_size + uv_size];
-            // Already NV12 interleaved
-            (Arc::<[u8]>::from(y.to_vec()), Arc::<[u8]>::from(uv.to_vec()))
+            (
+                Arc::<[u8]>::from(y.to_vec()),
+                Arc::<[u8]>::from(uv.to_vec()),
+            )
         }
         baabaabaabaabababbababbaa::PixelFormat::Yuv420p => {
             let y_size = (w as usize) * (h as usize);
@@ -204,11 +259,19 @@ fn hw_frame_to_decoded(
     })
 }
 
+enum FallbackCodec {
+    H264,
+    H265,
+    Av1,
+    Vp8,
+    Vp9,
+}
+
 pub struct VideoDecoder {
     inner: DecoderInner,
-    /// Reorder buffer that holds frames by PTS and emits the smallest-PTS
-    /// frame each call. Cross-batch reordering is handled by VideoSink::poll().
+
     reorder: Vec<DecodedVideoFrame>,
+    fallback: Option<(FallbackCodec, u32, u32, Vec<u8>)>,
 }
 
 impl VideoDecoder {
@@ -225,13 +288,8 @@ impl VideoDecoder {
         }
     }
 
-    /// Human-readable decoder backend label (`"hw"` / `"sw"`).
     pub fn decoder_kind(&self) -> &'static str {
-        if self.is_hardware() {
-            "hw"
-        } else {
-            "sw"
-        }
+        if self.is_hardware() { "hw" } else { "sw" }
     }
 }
 
@@ -278,6 +336,7 @@ impl VideoDecoder {
                 return Ok(Self {
                     inner: DecoderInner::Hardware(Box::new(hw)),
                     reorder: Vec::new(),
+                    fallback: Some((FallbackCodec::H264, width, height, extradata.to_vec())),
                 });
             } else {
                 log::info!("video: H.264 HW unavailable, using SW [sw]");
@@ -286,6 +345,7 @@ impl VideoDecoder {
         Ok(Self {
             inner: DecoderInner::Software(Self::software_fallback_h264(width, height, extradata)?),
             reorder: Vec::new(),
+            fallback: None,
         })
     }
 
@@ -320,6 +380,7 @@ impl VideoDecoder {
                 return Ok(Self {
                     inner: DecoderInner::Hardware(Box::new(hw)),
                     reorder: Vec::new(),
+                    fallback: Some((FallbackCodec::Av1, width, height, extradata.to_vec())),
                 });
             } else {
                 log::info!("video: AV1 HW unavailable, using SW [sw]");
@@ -328,6 +389,7 @@ impl VideoDecoder {
         Ok(Self {
             inner: DecoderInner::Software(Self::software_fallback_av1(width, height, extradata)?),
             reorder: Vec::new(),
+            fallback: None,
         })
     }
 
@@ -362,6 +424,7 @@ impl VideoDecoder {
                 return Ok(Self {
                     inner: DecoderInner::Hardware(Box::new(hw)),
                     reorder: Vec::new(),
+                    fallback: Some((FallbackCodec::Vp8, width, height, extradata.to_vec())),
                 });
             } else {
                 log::info!("video: VP8 HW unavailable, using SW [sw]");
@@ -370,6 +433,7 @@ impl VideoDecoder {
         Ok(Self {
             inner: DecoderInner::Software(Self::software_fallback_vp8(width, height, extradata)?),
             reorder: Vec::new(),
+            fallback: None,
         })
     }
 
@@ -409,6 +473,7 @@ impl VideoDecoder {
                 return Ok(Self {
                     inner: DecoderInner::Hardware(Box::new(hw)),
                     reorder: Vec::new(),
+                    fallback: Some((FallbackCodec::Vp9, width, height, extradata.to_vec())),
                 });
             } else {
                 log::info!("video: VP9 HW unavailable, using SW [sw]");
@@ -417,6 +482,15 @@ impl VideoDecoder {
         Ok(Self {
             inner: DecoderInner::Software(Self::software_fallback_vp9(width, height, extradata)?),
             reorder: Vec::new(),
+            fallback: None,
+        })
+    }
+
+    pub fn new_hevc_software(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
+        Ok(Self {
+            inner: DecoderInner::Software(Self::software_fallback_hevc(width, height, extradata)?),
+            reorder: Vec::new(),
+            fallback: None,
         })
     }
 
@@ -452,6 +526,7 @@ impl VideoDecoder {
                 return Ok(Self {
                     inner: DecoderInner::Hardware(Box::new(hw)),
                     reorder: Vec::new(),
+                    fallback: Some((FallbackCodec::H265, width, height, extradata.to_vec())),
                 });
             } else {
                 log::info!("video: HEVC HW unavailable, using SW [sw]");
@@ -460,6 +535,7 @@ impl VideoDecoder {
         Ok(Self {
             inner: DecoderInner::Software(Self::software_fallback_hevc(width, height, extradata)?),
             reorder: Vec::new(),
+            fallback: None,
         })
     }
 
@@ -479,8 +555,49 @@ impl VideoDecoder {
                     .map_err(|e| anyhow::anyhow!("videoson send: {e:?}"))
             }
             #[cfg(feature = "hw")]
-            DecoderInner::Hardware(hw) => hw
-                .decode(data, Duration::from_micros(pts_us.max(0) as u64), is_sync),
+            DecoderInner::Hardware(hw) => {
+                let res = hw.decode(data, Duration::from_micros(pts_us.max(0) as u64), is_sync);
+                if let Err(e) = &res {
+                    let msg = format!("{e:?}");
+                    if msg.contains("Dropped") || msg.contains("NoBackend") {
+                        if let Some((codec, w, h, extradata)) = self.fallback.take() {
+                            log::warn!("HW decode failed ({msg}), falling back to SW");
+                            let sw: Box<dyn VideoDecoderTrait> = match codec {
+                                FallbackCodec::H264 => {
+                                    Self::software_fallback_h264(w, h, &extradata)?
+                                }
+                                FallbackCodec::H265 => {
+                                    Self::software_fallback_hevc(w, h, &extradata)?
+                                }
+                                FallbackCodec::Av1 => {
+                                    Self::software_fallback_av1(w, h, &extradata)?
+                                }
+                                FallbackCodec::Vp8 => {
+                                    Self::software_fallback_vp8(w, h, &extradata)?
+                                }
+                                FallbackCodec::Vp9 => {
+                                    Self::software_fallback_vp9(w, h, &extradata)?
+                                }
+                            };
+                            self.inner = DecoderInner::Software(sw);
+                            let packet = videoson::Packet {
+                                track_id: 0,
+                                pts: Some(pts_us),
+                                dts: None,
+                                duration: None,
+                                is_sync,
+                                data: data.to_vec(),
+                            };
+                            if let DecoderInner::Software(inner) = &mut self.inner {
+                                return inner.send_packet(&packet).map_err(|e| {
+                                    anyhow::anyhow!("videoson send after fallback: {e:?}")
+                                });
+                            }
+                        }
+                    }
+                }
+                res
+            }
         }
     }
 
@@ -553,53 +670,51 @@ impl VideoDecoder {
             }
             DecoderInner::Software(inner) => {
                 while let Ok(Some(frame)) = inner.receive_frame() {
-                if frame.plane_data.len() < 2 {
-                    log::warn!("video drain: frame with <2 planes, skipping");
-                    continue;
+                    if frame.plane_data.len() < 2 {
+                        log::warn!("video drain: frame with <2 planes, skipping");
+                        continue;
+                    }
+
+                    let w = frame.width as usize;
+                    let h = frame.height as usize;
+                    let y_stride = frame.plane_data[0].stride;
+                    let uv_stride = frame.plane_data[1].stride;
+                    let uv_w = ((frame.width + 1) / 2 * 2) as usize;
+                    let uv_h = ((frame.height + 1) / 2) as usize;
+
+                    let y_plane = Self::plane_to_arc(&frame.plane_data[0].data, w, h, y_stride);
+                    let uv_plane =
+                        Self::plane_to_arc(&frame.plane_data[1].data, uv_w, uv_h, uv_stride);
+
+                    let pts = if frame_duration_us > 0 {
+                        frame
+                            .poc
+                            .filter(|&p| p >= 0)
+                            .map(|p| Duration::from_micros(p as u64 * frame_duration_us))
+                            .unwrap_or(
+                                frame
+                                    .pts
+                                    .map(|p| Duration::from_micros(p.max(0) as u64))
+                                    .unwrap_or(fallback_pts),
+                            )
+                    } else {
+                        frame
+                            .pts
+                            .map(|p| Duration::from_micros(p.max(0) as u64))
+                            .unwrap_or(fallback_pts)
+                    };
+
+                    self.reorder.push(DecodedVideoFrame {
+                        width: frame.width,
+                        height: frame.height,
+                        y_plane,
+                        uv_plane,
+                        pts,
+                        load_serial,
+                        color_info: ColorInfo::default(),
+                        poc: frame.poc,
+                    });
                 }
-
-                let w = frame.width as usize;
-                let h = frame.height as usize;
-                let y_stride = frame.plane_data[0].stride;
-                let uv_stride = frame.plane_data[1].stride;
-                let uv_w = ((frame.width + 1) / 2 * 2) as usize;
-                let uv_h = ((frame.height + 1) / 2) as usize;
-
-                let y_plane = Self::plane_to_arc(&frame.plane_data[0].data, w, h, y_stride);
-                let uv_plane = Self::plane_to_arc(&frame.plane_data[1].data, uv_w, uv_h, uv_stride);
-
-                // PTS from container may be non-monotonic when the muxer assumed
-                // B-frame reordering but the bitstream has none.  Recompute from
-                // POC when frame_duration_us is provided.
-                let pts = if frame_duration_us > 0 {
-                    frame
-                        .poc
-                        .filter(|&p| p >= 0)
-                        .map(|p| Duration::from_micros(p as u64 * frame_duration_us))
-                        .unwrap_or(
-                            frame
-                                .pts
-                                .map(|p| Duration::from_micros(p.max(0) as u64))
-                                .unwrap_or(fallback_pts),
-                        )
-                } else {
-                    frame
-                        .pts
-                        .map(|p| Duration::from_micros(p.max(0) as u64))
-                        .unwrap_or(fallback_pts)
-                };
-
-                self.reorder.push(DecodedVideoFrame {
-                    width: frame.width,
-                    height: frame.height,
-                    y_plane,
-                    uv_plane,
-                    pts,
-                    load_serial,
-                    color_info: ColorInfo::default(),
-                    poc: frame.poc,
-                });
-            }
             }
         }
 
@@ -643,8 +758,7 @@ impl VideoDecoder {
             }
             #[cfg(feature = "hw")]
             DecoderInner::Hardware(hw) => {
-                // HW decoders don't expose reset; flush and clear reorder
-                let _ = hw.flush();
+                hw.reset();
             }
         }
         self.reorder.clear();
@@ -666,7 +780,123 @@ pub fn parse_nal_length_size_hevc(extradata: &[u8]) -> u8 {
     }
 }
 
-/// Legacy helper for callers that still have separate U/V planes.
+pub fn parse_hvcc(data: &[u8]) -> Vec<u8> {
+    if data.len() < 23 || data[0] != 1 {
+        return Vec::new();
+    }
+    let num_arrays = data[22] as usize;
+    let mut out = Vec::new();
+    let mut pos = 23usize;
+    for _ in 0..num_arrays {
+        if pos >= data.len() {
+            break;
+        }
+        let _nal_type = data[pos] & 0x3F;
+        pos += 1;
+        if pos + 2 > data.len() {
+            break;
+        }
+        let num_nalus = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
+        pos += 2;
+        for _ in 0..num_nalus {
+            if pos + 2 > data.len() {
+                break;
+            }
+            let len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
+            pos += 2;
+            if pos + len > data.len() {
+                break;
+            }
+            out.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+            out.extend_from_slice(&data[pos..pos + len]);
+            pos += len;
+        }
+    }
+    out
+}
+
+pub fn parse_avcc(data: &[u8]) -> Vec<u8> {
+    if data.len() < 6 || data[0] != 1 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut pos = 6usize;
+    let num_sps = (data[5] & 0x1F) as usize;
+    for _ in 0..num_sps {
+        if pos + 2 > data.len() {
+            break;
+        }
+        let len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
+        pos += 2;
+        if pos + len > data.len() {
+            break;
+        }
+        out.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        out.extend_from_slice(&data[pos..pos + len]);
+        pos += len;
+    }
+    if pos >= data.len() {
+        return out;
+    }
+    let num_pps = data[pos] as usize;
+    pos += 1;
+    for _ in 0..num_pps {
+        if pos + 2 > data.len() {
+            break;
+        }
+        let len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
+        pos += 2;
+        if pos + len > data.len() {
+            break;
+        }
+        out.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+        out.extend_from_slice(&data[pos..pos + len]);
+        pos += len;
+    }
+    out
+}
+
+pub fn avcc_to_annexb_with_len(data: &[u8], len_size: usize) -> Vec<u8> {
+    if len_size == 0 {
+        return data.to_vec();
+    }
+    let start_code: &[u8] = &[0x00, 0x00, 0x00, 0x01];
+    let mut output = Vec::with_capacity(data.len() + 64);
+    let mut offset = 0;
+    while offset + len_size <= data.len() {
+        let mut nalu_len = 0usize;
+        for _ in 0..len_size {
+            nalu_len = (nalu_len << 8) | data[offset] as usize;
+            offset += 1;
+        }
+        if nalu_len == 0 || offset + nalu_len > data.len() {
+            continue;
+        }
+        output.extend_from_slice(start_code);
+        output.extend_from_slice(&data[offset..offset + nalu_len]);
+        offset += nalu_len;
+    }
+    if output.is_empty() {
+        data.to_vec()
+    } else {
+        output
+    }
+}
+
+pub fn avcc_to_annexb(data: &[u8]) -> Vec<u8> {
+    avcc_to_annexb_with_len(data, 4)
+}
+
+pub(crate) fn has_annexb_start_code(data: &[u8]) -> bool {
+    if data.len() >= 4 && data[0..4] == [0x00, 0x00, 0x00, 0x01] {
+        true
+    } else if data.len() >= 3 && data[0..3] == [0x00, 0x00, 0x01] {
+        true
+    } else {
+        false
+    }
+}
+
 pub fn yuv420_uv_to_nv12(u_plane: &[u8], v_plane: &[u8], width: u32, height: u32) -> Vec<u8> {
     let uv_size = (width.div_ceil(2) * height.div_ceil(2)) as usize;
     let mut uv = Vec::with_capacity(uv_size * 2);
