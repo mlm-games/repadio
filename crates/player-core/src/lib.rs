@@ -881,6 +881,8 @@ enum VideoCodecKind {
     H264 { nal_len_size: usize },
     Hevc { nal_len_size: usize },
     Av1,
+    Vp8,
+    Vp9,
 }
 
 struct VideoDecodeState {
@@ -974,6 +976,23 @@ fn hevc_hvcc_has_keyframe(data: &[u8], nal_len_size: usize) -> bool {
     false
 }
 
+fn vp8_is_keyframe(data: &[u8]) -> bool {
+    // RFC 6386 §9.1: frame tag byte 0 bit 0 = frame_type (0 = keyframe)
+    if data.is_empty() {
+        return false;
+    }
+    (data[0] & 0x01) == 0
+}
+
+fn vp9_is_keyframe(_data: &[u8]) -> bool {
+    // VP9 keyframe detection requires parsing the uncompressed header.
+    // For sync dropping we rely on the decoder's reference handling and
+    // treat every packet as sync candidate (same as AV1); the decoder
+    // will error on inter without refs and the reset path will request
+    // a new keyframe.
+    true
+}
+
 fn gcd(a: u64, b: u64) -> u64 {
     if b == 0 { a } else { gcd(b, a % b) }
 }
@@ -990,6 +1009,8 @@ fn handle_video_packet(
         VideoCodecKind::H264 { nal_len_size } => h264_avcc_has_idr(&packet.data, nal_len_size),
         VideoCodecKind::Hevc { nal_len_size } => hevc_hvcc_has_keyframe(&packet.data, nal_len_size),
         VideoCodecKind::Av1 => true,
+        VideoCodecKind::Vp8 => vp8_is_keyframe(&packet.data),
+        VideoCodecKind::Vp9 => vp9_is_keyframe(&packet.data),
     };
 
     if state.need_keyframe {
@@ -1141,12 +1162,17 @@ fn decode_file_to_queue(
         use symphonia::core::codecs::video::well_known::extra_data as ed_ids;
         let w = vp.width.unwrap_or(0) as u32;
         let h = vp.height.unwrap_or(0) as u32;
-        let wanted = if vp.codec == video_codec_ids::CODEC_ID_HEVC {
-            ed_ids::VIDEO_EXTRA_DATA_ID_HEVC_DECODER_CONFIG
-        } else if vp.codec == video_codec_ids::CODEC_ID_AV1 {
-            ed_ids::VIDEO_EXTRA_DATA_ID_AV1_DECODER_CONFIG
-        } else {
-            ed_ids::VIDEO_EXTRA_DATA_ID_AVC_DECODER_CONFIG
+        let wanted = match vp.codec {
+            c if c == video_codec_ids::CODEC_ID_HEVC => {
+                ed_ids::VIDEO_EXTRA_DATA_ID_HEVC_DECODER_CONFIG
+            }
+            c if c == video_codec_ids::CODEC_ID_AV1 => {
+                ed_ids::VIDEO_EXTRA_DATA_ID_AV1_DECODER_CONFIG
+            }
+            c if c == video_codec_ids::CODEC_ID_VP9 => {
+                ed_ids::VIDEO_EXTRA_DATA_ID_VP9_DECODER_CONFIG
+            }
+            _ => ed_ids::VIDEO_EXTRA_DATA_ID_AVC_DECODER_CONFIG,
         };
         let extradata = vp
             .extra_data
@@ -1155,51 +1181,75 @@ fn decode_file_to_queue(
             .or_else(|| vp.extra_data.first())
             .map(|ed| &ed.data[..])
             .unwrap_or(&[]);
-        let (name, dec) = if vp.codec == video_codec_ids::CODEC_ID_H264 {
-            match video::VideoDecoder::new_h264(w, h, extradata) {
-                Ok(d) => ("H.264", d),
-                Err(e) => {
-                    log::warn!("failed to init H.264 decoder: {e}");
-                    break 'video_init;
+        let (name, dec) = match vp.codec {
+            c if c == video_codec_ids::CODEC_ID_H264 => {
+                match video::VideoDecoder::new_h264(w, h, extradata) {
+                    Ok(d) => ("H.264", d),
+                    Err(e) => {
+                        log::warn!("failed to init H.264 decoder: {e}");
+                        break 'video_init;
+                    }
                 }
             }
-        } else if vp.codec == video_codec_ids::CODEC_ID_HEVC {
-            match video::VideoDecoder::new_hevc(w, h, extradata) {
-                Ok(d) => ("H.265", d),
-                Err(e) => {
-                    log::warn!("failed to init H.265 decoder: {e}");
-                    break 'video_init;
+            c if c == video_codec_ids::CODEC_ID_HEVC => {
+                match video::VideoDecoder::new_hevc(w, h, extradata) {
+                    Ok(d) => ("H.265", d),
+                    Err(e) => {
+                        log::warn!("failed to init H.265 decoder: {e}");
+                        break 'video_init;
+                    }
                 }
             }
-        } else if vp.codec == video_codec_ids::CODEC_ID_AV1 {
-            match video::VideoDecoder::new_av1(w, h, extradata) {
-                Ok(d) => ("AV1", d),
-                Err(e) => {
-                    log::warn!("failed to init AV1 decoder: {e}");
-                    break 'video_init;
+            c if c == video_codec_ids::CODEC_ID_AV1 => {
+                match video::VideoDecoder::new_av1(w, h, extradata) {
+                    Ok(d) => ("AV1", d),
+                    Err(e) => {
+                        log::warn!("failed to init AV1 decoder: {e}");
+                        break 'video_init;
+                    }
                 }
             }
-        } else {
-            log::info!("unsupported video codec {:?}, skipping", vp.codec);
-            break 'video_init;
+            c if c == video_codec_ids::CODEC_ID_VP8 => {
+                match video::VideoDecoder::new_vp8(w, h, extradata) {
+                    Ok(d) => ("VP8", d),
+                    Err(e) => {
+                        log::warn!("failed to init VP8 decoder: {e}");
+                        break 'video_init;
+                    }
+                }
+            }
+            c if c == video_codec_ids::CODEC_ID_VP9 => {
+                match video::VideoDecoder::new_vp9(w, h, extradata) {
+                    Ok(d) => ("VP9", d),
+                    Err(e) => {
+                        log::warn!("failed to init VP9 decoder: {e}");
+                        break 'video_init;
+                    }
+                }
+            }
+            _ => {
+                log::info!("unsupported video codec {:?}, skipping", vp.codec);
+                break 'video_init;
+            }
         };
         video_duration = track_duration_secs(vtrack);
         log::info!("video: {name} {}x{}", w, h);
-        let nal_len_size = if vp.codec == video_codec_ids::CODEC_ID_HEVC {
-            video::parse_nal_length_size_hevc(extradata) as usize
-        } else {
-            video::parse_nal_length_size(extradata) as usize
+        let nal_len_size = match vp.codec {
+            c if c == video_codec_ids::CODEC_ID_HEVC => {
+                video::parse_nal_length_size_hevc(extradata) as usize
+            }
+            _ => video::parse_nal_length_size(extradata) as usize,
         };
         video_state = Some(VideoDecodeState {
             track_id: vtrack.id,
             decoder: dec,
             time_base: vtrack.time_base.unwrap_or_default(),
-            codec: if vp.codec == video_codec_ids::CODEC_ID_H264 {
-                VideoCodecKind::H264 { nal_len_size }
-            } else if vp.codec == video_codec_ids::CODEC_ID_HEVC {
-                VideoCodecKind::Hevc { nal_len_size }
-            } else {
-                VideoCodecKind::Av1
+            codec: match vp.codec {
+                c if c == video_codec_ids::CODEC_ID_H264 => VideoCodecKind::H264 { nal_len_size },
+                c if c == video_codec_ids::CODEC_ID_HEVC => VideoCodecKind::Hevc { nal_len_size },
+                c if c == video_codec_ids::CODEC_ID_VP8 => VideoCodecKind::Vp8,
+                c if c == video_codec_ids::CODEC_ID_VP9 => VideoCodecKind::Vp9,
+                _ => VideoCodecKind::Av1,
             },
             need_keyframe: false,
             gcd_pts_ticks: 0,

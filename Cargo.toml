@@ -44,11 +44,15 @@ wgpu = { version = "30", features = ["webgpu", "webgl"] }
 videoson = { git = "https://github.com/mlm-games/videoson", features = [
     "h264",
     "h265",
+    "vp8",
+    "vp9",
     "rav1d",
 ] }
 # videoson = { path = "../videoson/videoson", features = [
 #     "h264",
 #     "h265",
+#     "vp8",
+#     "vp9",
 #     "rav1d",
 # ] }
 

@@ -7,7 +7,7 @@ use repose_core::color::ColorInfo;
 use videoson::{
     NalFormat, VideoCodecParams, VideoDecoder as VideoDecoderTrait, VideoDecoderOptions,
     VideoOutputFormat, codec_h264::H264Decoder, codec_h265::H265Decoder,
-    codec_rav1d::Rav1dSafeDecoder,
+    codec_rav1d::Rav1dSafeDecoder, codec_vp8::Vp8Decoder, codec_vp9::Vp9Decoder,
 };
 
 #[derive(Debug, Clone)]
@@ -57,6 +57,7 @@ impl VideoDecoder {
             verify: false,
             output_format: VideoOutputFormat::Nv12,
             tolerate_truncated_chroma: false,
+            ..Default::default()
         };
         let inner = H264Decoder::try_new(&params, &opts)
             .map_err(|e| anyhow::anyhow!("videoson H.264 init: {e:?}"))?;
@@ -78,9 +79,60 @@ impl VideoDecoder {
             verify: false,
             output_format: VideoOutputFormat::Nv12,
             tolerate_truncated_chroma: false,
+            ..Default::default()
         };
         let inner = Rav1dSafeDecoder::try_new(&params, &opts)
             .map_err(|e| anyhow::anyhow!("videoson AV1 init: {e:?}"))?;
+        Ok(Self {
+            inner: Box::new(inner),
+            reorder: Vec::new(),
+        })
+    }
+
+    pub fn new_vp8(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
+        let params = VideoCodecParams {
+            codec: videoson::CodecType::VP8,
+            coded_width: width,
+            coded_height: height,
+            extradata: extradata.to_vec(),
+            nal_format: None,
+        };
+        let opts = VideoDecoderOptions {
+            verify: false,
+            output_format: VideoOutputFormat::Nv12,
+            tolerate_truncated_chroma: false,
+            ..Default::default()
+        };
+        let inner = Vp8Decoder::try_new(&params, &opts)
+            .map_err(|e| anyhow::anyhow!("videoson VP8 init: {e:?}"))?;
+        Ok(Self {
+            inner: Box::new(inner),
+            reorder: Vec::new(),
+        })
+    }
+
+    pub fn new_vp9(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
+        let params = VideoCodecParams {
+            codec: videoson::CodecType::VP9,
+            coded_width: width,
+            coded_height: height,
+            extradata: extradata.to_vec(),
+            nal_format: None,
+        };
+        // Enable tile-parallel decode on desktop (4 threads); wasm stays serial.
+        #[cfg(not(target_arch = "wasm32"))]
+        let threads = Some(4);
+        #[cfg(target_arch = "wasm32")]
+        let threads = None;
+        let opts = VideoDecoderOptions {
+            verify: false,
+            output_format: VideoOutputFormat::Nv12,
+            tolerate_truncated_chroma: false,
+            threads,
+            ..Default::default()
+        };
+        let inner = Vp9Decoder::try_new(&params, &opts)
+            .map_err(|e| anyhow::anyhow!("videoson VP9 init: {e:?}"))?;
         Ok(Self {
             inner: Box::new(inner),
             reorder: Vec::new(),
@@ -241,6 +293,7 @@ impl VideoDecoder {
             verify: false,
             output_format: VideoOutputFormat::Nv12,
             tolerate_truncated_chroma: false,
+            ..Default::default()
         };
         let inner = H265Decoder::try_new(&params, &opts)
             .map_err(|e| anyhow::anyhow!("videoson H.265 init: {e:?}"))?;
