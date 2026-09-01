@@ -5,6 +5,7 @@ ar = "aarch64-linux-gnu-ar"
 [target.wasm32-unknown-unknown]
 rustflags = [
     '--cfg', 'getrandom_backend="wasm_js"',
+    '--cfg', 'web_sys_unstable_apis',
     '-C', 'target-feature=+atomics,+bulk-memory',
     '-C', 'link-arg=--shared-memory',
     '-C', 'link-arg=--import-memory',

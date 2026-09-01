@@ -620,7 +620,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 [[package]]
 name = "baabaabaabaabababbababbaa"
 version = "0.1.0"
-source = "git+https://github.com/mlm-games/baa4bababab2baa#8946175bd3b84d83808bc63b9652ea81f971aeb5"
+source = "git+https://github.com/mlm-games/baa4bababab2baa#a94338b737034b9158d2832e21baf08017b1e982"
 dependencies = [
  "bytes",
  "cros-codecs",
@@ -4020,7 +4020,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5542,15 +5542,6 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
-dependencies = [
- "windows-targets",
-]
-
-[[package]]
-name = "windows-sys"
-version = "0.59.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets",
 ]

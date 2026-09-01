@@ -97,9 +97,8 @@ publish = false
 default-run = "repadio-desktop"
 
 [features]
-default = []
+default = ["hw"]
 hw = ["player-core/hw"]
-hw-linux = ["hw", "player-core/hw-linux"]
 
 [lib]
 name = "repadio"
