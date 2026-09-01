@@ -63,12 +63,9 @@ struct HwDecoder {
 #[cfg(feature = "hw")]
 impl HwDecoder {
     fn try_new(codec: HwCodecId, width: u32, height: u32, extradata: &[u8]) -> Option<Self> {
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = (codec, width, height, extradata);
-            return None;
-        }
-        let description = if extradata.is_empty() {
+        let description = if cfg!(target_arch = "wasm32") {
+            None
+        } else if extradata.is_empty() {
             None
         } else {
             Some(Bytes::copy_from_slice(extradata))
