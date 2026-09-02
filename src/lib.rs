@@ -438,8 +438,7 @@ impl VideoSink {
                     break;
                 }
                 player_sync::FrameAction::WaitFor(_) | player_sync::FrameAction::PresentNow => {
-                    // Soft wall-clock pacing: skip if not enough time has elapsed
-                    // since the last presented frame.
+                    // Soft wall-clock pacing: limit display rate to frame_duration.
                     if !wall_ok {
                         request_frame();
                         break;

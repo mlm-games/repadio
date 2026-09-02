@@ -1034,24 +1034,46 @@ fn handle_video_packet(
     // bitstreams, and the GCD gives the true per-frame tick increment.
     // We defer POC-based PTS correction until we've seen 2+ non-zero PTS
     // ticks (at which point the GCD has converged to the true frame duration).
-    let pts_ticks = packet.pts.get();
-    if pts_ticks > 0 {
-        if state.gcd_pts_ticks == 0 {
-            state.gcd_pts_ticks = pts_ticks as u64;
-        } else {
-            state.gcd_pts_ticks = gcd(state.gcd_pts_ticks, pts_ticks as u64);
+    let use_poc = matches!(
+        state.codec,
+        VideoCodecKind::H264 { .. } | VideoCodecKind::Hevc { .. } | VideoCodecKind::Av1
+    );
+    if use_poc {
+        let pts_ticks = packet.pts.get();
+        if pts_ticks > 0 {
+            if state.gcd_pts_ticks == 0 {
+                state.gcd_pts_ticks = pts_ticks as u64;
+            } else {
+                state.gcd_pts_ticks = gcd(state.gcd_pts_ticks, pts_ticks as u64);
+            }
+            state.non_zero_pts_seen += 1;
         }
-        state.non_zero_pts_seen += 1;
-    }
-    if state.non_zero_pts_seen >= 2 {
-        let new_fd = (state.gcd_pts_ticks * state.time_base.numer.get() as u64 * 1_000_000)
-            / state.time_base.denom.get() as u64;
-        if new_fd != state.frame_duration_us {
-            state.frame_duration_us = new_fd;
-            state.decoder.set_frame_duration_micros(new_fd);
+        if state.non_zero_pts_seen >= 2 {
+            let new_fd = (state.gcd_pts_ticks * state.time_base.numer.get() as u64 * 1_000_000)
+                / state.time_base.denom.get() as u64;
+            if new_fd != state.frame_duration_us {
+                state.frame_duration_us = new_fd;
+                state.decoder.set_frame_duration_micros(new_fd);
+            }
         }
+    } else {
+        state.gcd_pts_ticks = 0;
+        state.non_zero_pts_seen = 0;
+        state.frame_duration_us = 0;
+        state.decoder.set_frame_duration_micros(0);
     }
 
+    let was_hw = state.decoder.is_hardware();
+    log::trace!(
+        "[hvp] packet track={} pts={:?} pts_us={} is_sync={} len={} was_hw={} need_kf={}",
+        packet.track_id,
+        packet.pts,
+        pts_us,
+        is_sync,
+        packet.data.len(),
+        was_hw,
+        state.need_keyframe
+    );
     if let Err(e) = state.decoder.send_packet(&packet.data, pts_us, is_sync) {
         log::warn!("video decode error: {e}, resetting decoder");
         state.decoder.reset();
@@ -1061,12 +1083,31 @@ fn handle_video_packet(
         state.frame_duration_us = 0;
         return;
     }
+    if was_hw && !state.decoder.is_hardware() {
+        log::warn!("HW->SW fallback mid-stream, waiting for next keyframe");
+        state.need_keyframe = true;
+        state.gcd_pts_ticks = 0;
+        state.non_zero_pts_seen = 0;
+        state.frame_duration_us = 0;
+        if !is_sync {
+            return;
+        }
+        // is_sync case was already forwarded inside fallback, so fall through to drain
+    }
+    let drain_was_hw = state.decoder.is_hardware();
     let fd = if state.non_zero_pts_seen >= 2 {
         state.frame_duration_us
     } else {
         0
     };
     let frames = state.decoder.drain_frames(fallback, load_serial, fd);
+    if drain_was_hw && !state.decoder.is_hardware() {
+        log::warn!("HW->SW fallback during drain, waiting for next keyframe");
+        state.need_keyframe = true;
+        state.gcd_pts_ticks = 0;
+        state.non_zero_pts_seen = 0;
+        state.frame_duration_us = 0;
+    }
     for (i, frame) in frames.into_iter().enumerate() {
         if let Some(min) = min_pts {
             if frame.pts + Duration::from_millis(500) < min {
@@ -1394,6 +1435,7 @@ fn decode_file_to_queue(
     let has_audio = decoder.is_some();
 
     let mut seek_base = initial_seek.map(|(t, _)| t).unwrap_or(Duration::ZERO);
+    let mut max_video_pts = seek_base;
 
     // Speed-change tracking: rebuild the resampler when the target rate changes
     // so wall clock advances at `speed` relative to media time.
@@ -1439,6 +1481,7 @@ fn decode_file_to_queue(
                 }
                 seek_phase = Some(SeekPhase::new(target, out_rate, out_channels));
                 silence_pushed = 0;
+                max_video_pts = target;
                 seek_base = target;
             }
         }
@@ -1476,13 +1519,53 @@ fn decode_file_to_queue(
                         }
                     }
                 }
+                // Flush any remaining video frames (B-frame reorder hold-back)
+                if let Some(vs) = video_state.as_mut() {
+                    let fd = if vs.non_zero_pts_seen >= 2 {
+                        vs.frame_duration_us
+                    } else {
+                        0
+                    };
+                    let serial = shared.load_serial.load(Ordering::Acquire);
+                    if let Ok(frames) = vs.decoder.finish(fd) {
+                        for mut fr in frames {
+                            fr.load_serial = serial;
+                            // Deliver with backpressure; handle commands while blocked
+                            loop {
+                                match video_tx.try_send(fr) {
+                                    Ok(()) => {
+                                        shared.video_frames_sent.fetch_add(1, Ordering::Release);
+                                        break;
+                                    }
+                                    Err(TrySendError::Full(f)) => {
+                                        fr = f;
+                                        match drain_commands(cmd_rx, &shared) {
+                                            CommandAction::Continue => {}
+                                            CommandAction::Load(p) => {
+                                                return Ok(DecodeOutcome::Load(p));
+                                            }
+                                            CommandAction::Seek(t, s) => {
+                                                return Ok(DecodeOutcome::Seek(t, s));
+                                            }
+                                            CommandAction::Shutdown => {
+                                                return Ok(DecodeOutcome::Shutdown);
+                                            }
+                                        }
+                                        thread::sleep(Duration::from_millis(2));
+                                    }
+                                    Err(TrySendError::Disconnected(_)) => break,
+                                }
+                            }
+                        }
+                    }
+                }
                 if seek_phase.is_some() && shared.resume_intent.load(Ordering::Acquire) {
                     seek_phase.take();
                     shared.is_playing.store(true, Ordering::Release);
                     let mut s = lock_status(&shared);
                     s.state = PlaybackState::Playing;
                 }
-                match wait_until_queue_drained(cmd_rx, &shared, flush_rx) {
+                match wait_until_queue_drained(cmd_rx, &shared, flush_rx, video_tx) {
                     DecodeOutcome::Seek(target, serial) => {
                         return Ok(DecodeOutcome::Seek(target, serial));
                     }
@@ -1519,13 +1602,51 @@ fn decode_file_to_queue(
                         }
                     }
                 }
+                if let Some(vs) = video_state.as_mut() {
+                    let fd = if vs.non_zero_pts_seen >= 2 {
+                        vs.frame_duration_us
+                    } else {
+                        0
+                    };
+                    let serial = shared.load_serial.load(Ordering::Acquire);
+                    if let Ok(frames) = vs.decoder.finish(fd) {
+                        for mut fr in frames {
+                            fr.load_serial = serial;
+                            loop {
+                                match video_tx.try_send(fr) {
+                                    Ok(()) => {
+                                        shared.video_frames_sent.fetch_add(1, Ordering::Release);
+                                        break;
+                                    }
+                                    Err(TrySendError::Full(f)) => {
+                                        fr = f;
+                                        match drain_commands(cmd_rx, &shared) {
+                                            CommandAction::Continue => {}
+                                            CommandAction::Load(p) => {
+                                                return Ok(DecodeOutcome::Load(p));
+                                            }
+                                            CommandAction::Seek(t, s) => {
+                                                return Ok(DecodeOutcome::Seek(t, s));
+                                            }
+                                            CommandAction::Shutdown => {
+                                                return Ok(DecodeOutcome::Shutdown);
+                                            }
+                                        }
+                                        thread::sleep(Duration::from_millis(2));
+                                    }
+                                    Err(TrySendError::Disconnected(_)) => break,
+                                }
+                            }
+                        }
+                    }
+                }
                 if seek_phase.is_some() && shared.resume_intent.load(Ordering::Acquire) {
                     seek_phase.take();
                     shared.is_playing.store(true, Ordering::Release);
                     let mut s = lock_status(&shared);
                     s.state = PlaybackState::Playing;
                 }
-                match wait_until_queue_drained(cmd_rx, &shared, flush_rx) {
+                match wait_until_queue_drained(cmd_rx, &shared, flush_rx, video_tx) {
                     DecodeOutcome::Seek(target, serial) => {
                         return Ok(DecodeOutcome::Seek(target, serial));
                     }
@@ -1594,10 +1715,16 @@ fn decode_file_to_queue(
 
                 // Video-only: push silence up to this packet's PTS
                 // so the audio clock reflects the video position.
+                // Use monotonic max PTS (B-frame PTS can go backwards in
+                // decode order).
                 if video_only {
                     let pts_us = packet_pts_us(&packet, &vs.time_base);
                     let pkt_pts = Duration::from_micros(pts_us.max(0) as u64);
-                    if let Some(action) = (push_silence_to)(pkt_pts, seek_base, &mut silence_pushed)
+                    if pkt_pts > max_video_pts {
+                        max_video_pts = pkt_pts;
+                    }
+                    if let Some(action) =
+                        (push_silence_to)(max_video_pts, seek_base, &mut silence_pushed)
                     {
                         match action {
                             CommandAction::Load(p) => return Ok(DecodeOutcome::Load(p)),
@@ -1627,6 +1754,7 @@ fn decode_file_to_queue(
                                 }
                                 seek_phase = Some(SeekPhase::new(target, out_rate, out_channels));
                                 silence_pushed = 0;
+                                max_video_pts = target;
                                 seek_base = target;
                             }
                             CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
@@ -1637,13 +1765,13 @@ fn decode_file_to_queue(
 
                 // Preroll gate (checked after every video packet)
                 if video_only {
-                    if let Some(_phase) = &seek_phase {
+                    if let Some(phase) = &seek_phase {
                         let min_samples =
                             (out_rate as usize * out_channels * PREROLL_MS as usize) / 1000;
                         let video_ok = video_preroll_ok(&shared);
                         let audio_ok = sample_tx.len() >= min_samples;
-                        let queue_capacity = out_rate as usize * out_channels * 4;
-                        if audio_ok && (video_ok || sample_tx.len() >= queue_capacity * 3 / 4) {
+                        let timed_out = phase.started.elapsed() > Duration::from_secs(5);
+                        if (audio_ok && video_ok) || timed_out {
                             let resume = shared.resume_intent.load(Ordering::Acquire);
                             shared.is_playing.store(resume, Ordering::Release);
                             {
@@ -1757,6 +1885,7 @@ fn decode_file_to_queue(
                                 }
                                 seek_phase = Some(SeekPhase::new(target, out_rate, out_channels));
                                 silence_pushed = 0;
+                                max_video_pts = target;
                                 seek_base = target;
                                 break;
                             }
@@ -1773,8 +1902,13 @@ fn decode_file_to_queue(
         if let Some(phase) = &seek_phase {
             let audio_ok = phase.audio_reached && sample_tx.len() >= phase.min_samples;
             let video_ok = video_preroll_ok(&shared);
-            let queue_capacity = out_rate as usize * out_channels * 4;
-            if audio_ok && (video_ok || sample_tx.len() >= queue_capacity * 3 / 4) {
+            let can_resume = if shared.has_video.load(Ordering::Acquire) {
+                audio_ok && video_ok
+            } else {
+                audio_ok
+            };
+            let timed_out = phase.started.elapsed() > Duration::from_secs(5);
+            if can_resume || timed_out {
                 let resume = shared.resume_intent.load(Ordering::Acquire);
                 shared.is_playing.store(resume, Ordering::Release);
                 {
@@ -1998,6 +2132,7 @@ fn wait_until_queue_drained(
     cmd_rx: &Receiver<Command>,
     shared: &Arc<Shared>,
     flush_rx: &Receiver<f32>,
+    video_tx: &crossbeam_channel::Sender<video::DecodedVideoFrame>,
 ) -> DecodeOutcome {
     loop {
         match drain_commands(cmd_rx, shared) {
@@ -2007,7 +2142,16 @@ fn wait_until_queue_drained(
             CommandAction::Shutdown => return DecodeOutcome::Shutdown,
         }
 
-        if flush_rx.is_empty() {
+        let audio_done = flush_rx.is_empty();
+        let video_done = if shared.has_video.load(Ordering::Acquire) {
+            video_tx.is_empty() && video_tx.len() == 0
+        } else {
+            true
+        };
+        if audio_done && video_done {
+            if shared.has_video.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(300));
+            }
             shared.is_playing.store(false, Ordering::Release);
 
             let mut s = lock_status(shared);

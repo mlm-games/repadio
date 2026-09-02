@@ -63,9 +63,27 @@ struct HwDecoder {
 #[cfg(feature = "hw")]
 impl HwDecoder {
     fn try_new(codec: HwCodecId, width: u32, height: u32, extradata: &[u8]) -> Option<Self> {
-        let description = if cfg!(target_arch = "wasm32") {
-            None
-        } else if extradata.is_empty() {
+        // TODO: WASM WebCodecs async copy_to_cpu not yet wired to sync try_frame.
+        if cfg!(target_arch = "wasm32") {
+            log::info!(
+                "HW decoder disabled for {}x{} (wasm async), using SW",
+                width,
+                height
+            );
+            return None;
+        }
+        if cfg!(target_os = "linux")
+            && (width == 1920 && height == 1080 || matches!(codec, HwCodecId::Hevc))
+        {
+            log::info!(
+                "HW decoder disabled for {}x{} codec {:?} (linux VAAPI tiling/HEVC), using SW",
+                width,
+                height,
+                codec
+            );
+            return None;
+        }
+        let description = if extradata.is_empty() {
             None
         } else {
             Some(Bytes::copy_from_slice(extradata))
@@ -135,16 +153,23 @@ impl HwDecoder {
             .map_err(|e| anyhow::anyhow!("hw decode: {e:?}"))
     }
 
-    fn try_drain_hw_frames(&mut self) -> Vec<baabaabaabaabababbababbaa::VideoFrame> {
+    fn try_drain_hw_frames(
+        &mut self,
+    ) -> Result<Vec<baabaabaabaabababbababbaa::VideoFrame>, anyhow::Error> {
         let mut out = Vec::new();
         loop {
             match self.output.try_frame() {
                 Ok(Some(f)) => out.push(f),
                 Ok(None) => break,
-                Err(_) => break,
+                Err(e) => {
+                    // Propagate HW errors so the VideoDecoder can fall back to SW.
+                    // `try_frame` on WASM with Cpu output, or VAAPI mapping
+                    // failures arriving as `Platform("Only linear ...")`, surface here.
+                    return Err(anyhow::anyhow!("hw try_frame: {e:?}"));
+                }
             }
         }
-        out
+        Ok(out)
     }
 
     fn flush(&mut self) -> Result<()> {
@@ -556,7 +581,11 @@ impl VideoDecoder {
                 let res = hw.decode(data, Duration::from_micros(pts_us.max(0) as u64), is_sync);
                 if let Err(e) = &res {
                     let msg = format!("{e:?}");
-                    if msg.contains("Dropped") || msg.contains("NoBackend") {
+                    if msg.contains("Dropped")
+                        || msg.contains("NoBackend")
+                        || msg.contains("Platform")
+                        || msg.contains("Only linear")
+                    {
                         if let Some((codec, w, h, extradata)) = self.fallback.take() {
                             log::warn!("HW decode failed ({msg}), falling back to SW");
                             let sw: Box<dyn VideoDecoderTrait> = match codec {
@@ -577,19 +606,29 @@ impl VideoDecoder {
                                 }
                             };
                             self.inner = DecoderInner::Software(sw);
-                            let packet = videoson::Packet {
-                                track_id: 0,
-                                pts: Some(pts_us),
-                                dts: None,
-                                duration: None,
-                                is_sync,
-                                data: data.to_vec(),
-                            };
-                            if let DecoderInner::Software(inner) = &mut self.inner {
-                                return inner.send_packet(&packet).map_err(|e| {
-                                    anyhow::anyhow!("videoson send after fallback: {e:?}")
-                                });
+                            // Only forward the current packet if it's a keyframe.
+                            // Inter frames right after fallback reference state HW
+                            // never produced for SW, so they'd always error with
+                            // "references empty ref_pic_list" and trigger a
+                            // need_keyframe reset. Dropping them here lets the
+                            // next keyframe start cleanly without spamming
+                            // `videoson send after fallback` warnings.
+                            if is_sync {
+                                let packet = videoson::Packet {
+                                    track_id: 0,
+                                    pts: Some(pts_us),
+                                    dts: None,
+                                    duration: None,
+                                    is_sync,
+                                    data: data.to_vec(),
+                                };
+                                if let DecoderInner::Software(inner) = &mut self.inner {
+                                    return inner.send_packet(&packet).map_err(|e| {
+                                        anyhow::anyhow!("videoson send after fallback: {e:?}")
+                                    });
+                                }
                             }
+                            return Ok(());
                         }
                     }
                 }
@@ -649,6 +688,29 @@ impl VideoDecoder {
         unsafe { arc.assume_init() }
     }
 
+    fn fallback_to_software(&mut self, _reason: &str) -> bool {
+        #[cfg(feature = "hw")]
+        if let Some((codec, w, h, extradata)) = self.fallback.take() {
+            log::warn!("HW drain failed ({_reason}), falling back to SW");
+            let sw: Result<Box<dyn VideoDecoderTrait>, anyhow::Error> = match codec {
+                FallbackCodec::H264 => Self::software_fallback_h264(w, h, &extradata),
+                FallbackCodec::H265 => Self::software_fallback_hevc(w, h, &extradata),
+                FallbackCodec::Av1 => Self::software_fallback_av1(w, h, &extradata),
+                FallbackCodec::Vp8 => Self::software_fallback_vp8(w, h, &extradata),
+                FallbackCodec::Vp9 => Self::software_fallback_vp9(w, h, &extradata),
+            };
+            match sw {
+                Ok(dec) => {
+                    self.inner = DecoderInner::Software(dec);
+                    self.reorder.clear();
+                    return true;
+                }
+                Err(e) => log::error!("fallback SW creation failed: {e:?}"),
+            }
+        }
+        false
+    }
+
     pub fn drain_frames(
         &mut self,
         fallback_pts: Duration,
@@ -659,9 +721,35 @@ impl VideoDecoder {
         match &mut self.inner {
             #[cfg(feature = "hw")]
             DecoderInner::Hardware(hw) => {
-                for frame in hw.try_drain_hw_frames() {
-                    if let Some(decoded) = hw_frame_to_decoded(frame, fallback_pts, load_serial) {
-                        self.reorder.push(decoded);
+                match hw.try_drain_hw_frames() {
+                    Ok(frames) => {
+                        let mut saw_hw_decode_failure = false;
+                        for frame in frames {
+                            if let Some(decoded) =
+                                hw_frame_to_decoded(frame, fallback_pts, load_serial)
+                            {
+                                self.reorder.push(decoded);
+                            } else {
+                                // hw_frame_to_decoded returns None on ensure_cpu / format errors
+                                // (e.g. tiled DMABuf on VAAPI). Treat as HW failure.
+                                saw_hw_decode_failure = true;
+                            }
+                        }
+                        if saw_hw_decode_failure && self.fallback.is_some() {
+                            let _ = self.fallback_to_software("hw_frame_to_decoded failed");
+                        }
+                    }
+                    Err(e) => {
+                        let msg = format!("{e:?}");
+                        if msg.contains("Dropped")
+                            || msg.contains("NoBackend")
+                            || msg.contains("Platform")
+                            || msg.contains("Only linear")
+                        {
+                            self.fallback_to_software(&msg);
+                        } else {
+                            log::warn!("hw drain error: {msg}");
+                        }
                     }
                 }
             }
