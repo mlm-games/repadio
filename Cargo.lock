@@ -261,6 +261,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "anodecs"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8f23a55e6008925b22de06578df8d9ed568a1f9036ed322b2e8bb1dbae62a0a"
+dependencies = [
+ "android_logger",
+ "jni",
+ "log",
+ "ndk-context",
+]
+
+[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -619,19 +631,20 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "baabaabaabaabababbababbaa"
-version = "0.1.0"
-source = "git+https://github.com/mlm-games/baa4bababab2baa#a94338b737034b9158d2832e21baf08017b1e982"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6b84146f9302ed471527dd9d41430e95620bb3e4a280ac84f21520104d391bd"
 dependencies = [
+ "anodecs",
  "bytes",
- "cros-codecs",
  "js-sys",
  "log",
- "mediacodec",
+ "nuxodecs",
  "thiserror 2.0.20",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "web-codecs",
+ "wasodecs",
  "web-sys",
 ]
 
@@ -1017,38 +1030,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8498c871161e1742aaa9d52551b2d6ebdd4c3d45a3be423e3728f33b955be550"
 dependencies = [
  "cfg-if",
-]
-
-[[package]]
-name = "cros-codecs"
-version = "0.0.10"
-source = "git+https://github.com/mlm-games/cros-codecs?branch=main#8510d65993b9ca4215988e34c44e9e3b7ff1cd87"
-dependencies = [
- "anyhow",
- "byteorder",
- "crc32fast",
- "cros-libva",
- "drm 0.15.0",
- "drm-fourcc",
- "gbm",
- "gbm-sys",
- "log",
- "nix",
- "thiserror 2.0.20",
- "zerocopy",
-]
-
-[[package]]
-name = "cros-libva"
-version = "0.0.20"
-source = "git+https://github.com/mlm-games/cros-libva.git?branch=main#4ee59b31f58c3a12304a700669f8f7ec78bd6d77"
-dependencies = [
- "bindgen",
- "bitflags 2.13.1",
- "log",
- "pkg-config",
- "regex",
- "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -2251,14 +2232,29 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libredox"
-version = "0.1.21"
+version = "0.1.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7955dfc218a8afb29dfeffd540e3a6e96baeb94fe7138228dd7cc6937fbbf96"
+checksum = "8d8f1ea3f21fd3405dcaf6c9b5c1630af9afc422d9073ea39c5f6d6c772e08ed"
 dependencies = [
  "bitflags 2.13.1",
  "libc",
  "plain",
  "redox_syscall 0.9.3",
+]
+
+[[package]]
+name = "libva"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "493a749de39d6db1d1923fa90bc659ca7db2f9ca1481dcc84add045552185516"
+dependencies = [
+ "bindgen",
+ "bitflags 2.13.1",
+ "libloading 0.9.0",
+ "log",
+ "pkg-config",
+ "regex",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -2349,17 +2345,6 @@ name = "mach2"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
-
-[[package]]
-name = "mediacodec"
-version = "0.1.5"
-source = "git+https://github.com/mlm-games/rust_mediacodec?branch=main#bbfa3fdcd4b05ba1a7c9349304da0881b66bb359"
-dependencies = [
- "android_logger",
- "jni",
- "log",
- "ndk-context",
-]
 
 [[package]]
 name = "memchr"
@@ -2616,6 +2601,26 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "nuxodecs"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9658b68e65a0641b08407367371572aad01cce15d921783f990245380f9a0c20"
+dependencies = [
+ "anyhow",
+ "byteorder",
+ "crc32fast",
+ "drm 0.15.0",
+ "drm-fourcc",
+ "gbm",
+ "gbm-sys",
+ "libva",
+ "log",
+ "nix",
+ "thiserror 2.0.20",
+ "zerocopy",
 ]
 
 [[package]]
@@ -4020,7 +4025,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4219,9 +4224,9 @@ dependencies = [
 
 [[package]]
 name = "smallvec"
-version = "1.15.2"
+version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
+checksum = "b9be42f50aa861c555654aa3a37f52f4b1074bacf4e48fe0ef7fa584e80f1f0f"
 
 [[package]]
 name = "smithay-client-toolkit"
@@ -5030,6 +5035,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasodecs"
+version = "0.3.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae9f2239f0da41454d364efbb9f55b9a0fa16376062958d0238e009550032819"
+dependencies = [
+ "bytemuck",
+ "bytes",
+ "derive_more",
+ "js-sys",
+ "thiserror 2.0.20",
+ "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "wayland-backend"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5139,22 +5161,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "web-codecs"
-version = "0.3.10"
-source = "git+https://github.com/mlm-games/web-rs.git#42461a70bf8764c3b898801fea9cc26ddab59fa9"
-dependencies = [
- "bytemuck",
- "bytes",
- "derive_more",
- "js-sys",
- "thiserror 2.0.20",
- "tokio",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
 name = "web-sys"
 version = "0.3.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5176,9 +5182,9 @@ dependencies = [
 
 [[package]]
 name = "web-workers"
-version = "0.3.2"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c1d864f9d0e4728fa9e5cc0558188a1bfc8faa716cb38f7aded021343349871"
+checksum = "3dea83fb41c17e47168b62d62d5a8ec955ebb6218d4d90b602f856dfe3518f7d"
 dependencies = [
  "atomic-waker",
  "continue",
@@ -5542,6 +5548,15 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
+dependencies = [
+ "windows-targets",
+]
+
+[[package]]
+name = "windows-sys"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets",
 ]
