@@ -1037,9 +1037,7 @@ fn av1_is_keyframe(data: &[u8]) -> bool {
                     let show_existing = (b >> 7) & 0x01;
                     if show_existing == 0 {
                         let frame_type = (b >> 5) & 0x03;
-                        // 0 = KEY_FRAME; 2 = INTRA_ONLY (decodable alone
-                        // only with seq header, which we already track).
-                        if frame_type == 0 {
+                        if frame_type == 0 || frame_type == 2 {
                             return true;
                         }
                     }

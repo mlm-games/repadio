@@ -77,6 +77,12 @@ struct PendingWasmCopy {
 #[cfg(feature = "hw")]
 impl HwDecoder {
     fn try_new(codec: HwCodecId, width: u32, height: u32, extradata: &[u8]) -> Option<Self> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = &codec;
+            log::info!("HW decoder disabled on wasm (async copy unsupported), using SW");
+            return None;
+        }
         if width == 0 || height == 0 {
             log::info!("HW decoder disabled for 0-sized stream, using SW");
             return None;
