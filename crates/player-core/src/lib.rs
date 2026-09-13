@@ -990,13 +990,112 @@ fn vp8_is_keyframe(data: &[u8]) -> bool {
     (data[0] & 0x01) == 0
 }
 
-fn vp9_is_keyframe(_data: &[u8]) -> bool {
-    // VP9 keyframe detection requires parsing the uncompressed header.
-    // For sync dropping we rely on the decoder's reference handling and
-    // treat every packet as sync candidate (same as AV1); the decoder
-    // will error on inter without refs and the reset path will request
-    // a new keyframe.
-    true
+/// AV1 keyframe detection from OBU stream (WebM/MP4 packets).
+/// Returns true only when sure the packet starts a fresh decodable
+/// sequence: it contains a SEQUENCE_HEADER OBU, or a FRAME/FRAME_HEADER
+/// OBU whose uncompressed header has show_existing_frame=0 and
+/// frame_type=KEY_FRAME(0). Deltas return false so a fresh SW decoder
+/// after HW->SW fallback waits for a real keyframe instead of feeding
+/// a delta to rav1d (which errors "invalid data").
+fn av1_is_keyframe(data: &[u8]) -> bool {
+    let mut pos = 0usize;
+    let mut saw_seq_header = false;
+    while pos < data.len() {
+        let hdr = data[pos];
+        pos += 1;
+        // OBU header: forbidden(1)=0 | type(4) | ext(1) | has_size(1) | reserved(1)
+        if hdr & 0x80 != 0 {
+            return saw_seq_header;
+        }
+        let obu_type = (hdr >> 3) & 0x0f;
+        let has_ext = (hdr >> 2) & 0x01 != 0;
+        let has_size = (hdr >> 1) & 0x01 != 0;
+        if has_ext {
+            if pos >= data.len() {
+                break;
+            }
+            pos += 1; // temporal_id/spatial_id extension, no keyframe info
+        }
+        let payload_len: usize = if has_size {
+            match av1_leb128(data, &mut pos) {
+                Some(n) => n,
+                None => break,
+            }
+        } else {
+            data.len().saturating_sub(pos)
+        };
+        let payload_start = pos;
+        let payload_end = payload_start.saturating_add(payload_len).min(data.len());
+        match obu_type {
+            1 => saw_seq_header = true, // SEQUENCE_HEADER
+            3 | 6 | 7 => {
+                // FRAME_HEADER / FRAME / REDUNDANT_FRAME_HEADER: first
+                // payload byte holds show_existing_frame(1) |
+                // frame_type(2) | show_frame(1) | ... (MSB first).
+                if payload_start < payload_end {
+                    let b = data[payload_start];
+                    let show_existing = (b >> 7) & 0x01;
+                    if show_existing == 0 {
+                        let frame_type = (b >> 5) & 0x03;
+                        // 0 = KEY_FRAME; 2 = INTRA_ONLY (decodable alone
+                        // only with seq header, which we already track).
+                        if frame_type == 0 {
+                            return true;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        if saw_seq_header {
+            return true;
+        }
+        pos = payload_end;
+        if !has_size {
+            break;
+        }
+    }
+    saw_seq_header
+}
+
+fn av1_leb128(data: &[u8], pos: &mut usize) -> Option<usize> {
+    let mut value: usize = 0;
+    for i in 0..8 {
+        if *pos >= data.len() {
+            return None;
+        }
+        let b = data[*pos];
+        *pos += 1;
+        value |= ((b & 0x7f) as usize) << (i * 7);
+        if b & 0x80 == 0 {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn vp9_is_keyframe(data: &[u8]) -> bool {
+    // VP9 uncompressed header, first byte (MSB first):
+    // frame_marker(2)=0b10 | profile_low(1) | profile_high(1) |
+    // show_existing_frame(1) | frame_type(1, 0=key) | show_frame(1) |
+    // error_resilient(1). Conservative: true only when sure.
+    if data.is_empty() {
+        return false;
+    }
+    let b = data[0];
+    if (b >> 6) & 0x03 != 0x02 {
+        return false;
+    }
+    let profile = ((b >> 5) & 0x01) | (((b >> 4) & 0x01) << 1);
+    if profile == 3 {
+        return false; // reserved bit shifts layout; stay conservative
+    }
+    let show_existing = (b >> 3) & 0x01;
+    if show_existing == 1 {
+        return false;
+    }
+    let frame_type = (b >> 2) & 0x01;
+    frame_type == 0
 }
 
 fn gcd(a: u64, b: u64) -> u64 {
@@ -1014,7 +1113,7 @@ fn handle_video_packet(
     let is_sync = match state.codec {
         VideoCodecKind::H264 { nal_len_size } => h264_avcc_has_idr(&packet.data, nal_len_size),
         VideoCodecKind::Hevc { nal_len_size } => hevc_hvcc_has_keyframe(&packet.data, nal_len_size),
-        VideoCodecKind::Av1 => true,
+        VideoCodecKind::Av1 => av1_is_keyframe(&packet.data),
         VideoCodecKind::Vp8 => vp8_is_keyframe(&packet.data),
         VideoCodecKind::Vp9 => vp9_is_keyframe(&packet.data),
     };

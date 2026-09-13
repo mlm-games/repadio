@@ -55,9 +55,23 @@ struct HwDecoder {
     output: Box<dyn VideoDecoderOutputBoxed>,
     #[cfg(not(target_arch = "wasm32"))]
     runtime: tokio::runtime::Runtime,
+    #[cfg(target_arch = "wasm32")]
+    copy_tx: tokio::sync::mpsc::UnboundedSender<PendingWasmCopy>,
+    #[cfg(target_arch = "wasm32")]
+    copy_rx: tokio::sync::mpsc::UnboundedReceiver<PendingWasmCopy>,
     nal_len_size: usize,
     pending_config: Option<Vec<u8>>,
     initial_config: Vec<u8>,
+}
+
+/// Completed async `copy_to_cpu` from a WebCodecs hardware frame (wasm only).
+#[cfg(all(feature = "hw", target_arch = "wasm32"))]
+struct PendingWasmCopy {
+    data: Vec<u8>,
+    width: u32,
+    height: u32,
+    format: baabaabaabaabababbababbaa::PixelFormat,
+    pts: Duration,
 }
 
 #[cfg(feature = "hw")]
@@ -73,14 +87,23 @@ impl HwDecoder {
             Some(Bytes::copy_from_slice(extradata))
         };
         let host = default_host();
+        // WASM: WebCodecs `copyTo()` is async, so sync `try_frame()` with
+        // `Cpu` output always fails with InvalidConfig. Request hardware
+        // frames and copy them async via spawn_local (Miniter pattern).
+        #[cfg(target_arch = "wasm32")]
+        let output_mode = VideoOutputMode::PreferHardware;
+        #[cfg(not(target_arch = "wasm32"))]
+        let output_mode = VideoOutputMode::Cpu;
         let config = VideoDecoderConfig {
             codec: codec.clone(),
             resolution: Some(Dimensions::new(width, height)),
             description,
             hardware_acceleration: Some(true),
-            output_mode: VideoOutputMode::Cpu,
+            output_mode,
         };
         let (input, output) = host.create_video_decoder(config).ok()?;
+        #[cfg(target_arch = "wasm32")]
+        let (copy_tx, copy_rx) = tokio::sync::mpsc::unbounded_channel();
         #[cfg(not(target_arch = "wasm32"))]
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -107,6 +130,10 @@ impl HwDecoder {
             output: Box::new(output) as Box<dyn VideoDecoderOutputBoxed>,
             #[cfg(not(target_arch = "wasm32"))]
             runtime,
+            #[cfg(target_arch = "wasm32")]
+            copy_tx,
+            #[cfg(target_arch = "wasm32")]
+            copy_rx,
             nal_len_size,
             pending_config,
             initial_config,
@@ -137,6 +164,7 @@ impl HwDecoder {
             .map_err(|e| anyhow::anyhow!("hw decode: {e:?}"))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn try_drain_hw_frames(
         &mut self,
     ) -> Result<Vec<baabaabaabaabababbababbaa::VideoFrame>, anyhow::Error> {
@@ -147,11 +175,74 @@ impl HwDecoder {
                 Ok(None) => break,
                 Err(e) => {
                     // Propagate HW errors so the VideoDecoder can fall back to SW.
-                    // `try_frame` on WASM with Cpu output, or VAAPI mapping
-                    // failures arriving as `Platform("Only linear ...")`, surface here.
+                    // VAAPI mapping failures arriving as `Platform("Only linear ...")`
+                    // surface here.
                     return Err(anyhow::anyhow!("hw try_frame: {e:?}"));
                 }
             }
+        }
+        Ok(out)
+    }
+
+    /// WASM drain: `try_frame()` returns hardware frames (output_mode is
+    /// PreferHardware); each is copied async via `spawn_local` and completed
+    /// copies are collected from the channel. Synchronous `Cpu` output is
+    /// unsupported by design on wasm, so this path never calls it.
+    #[cfg(target_arch = "wasm32")]
+    fn try_drain_hw_frames(
+        &mut self,
+    ) -> Result<Vec<baabaabaabaabababbababbaa::VideoFrame>, anyhow::Error> {
+        use baabaabaabaabababbababbaa::{VideoFrame, VideoPlanes};
+        loop {
+            match self.output.try_frame() {
+                Ok(Some(f)) => {
+                    if f.is_hardware() {
+                        let fmt = f.format;
+                        let w = f.dimensions.width;
+                        let h = f.dimensions.height;
+                        let pts = f.timestamp;
+                        // Move the hardware buffer out for the async copy.
+                        let hw = match f.planes {
+                            VideoPlanes::Hardware(hw) => hw,
+                            VideoPlanes::Cpu(_) => {
+                                continue;
+                            }
+                        };
+                        let tx = self.copy_tx.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            match hw.copy_to_cpu_async().await {
+                                Ok(data) => {
+                                    let _ = tx.send(PendingWasmCopy {
+                                        data,
+                                        width: w,
+                                        height: h,
+                                        format: fmt,
+                                        pts,
+                                    });
+                                }
+                                Err(e) => {
+                                    log::warn!("wasm copy_to_cpu failed: {e:?}");
+                                }
+                            }
+                        });
+                    }
+                    // Cpu frames (unexpected on wasm) are dropped here;
+                    // completed async copies are collected below.
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    return Err(anyhow::anyhow!("hw try_frame: {e:?}"));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        while let Ok(p) = self.copy_rx.try_recv() {
+            out.push(VideoFrame {
+                dimensions: Dimensions::new(p.width, p.height),
+                format: p.format,
+                timestamp: p.pts,
+                planes: VideoPlanes::Cpu(p.data),
+            });
         }
         Ok(out)
     }
@@ -181,6 +272,10 @@ impl HwDecoder {
                 Ok(None) => break,
                 Err(_) => break,
             }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            while self.copy_rx.try_recv().is_ok() {}
         }
     }
 }
