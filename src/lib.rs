@@ -878,8 +878,17 @@ fn App(
                         let sources: Vec<MediaSource> = picked
                             .into_iter()
                             .map(|f| match f {
-                                player_platform::PickedFile::Path(p) => MediaSource::Path(p),
+                                player_platform::PickedFile::Path(p) => {
+                                    log::info!("picked path: {}", p.display());
+                                    MediaSource::Path(p)
+                                }
                                 player_platform::PickedFile::Bytes { name, data } => {
+                                    log::info!("picked bytes: {name} ({} bytes)", data.len());
+                                    if data.is_empty() {
+                                        log::error!(
+                                            "picked file {name} has 0 bytes, ignoring"
+                                        );
+                                    }
                                     MediaSource::Bytes {
                                         name,
                                         bytes: Arc::from(data),

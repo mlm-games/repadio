@@ -454,6 +454,11 @@ fn media_source_stream(src: MediaSource) -> Result<(MediaSourceStream<'static>, 
         MediaSource::Path(path) => {
             let file =
                 File::open(&path).with_context(|| format!("failed to open {}", path.display()))?;
+            if let Ok(md) = file.metadata()
+                && md.len() == 0
+            {
+                anyhow::bail!("empty file {} (0 bytes on disk)", path.display());
+            }
             let mut hint = Hint::new();
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 hint.with_extension(&ext.to_lowercase());
@@ -464,6 +469,12 @@ fn media_source_stream(src: MediaSource) -> Result<(MediaSourceStream<'static>, 
             ))
         }
         MediaSource::Bytes { name, bytes } => {
+            if bytes.is_empty() {
+                anyhow::bail!(
+                    "empty file bytes for {name} (0 bytes): the file picker returned no data, re-pick the file"
+                );
+            }
+            log::info!("media source bytes: {name} ({} bytes)", bytes.len());
             let cursor = Cursor::new(bytes);
             let mut hint = Hint::new();
             if let Some(ext) = std::path::Path::new(&name)
@@ -487,17 +498,25 @@ pub fn probe_track_meta(path: &Path) -> TrackMeta {
 pub fn probe_media_source(source: MediaSource) -> TrackMeta {
     let mut meta = TrackMeta::default();
 
-    let Ok((mss, hint)) = media_source_stream(source) else {
-        return meta;
+    let (mss, hint) = match media_source_stream(source.clone()) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("probe_media_source({}): {e:#}", source.display_name());
+            return meta;
+        }
     };
 
-    let Ok(mut reader) = get_probe().probe(
+    let mut reader = match get_probe().probe(
         &hint,
         mss,
         FormatOptions::default(),
         MetadataOptions::default(),
-    ) else {
-        return meta;
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!("probe_media_source({}): probe failed: {e}", source.display_name());
+            return meta;
+        }
     };
 
     if let Some(rev) = reader.metadata().current() {
@@ -740,7 +759,16 @@ fn run_command_loop(
     loop {
         match cmd_rx.recv() {
             Ok(Command::Load(path)) => {
-                log::info!("audio thread processing load: {}", path.display_name());
+                match &path {
+                    MediaSource::Path(p) => log::info!(
+                        "audio thread processing load: {} (path)",
+                        p.display()
+                    ),
+                    MediaSource::Bytes { name, bytes } => log::info!(
+                        "audio thread processing load: {name} ({} bytes)",
+                        bytes.len()
+                    ),
+                }
                 let mut next = Some(path);
                 let mut pending_seek: Option<(Duration, u64)> = None;
                 'decode: while let Some(path) = next.take() {
@@ -763,8 +791,8 @@ fn run_command_loop(
                         Ok(DecodeOutcome::Load(path)) => next = Some(path),
                         Ok(DecodeOutcome::Shutdown) => return Ok(()),
                         Err(err) => {
-                            log::error!("decode error: {err}");
-                            set_error(shared.as_ref(), &err);
+                            log::error!("decode error: {err:#}");
+                            set_error(shared.as_ref(), &format!("{err:#}"));
                             break 'decode;
                         }
                     }
@@ -785,8 +813,8 @@ fn run_command_loop(
                         video_tx,
                         None,
                     ) {
-                        log::error!("decode error: {err}");
-                        set_error(shared.as_ref(), &err);
+                        log::error!("decode error: {err:#}");
+                        set_error(shared.as_ref(), &format!("{err:#}"));
                     }
                 }
                 CommandAction::Shutdown => return Ok(()),
