@@ -74,7 +74,9 @@ enum WasmHwCmd {
         keyframe: bool,
     },
     Flush,
-    Reset { epoch: u64 },
+    Reset {
+        epoch: u64,
+    },
     Close,
 }
 
@@ -151,7 +153,7 @@ fn wasm_hw_create_pump(config: VideoDecoderConfig) -> Option<WasmHwPump> {
             reply: reply_tx,
         })
         .ok()?;
-    match reply_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+    match reply_rx.recv_timeout(web_time::Duration::from_secs(10)) {
         Ok(Ok(h)) => Some(WasmHwPump {
             cmd_tx: h.cmd_tx,
             frame_rx: h.frame_rx,
@@ -173,9 +175,7 @@ fn wasm_hw_create_pump(config: VideoDecoderConfig) -> Option<WasmHwPump> {
 /// spawns one async pump task per decoder. Runs on the main-thread event
 /// loop, so all JS objects stay on the thread that may touch them.
 #[cfg(all(feature = "hw", target_arch = "wasm32"))]
-async fn wasm_hw_supervisor_loop(
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<WasmHwCreateReq>,
-) {
+async fn wasm_hw_supervisor_loop(mut rx: tokio::sync::mpsc::UnboundedReceiver<WasmHwCreateReq>) {
     while let Some(req) = rx.recv().await {
         let result = match default_host().create_video_decoder(req.config.clone()) {
             Ok((input, output)) => {
@@ -224,8 +224,7 @@ async fn wasm_hw_pump_loop(
             None => match default_host().create_video_decoder(config.clone()) {
                 Ok((i, o)) => (Box::new(i) as _, Box::new(o) as _),
                 Err(e) => {
-                    let _ = event_tx
-                        .send(WasmHwEvent::Failed(format!("recreate: {e:?}")));
+                    let _ = event_tx.send(WasmHwEvent::Failed(format!("recreate: {e:?}")));
                     return;
                 }
             },
@@ -497,10 +496,9 @@ impl HwDecoder {
             // The pump recreates the decoder, giving the new segment clean
             // reference state.
             self.pump.epoch = self.pump.epoch.wrapping_add(1);
-            let _ = self
-                .pump
-                .cmd_tx
-                .send(WasmHwCmd::Reset { epoch: self.pump.epoch });
+            let _ = self.pump.cmd_tx.send(WasmHwCmd::Reset {
+                epoch: self.pump.epoch,
+            });
             while self.pump.frame_rx.try_recv().is_ok() {}
             while self.pump.event_rx.try_recv().is_ok() {}
         }

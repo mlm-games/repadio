@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::time::Duration;
+use web_time::Duration;
 
 use symphonia::core::codecs::CodecParameters;
 use symphonia::core::codecs::video::well_known::{CODEC_ID_HEVC, extra_data as ed_ids};
