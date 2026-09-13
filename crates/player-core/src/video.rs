@@ -51,38 +51,258 @@ enum DecoderInner {
 
 #[cfg(feature = "hw")]
 struct HwDecoder {
+    #[cfg(not(target_arch = "wasm32"))]
     input: Box<dyn VideoDecoderInputBoxed>,
+    #[cfg(not(target_arch = "wasm32"))]
     output: Box<dyn VideoDecoderOutputBoxed>,
     #[cfg(not(target_arch = "wasm32"))]
     runtime: tokio::runtime::Runtime,
     #[cfg(target_arch = "wasm32")]
-    copy_tx: tokio::sync::mpsc::UnboundedSender<PendingWasmCopy>,
-    #[cfg(target_arch = "wasm32")]
-    copy_rx: tokio::sync::mpsc::UnboundedReceiver<PendingWasmCopy>,
+    pump: WasmHwPump,
     nal_len_size: usize,
     pending_config: Option<Vec<u8>>,
     initial_config: Vec<u8>,
 }
 
-/// Completed async `copy_to_cpu` from a WebCodecs hardware frame (wasm only).
+/// Command sent from the blocking decode worker to the main-thread WebCodecs
+/// pump (wasm only). Plain data only: no JS objects may cross threads.
 #[cfg(all(feature = "hw", target_arch = "wasm32"))]
-struct PendingWasmCopy {
+enum WasmHwCmd {
+    Decode {
+        data: Vec<u8>,
+        pts: Duration,
+        keyframe: bool,
+    },
+    Flush,
+    Reset { epoch: u64 },
+    Close,
+}
+
+/// Decoded CPU frame sent back from the pump (wasm only). The `copyTo()`
+/// already happened inside the pump, so this is ready for `hw_frame_to_decoded`.
+#[cfg(all(feature = "hw", target_arch = "wasm32"))]
+struct WasmHwFrame {
     data: Vec<u8>,
     width: u32,
     height: u32,
     format: baabaabaabaabababbababbaa::PixelFormat,
     pts: Duration,
+    epoch: u64,
+}
+
+#[cfg(all(feature = "hw", target_arch = "wasm32"))]
+enum WasmHwEvent {
+    Failed(String),
+}
+
+#[cfg(all(feature = "hw", target_arch = "wasm32"))]
+struct WasmHwPumpHandles {
+    cmd_tx: tokio::sync::mpsc::UnboundedSender<WasmHwCmd>,
+    frame_rx: tokio::sync::mpsc::UnboundedReceiver<WasmHwFrame>,
+    event_rx: tokio::sync::mpsc::UnboundedReceiver<WasmHwEvent>,
+}
+
+/// Worker-side handle for the main-thread pump (wasm only).
+#[cfg(all(feature = "hw", target_arch = "wasm32"))]
+struct WasmHwPump {
+    cmd_tx: tokio::sync::mpsc::UnboundedSender<WasmHwCmd>,
+    frame_rx: tokio::sync::mpsc::UnboundedReceiver<WasmHwFrame>,
+    event_rx: tokio::sync::mpsc::UnboundedReceiver<WasmHwEvent>,
+    epoch: u64,
+}
+
+#[cfg(all(feature = "hw", target_arch = "wasm32"))]
+struct WasmHwCreateReq {
+    config: VideoDecoderConfig,
+    reply: crossbeam_channel::Sender<Result<WasmHwPumpHandles, String>>,
+}
+
+#[cfg(all(feature = "hw", target_arch = "wasm32"))]
+static WASM_HW_SUPERVISOR: std::sync::OnceLock<
+    tokio::sync::mpsc::UnboundedSender<WasmHwCreateReq>,
+> = std::sync::OnceLock::new();
+
+/// Starts the main-thread WebCodecs supervisor (wasm only). Must be called
+/// from the main thread — it uses `spawn_local`. Idempotent; safe to call
+/// more than once.
+#[cfg(all(feature = "hw", target_arch = "wasm32"))]
+pub(crate) fn start_wasm_hw_supervisor() {
+    if WASM_HW_SUPERVISOR.get().is_some() {
+        return;
+    }
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    if WASM_HW_SUPERVISOR.set(tx).is_err() {
+        return;
+    }
+    wasm_bindgen_futures::spawn_local(wasm_hw_supervisor_loop(rx));
+}
+
+/// Asks the main-thread supervisor to create a WebCodecs decoder + pump
+/// (wasm only). Blocks the calling worker thread until the reply arrives;
+/// returns `None` (→ software fallback) when the supervisor is absent,
+/// rejects the config, or does not answer in time.
+#[cfg(all(feature = "hw", target_arch = "wasm32"))]
+fn wasm_hw_create_pump(config: VideoDecoderConfig) -> Option<WasmHwPump> {
+    let supervisor = WASM_HW_SUPERVISOR.get()?;
+    let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+    supervisor
+        .send(WasmHwCreateReq {
+            config,
+            reply: reply_tx,
+        })
+        .ok()?;
+    match reply_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        Ok(Ok(h)) => Some(WasmHwPump {
+            cmd_tx: h.cmd_tx,
+            frame_rx: h.frame_rx,
+            event_rx: h.event_rx,
+            epoch: 0,
+        }),
+        Ok(Err(e)) => {
+            log::info!("HW decoder unavailable ({e}), using SW");
+            None
+        }
+        Err(_) => {
+            log::warn!("HW supervisor did not respond, using SW");
+            None
+        }
+    }
+}
+
+/// Main-thread supervisor loop (wasm only): creates WebCodecs decoders and
+/// spawns one async pump task per decoder. Runs on the main-thread event
+/// loop, so all JS objects stay on the thread that may touch them.
+#[cfg(all(feature = "hw", target_arch = "wasm32"))]
+async fn wasm_hw_supervisor_loop(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<WasmHwCreateReq>,
+) {
+    while let Some(req) = rx.recv().await {
+        let result = match default_host().create_video_decoder(req.config.clone()) {
+            Ok((input, output)) => {
+                let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+                let (frame_tx, frame_rx) = tokio::sync::mpsc::unbounded_channel();
+                let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+                let input: Box<dyn VideoDecoderInputBoxed> = Box::new(input);
+                let output: Box<dyn VideoDecoderOutputBoxed> = Box::new(output);
+                wasm_bindgen_futures::spawn_local(wasm_hw_pump_loop(
+                    req.config, input, output, cmd_rx, frame_tx, event_tx,
+                ));
+                Ok(WasmHwPumpHandles {
+                    cmd_tx,
+                    frame_rx,
+                    event_rx,
+                })
+            }
+            Err(e) => Err(format!("{e:?}")),
+        };
+        let _ = req.reply.send(result);
+    }
+}
+
+/// Per-decoder async pump (wasm only, main thread). Feeds encoded packets to
+/// WebCodecs, awaits decoded frames with `frame()` (which performs the async
+/// `copyTo()` inline — no cross-thread copy needed), and forwards completed
+/// CPU frames to the worker. On `Reset` the decoder is recreated so a seek
+/// never decodes against stale reference frames.
+#[cfg(all(feature = "hw", target_arch = "wasm32"))]
+async fn wasm_hw_pump_loop(
+    config: VideoDecoderConfig,
+    initial_input: Box<dyn VideoDecoderInputBoxed>,
+    initial_output: Box<dyn VideoDecoderOutputBoxed>,
+    mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<WasmHwCmd>,
+    frame_tx: tokio::sync::mpsc::UnboundedSender<WasmHwFrame>,
+    event_tx: tokio::sync::mpsc::UnboundedSender<WasmHwEvent>,
+) {
+    let mut current: Option<(
+        Box<dyn VideoDecoderInputBoxed>,
+        Box<dyn VideoDecoderOutputBoxed>,
+    )> = Some((initial_input, initial_output));
+    let mut epoch: u64 = 0;
+    'generation: loop {
+        let (mut input, mut output) = match current.take() {
+            Some(pair) => pair,
+            None => match default_host().create_video_decoder(config.clone()) {
+                Ok((i, o)) => (Box::new(i) as _, Box::new(o) as _),
+                Err(e) => {
+                    let _ = event_tx
+                        .send(WasmHwEvent::Failed(format!("recreate: {e:?}")));
+                    return;
+                }
+            },
+        };
+        loop {
+            tokio::select! {
+                biased;
+                cmd = cmd_rx.recv() => {
+                    match cmd {
+                        None | Some(WasmHwCmd::Close) => return,
+                        Some(WasmHwCmd::Reset { epoch: e }) => {
+                            epoch = e;
+                            // Drop this generation: the old decoder (with its
+                            // stale reference frames and queued output) is
+                            // closed and a fresh one is built above. Frames
+                            // already sent keep the old epoch and are
+                            // discarded worker-side.
+                            continue 'generation;
+                        }
+                        Some(WasmHwCmd::Flush) => {
+                            let _ = input.flush().await;
+                        }
+                        Some(WasmHwCmd::Decode { data, pts, keyframe }) => {
+                            let pkt = baabaabaabaabababbababbaa::EncodedVideoPacket {
+                                payload: Bytes::from(data),
+                                timestamp: pts,
+                                keyframe,
+                            };
+                            if let Err(e) = input.decode(pkt) {
+                                let _ = event_tx.send(WasmHwEvent::Failed(
+                                    format!("decode: {e:?}"),
+                                ));
+                                return;
+                            }
+                        }
+                    }
+                }
+                res = output.frame() => {
+                    match res {
+                        Ok(Some(f)) => {
+                            // `Cpu` output mode: the async copy already
+                            // happened inside `frame()`.
+                            if let baabaabaabaabababbababbaa::VideoPlanes::Cpu(data) =
+                                f.planes
+                            {
+                                let _ = frame_tx.send(WasmHwFrame {
+                                    data,
+                                    width: f.dimensions.width,
+                                    height: f.dimensions.height,
+                                    format: f.format,
+                                    pts: f.timestamp,
+                                    epoch,
+                                });
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            let _ = event_tx.send(WasmHwEvent::Failed(format!("{e:?}")));
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(all(feature = "hw", target_arch = "wasm32"))]
+impl Drop for HwDecoder {
+    fn drop(&mut self) {
+        let _ = self.pump.cmd_tx.send(WasmHwCmd::Close);
+    }
 }
 
 #[cfg(feature = "hw")]
 impl HwDecoder {
     fn try_new(codec: HwCodecId, width: u32, height: u32, extradata: &[u8]) -> Option<Self> {
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = &codec;
-            log::info!("HW decoder disabled on wasm (async copy unsupported), using SW");
-            return None;
-        }
         if width == 0 || height == 0 {
             log::info!("HW decoder disabled for 0-sized stream, using SW");
             return None;
@@ -92,13 +312,10 @@ impl HwDecoder {
         } else {
             Some(Bytes::copy_from_slice(extradata))
         };
-        let host = default_host();
-        // WASM: WebCodecs `copyTo()` is async, so sync `try_frame()` with
-        // `Cpu` output always fails with InvalidConfig. Request hardware
-        // frames and copy them async via spawn_local (Miniter pattern).
-        #[cfg(target_arch = "wasm32")]
-        let output_mode = VideoOutputMode::PreferHardware;
-        #[cfg(not(target_arch = "wasm32"))]
+        // The pump awaits decoded frames with async `frame()`, which performs
+        // the WebCodecs `copyTo()` inline on the main thread. `Cpu` output is
+        // only unsupported for *synchronous* `try_frame()` on wasm; the worker
+        // never touches the decoder output directly (see `WasmHwPump`).
         let output_mode = VideoOutputMode::Cpu;
         let config = VideoDecoderConfig {
             codec: codec.clone(),
@@ -107,14 +324,6 @@ impl HwDecoder {
             hardware_acceleration: Some(true),
             output_mode,
         };
-        let (input, output) = host.create_video_decoder(config).ok()?;
-        #[cfg(target_arch = "wasm32")]
-        let (copy_tx, copy_rx) = tokio::sync::mpsc::unbounded_channel();
-        #[cfg(not(target_arch = "wasm32"))]
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .ok()?;
         let (initial_config, nal_len_size) = match &codec {
             HwCodecId::H264 { .. } => (
                 parse_avcc(extradata),
@@ -131,19 +340,37 @@ impl HwDecoder {
         } else {
             Some(initial_config.clone())
         };
-        Some(Self {
-            input: Box::new(input) as Box<dyn VideoDecoderInputBoxed>,
-            output: Box::new(output) as Box<dyn VideoDecoderOutputBoxed>,
-            #[cfg(not(target_arch = "wasm32"))]
-            runtime,
-            #[cfg(target_arch = "wasm32")]
-            copy_tx,
-            #[cfg(target_arch = "wasm32")]
-            copy_rx,
-            nal_len_size,
-            pending_config,
-            initial_config,
-        })
+        #[cfg(target_arch = "wasm32")]
+        {
+            // WASM: the decode loop runs on a blocking worker thread that can
+            // never drive JS promises, so decoding happens in an async pump on
+            // the main thread; this side only forwards packets and collects
+            // completed CPU frames.
+            let pump = wasm_hw_create_pump(config)?;
+            return Some(Self {
+                pump,
+                nal_len_size,
+                pending_config,
+                initial_config,
+            });
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let host = default_host();
+            let (input, output) = host.create_video_decoder(config).ok()?;
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()?;
+            Some(Self {
+                input: Box::new(input) as Box<dyn VideoDecoderInputBoxed>,
+                output: Box::new(output) as Box<dyn VideoDecoderOutputBoxed>,
+                runtime,
+                nal_len_size,
+                pending_config,
+                initial_config,
+            })
+        }
     }
 
     fn decode(&mut self, data: &[u8], pts: Duration, is_sync: bool) -> Result<()> {
@@ -160,14 +387,31 @@ impl HwDecoder {
             payload = prefixed;
             send_sync = true;
         }
-        let pkt = baabaabaabaabababbababbaa::EncodedVideoPacket {
-            payload: Bytes::from(payload),
-            timestamp: pts,
-            keyframe: send_sync,
-        };
-        self.input
-            .decode(pkt)
-            .map_err(|e| anyhow::anyhow!("hw decode: {e:?}"))
+        #[cfg(target_arch = "wasm32")]
+        {
+            // Forward to the main-thread pump. The send is synchronous and
+            // infallible unless the pump is gone; "Dropped" matches the HW
+            // failure filter in `send_packet`, which falls back to SW.
+            self.pump
+                .cmd_tx
+                .send(WasmHwCmd::Decode {
+                    data: payload,
+                    pts,
+                    keyframe: send_sync,
+                })
+                .map_err(|_| anyhow::anyhow!("hw decode: Dropped (pump closed)"))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let pkt = baabaabaabaabababbababbaa::EncodedVideoPacket {
+                payload: Bytes::from(payload),
+                timestamp: pts,
+                keyframe: send_sync,
+            };
+            self.input
+                .decode(pkt)
+                .map_err(|e| anyhow::anyhow!("hw decode: {e:?}"))
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -190,64 +434,29 @@ impl HwDecoder {
         Ok(out)
     }
 
-    /// WASM drain: `try_frame()` returns hardware frames (output_mode is
-    /// PreferHardware); each is copied async via `spawn_local` and completed
-    /// copies are collected from the channel. Synchronous `Cpu` output is
-    /// unsupported by design on wasm, so this path never calls it.
+    /// WASM drain: collects completed CPU frames from the main-thread pump.
+    /// Never touches WebCodecs directly, so the sync `try_frame()` limitation
+    /// does not apply. Pump failures surface as HW errors so the caller falls
+    /// back to SW (same contract as the native drain below).
     #[cfg(target_arch = "wasm32")]
     fn try_drain_hw_frames(
         &mut self,
     ) -> Result<Vec<baabaabaabaabababbababbaa::VideoFrame>, anyhow::Error> {
         use baabaabaabaabababbababbaa::{VideoFrame, VideoPlanes};
-        loop {
-            match self.output.try_frame() {
-                Ok(Some(f)) => {
-                    if f.is_hardware() {
-                        let fmt = f.format;
-                        let w = f.dimensions.width;
-                        let h = f.dimensions.height;
-                        let pts = f.timestamp;
-                        // Move the hardware buffer out for the async copy.
-                        let hw = match f.planes {
-                            VideoPlanes::Hardware(hw) => hw,
-                            VideoPlanes::Cpu(_) => {
-                                continue;
-                            }
-                        };
-                        let tx = self.copy_tx.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            match hw.copy_to_cpu_async().await {
-                                Ok(data) => {
-                                    let _ = tx.send(PendingWasmCopy {
-                                        data,
-                                        width: w,
-                                        height: h,
-                                        format: fmt,
-                                        pts,
-                                    });
-                                }
-                                Err(e) => {
-                                    log::warn!("wasm copy_to_cpu failed: {e:?}");
-                                }
-                            }
-                        });
-                    }
-                    // Cpu frames (unexpected on wasm) are dropped here;
-                    // completed async copies are collected below.
-                }
-                Ok(None) => break,
-                Err(e) => {
-                    return Err(anyhow::anyhow!("hw try_frame: {e:?}"));
-                }
-            }
+        if let Ok(WasmHwEvent::Failed(msg)) = self.pump.event_rx.try_recv() {
+            return Err(anyhow::anyhow!("hw try_frame: Platform({msg})"));
         }
         let mut out = Vec::new();
-        while let Ok(p) = self.copy_rx.try_recv() {
+        while let Ok(f) = self.pump.frame_rx.try_recv() {
+            if f.epoch != self.pump.epoch {
+                // Stale frame from the pre-reset decoder generation.
+                continue;
+            }
             out.push(VideoFrame {
-                dimensions: Dimensions::new(p.width, p.height),
-                format: p.format,
-                timestamp: p.pts,
-                planes: VideoPlanes::Cpu(p.data),
+                dimensions: Dimensions::new(f.width, f.height),
+                format: f.format,
+                timestamp: f.pts,
+                planes: VideoPlanes::Cpu(f.data),
             });
         }
         Ok(out)
@@ -262,7 +471,8 @@ impl HwDecoder {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            // WebCodecs flush is async but try_frame will drain anyway; no-op for now
+            // The pump flushes asynchronously; drained on subsequent polls.
+            let _ = self.pump.cmd_tx.send(WasmHwCmd::Flush);
         }
         Ok(())
     }
@@ -272,6 +482,7 @@ impl HwDecoder {
         if !self.initial_config.is_empty() {
             self.pending_config = Some(self.initial_config.clone());
         }
+        #[cfg(not(target_arch = "wasm32"))]
         loop {
             match self.output.try_frame() {
                 Ok(Some(_)) => {}
@@ -281,7 +492,17 @@ impl HwDecoder {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            while self.copy_rx.try_recv().is_ok() {}
+            // Bump the epoch so late frames from the pre-reset decoder
+            // generation are discarded, then drop anything already queued.
+            // The pump recreates the decoder, giving the new segment clean
+            // reference state.
+            self.pump.epoch = self.pump.epoch.wrapping_add(1);
+            let _ = self
+                .pump
+                .cmd_tx
+                .send(WasmHwCmd::Reset { epoch: self.pump.epoch });
+            while self.pump.frame_rx.try_recv().is_ok() {}
+            while self.pump.event_rx.try_recv().is_ok() {}
         }
     }
 }

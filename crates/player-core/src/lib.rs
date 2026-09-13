@@ -633,6 +633,12 @@ fn audio_thread_wasm(
 
     // Real thread (Web Worker) via web_workers. blocking I/O, channel
     // sends, and thread::sleep all work correctly here.
+    //
+    // The worker thread can never drive JS promises, so hardware video
+    // decoding runs in an async pump on the main-thread event loop; start
+    // its supervisor here (main thread, `spawn_local` context).
+    #[cfg(all(feature = "hw", target_arch = "wasm32"))]
+    crate::video::start_wasm_hw_supervisor();
     let thread_video_tx = video_tx.clone();
     web_workers::spawn(move || {
         let result = run_command_loop(
