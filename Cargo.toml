@@ -41,7 +41,7 @@ winit = { version = "0.30" }
 getrandom = { version = "0.3", features = ["wasm_js"] }
 wgpu = { version = "30", features = ["webgpu", "webgl"] }
 
-videoson = { git = "https://github.com/mlm-games/videoson", features = [
+videoson = { version = "0.5", features = [
     "h264",
     "h265",
     "vp8",

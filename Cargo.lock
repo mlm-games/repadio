@@ -4976,7 +4976,8 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "videoson"
 version = "0.5.3"
-source = "git+https://github.com/mlm-games/videoson#3a8bbd33877c87aaa137a424d21da7e49d6ab09b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "147a8991feb0e4f13cecfca327857ecc966ce62f21e125d2d8d78cbcd6e959fe"
 dependencies = [
  "videoson-codec-h264",
  "videoson-codec-h265",
@@ -4991,7 +4992,8 @@ dependencies = [
 [[package]]
 name = "videoson-codec-h264"
 version = "0.5.3"
-source = "git+https://github.com/mlm-games/videoson#3a8bbd33877c87aaa137a424d21da7e49d6ab09b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9ecc8fff0d30a6b674860af324fa1de4b8b11e2aeee8488d5ec0f9fc58b5d99"
 dependencies = [
  "rust_h264",
  "videoson-core",
@@ -5000,7 +5002,8 @@ dependencies = [
 [[package]]
 name = "videoson-codec-h265"
 version = "0.5.3"
-source = "git+https://github.com/mlm-games/videoson#3a8bbd33877c87aaa137a424d21da7e49d6ab09b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "545ee8eaa863666b5f75d5777e9df8ba6728ec2cadb8df97a7d34983ac250f66"
 dependencies = [
  "oxideav-core",
  "oxideav-h265",
@@ -5011,7 +5014,8 @@ dependencies = [
 [[package]]
 name = "videoson-codec-rav1d"
 version = "0.5.3"
-source = "git+https://github.com/mlm-games/videoson#3a8bbd33877c87aaa137a424d21da7e49d6ab09b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "821616bc3c620368d1acd2acef744fba425e7d50f7964eefd869166454ed10ec"
 dependencies = [
  "rav1d-safe",
  "videoson-core",
@@ -5020,7 +5024,8 @@ dependencies = [
 [[package]]
 name = "videoson-codec-vp8"
 version = "0.5.3"
-source = "git+https://github.com/mlm-games/videoson#3a8bbd33877c87aaa137a424d21da7e49d6ab09b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73274dcdbdc3a16fbf36780e8966aa05551021263cbc0ad719d90699e5ca1ae1"
 dependencies = [
  "oxideav-vp8",
  "videoson-core",
@@ -5029,7 +5034,8 @@ dependencies = [
 [[package]]
 name = "videoson-codec-vp9"
 version = "0.5.3"
-source = "git+https://github.com/mlm-games/videoson#3a8bbd33877c87aaa137a424d21da7e49d6ab09b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa2561d8b590deaef09c04aafdd751f82b192caed8ffc532387ce3ae35399315"
 dependencies = [
  "oxideav-core",
  "oxideav-vp9",
@@ -5039,17 +5045,20 @@ dependencies = [
 [[package]]
 name = "videoson-common"
 version = "0.5.3"
-source = "git+https://github.com/mlm-games/videoson#3a8bbd33877c87aaa137a424d21da7e49d6ab09b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b90088552866a18d965877019033d9f34cf449661bb7181ab20e1ee7988c75c9"
 
 [[package]]
 name = "videoson-core"
 version = "0.5.3"
-source = "git+https://github.com/mlm-games/videoson#3a8bbd33877c87aaa137a424d21da7e49d6ab09b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "efa3ebb4675166382f762ffe4fc855025414f06bc16958caa5a3ecc29f8ed88a"
 
 [[package]]
 name = "videoson-format-ivf"
 version = "0.5.3"
-source = "git+https://github.com/mlm-games/videoson#3a8bbd33877c87aaa137a424d21da7e49d6ab09b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "39ad3759e538c592665c73aa43b3b148dcf0c068bf9b497bfddec65cbf1b40fe"
 dependencies = [
  "oxideav-bitstream",
  "videoson-common",
