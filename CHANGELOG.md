@@ -1,3 +1,13 @@
+## v0.3.1
+
+- Update AUR deploy action to use main branch
+- use videoson from crates
+- baa4ba fix test
+- use ropfs
+- save test
+- use the crates version of baaba
+
+
 ## v0.3.0
 
 - fix: gate hw deps for wasm, add linux vaapi deps

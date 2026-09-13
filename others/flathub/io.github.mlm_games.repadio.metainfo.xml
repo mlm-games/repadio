@@ -64,6 +64,18 @@
     <control>touch</control>
   </supports>
   <releases>
+    <release version="0.3.1" date="2026-09-13" type="stable">
+      <description>
+        <ul>
+          <li>Update AUR deploy action to use main branch</li>
+          <li>use videoson from crates</li>
+          <li>baa4ba fix test</li>
+          <li>use ropfs</li>
+          <li>save test</li>
+          <li>use the crates version of baaba</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-09-01" type="stable">
       <description>
         <ul>
