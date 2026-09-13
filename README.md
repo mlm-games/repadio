@@ -11,7 +11,7 @@ Reference app for the [Repose](https://github.com/mlm-games/repose) GUI stack. R
 - Video via [videoson](https://github.com/mlm-games/videoson) (H.264, H.265, AV1/rav1d) → NV12 GPU path  
 - A/V sync (audio clock master; silence injection for video-only files)  
 - Playlist, metadata / album art, native file pickers  
-- Desktop, Android (intents), Web (OPFS + COOP/COEP)
+- Desktop, Android (intents), Web (ropfs + COOP/COEP)
 
 ## Build
 

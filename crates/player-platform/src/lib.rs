@@ -1,4 +1,4 @@
-//! player-platform: platform glue (file picking + WASM OPFS persistence).
+//! player-platform: platform glue (file picking + WASM ropfs persistence).
 
 use std::path::PathBuf;
 
@@ -161,33 +161,33 @@ pub fn pick_audio_files_async(on_done: impl FnOnce(Vec<PickedFile>) + Send + 'st
     }
 }
 
-/// OPFS-backed persistent key-value store for WASM.
+/// ropfs-backed persistent key-value store for WASM.
 /// No-op on desktop/Android.
 pub mod wasm_persist {
-    /// Initialise OPFS directories. Must be called once at startup on WASM.
+    /// Initialise ropfs directories. Must be called once at startup on WASM.
     /// Safe to call on all platforms (no-op outside WASM).
     pub async fn init() -> Result<(), String> {
         #[cfg(target_arch = "wasm32")]
         {
             let dirs = ["config", "cache", "library"];
             for dir in &dirs {
-                opfs::ensure_dir(dir)
+                ropfs::ensure_dir(dir)
                     .await
-                    .map_err(|e| format!("OPFS init: {e}"))?;
+                    .map_err(|e| format!("ropfs init: {e}"))?;
             }
-            log::info!("OPFS initialised");
+            log::info!("ropfs initialised");
         }
         #[cfg(not(target_arch = "wasm32"))]
         let _ = ();
         Ok(())
     }
 
-    /// Read a string from OPFS. Returns `None` if the key doesn't exist.
+    /// Read a string from ropfs. Returns `None` if the key doesn't exist.
     /// No-op outside WASM.
     pub async fn read(key: &str) -> Option<String> {
         #[cfg(target_arch = "wasm32")]
         {
-            opfs::read(key)
+            ropfs::read(key)
                 .await
                 .ok()
                 .and_then(|d| String::from_utf8(d.to_vec()).ok())
@@ -199,11 +199,11 @@ pub mod wasm_persist {
         }
     }
 
-    /// Write a string to OPFS.
+    /// Write a string to ropfs.
     pub async fn write(key: &str, data: &str) -> Result<(), String> {
         #[cfg(target_arch = "wasm32")]
         {
-            opfs::write(key, data.as_bytes())
+            ropfs::write(key, data.as_bytes())
                 .await
                 .map_err(|e| e.to_string())
         }

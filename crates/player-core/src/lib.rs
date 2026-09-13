@@ -68,7 +68,7 @@ pub enum PlaybackState {
 
 /// A media source that the decoder can open.
 /// Abstracts over native filesystem paths and in-memory byte buffers so
-/// the same pipeline works on desktop, WASM (browser blobs / OPFS), and
+/// the same pipeline works on desktop, WASM (browser blobs / ropfs), and
 /// Android (content:// URIs).
 #[derive(Debug, Clone, PartialEq, Hash)]
 pub enum MediaSource {

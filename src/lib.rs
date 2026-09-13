@@ -524,7 +524,7 @@ pub async fn wasm_main() {
     repose_core::locals::set_theme_default(app_theme());
 
     if let Err(e) = player_platform::wasm_persist::init().await {
-        log::error!("OPFS init failed: {e}");
+        log::error!("ropfs init failed: {e}");
     }
 
     player_platform::init();
