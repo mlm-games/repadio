@@ -55,7 +55,7 @@ jobs:
           cat PKGBUILD
 
       - name: Publish to AUR
-        uses: mlm-games/aur-deploy-action@v1
+        uses: mlm-games/aur-deploy-action@main
         with:
           package: repadio-bin
           ssh_key: ${{ secrets.AUR_SSH_KEY }}
