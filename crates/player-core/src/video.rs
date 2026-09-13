@@ -116,7 +116,7 @@ struct WasmHwPump {
 #[cfg(all(feature = "hw", target_arch = "wasm32"))]
 struct WasmHwCreateReq {
     config: VideoDecoderConfig,
-    reply: crossbeam_channel::Sender<Result<WasmHwPumpHandles, String>>,
+    reply: web_workers::sync::mpsc::Sender<Result<WasmHwPumpHandles, String>>,
 }
 
 #[cfg(all(feature = "hw", target_arch = "wasm32"))]
@@ -146,14 +146,15 @@ pub(crate) fn start_wasm_hw_supervisor() {
 #[cfg(all(feature = "hw", target_arch = "wasm32"))]
 fn wasm_hw_create_pump(config: VideoDecoderConfig) -> Option<WasmHwPump> {
     let supervisor = WASM_HW_SUPERVISOR.get()?;
-    let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+    let (reply_tx, reply_rx) = web_workers::sync::mpsc::channel();
     supervisor
         .send(WasmHwCreateReq {
             config,
             reply: reply_tx,
         })
         .ok()?;
-    match reply_rx.recv_timeout(web_time::Duration::from_secs(10)) {
+    let deadline = web_workers::sync::Instant::now() + std::time::Duration::from_secs(10);
+    match reply_rx.recv_sync_timeout(deadline) {
         Ok(Ok(h)) => Some(WasmHwPump {
             cmd_tx: h.cmd_tx,
             frame_rx: h.frame_rx,
@@ -164,8 +165,16 @@ fn wasm_hw_create_pump(config: VideoDecoderConfig) -> Option<WasmHwPump> {
             log::info!("HW decoder unavailable ({e}), using SW");
             None
         }
-        Err(_) => {
+        Err(web_workers::sync::mpsc::RecvTimeoutError::Timeout) => {
             log::warn!("HW supervisor did not respond, using SW");
+            None
+        }
+        Err(web_workers::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            log::warn!("HW supervisor channel closed, using SW");
+            None
+        }
+        Err(_) => {
+            log::warn!("HW supervisor reply failed, using SW");
             None
         }
     }
@@ -195,7 +204,7 @@ async fn wasm_hw_supervisor_loop(mut rx: tokio::sync::mpsc::UnboundedReceiver<Wa
             }
             Err(e) => Err(format!("{e:?}")),
         };
-        let _ = req.reply.send(result);
+        let _ = req.reply.send_sync(result);
     }
 }
 
