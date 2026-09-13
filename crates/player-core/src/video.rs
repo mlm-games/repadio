@@ -63,24 +63,8 @@ struct HwDecoder {
 #[cfg(feature = "hw")]
 impl HwDecoder {
     fn try_new(codec: HwCodecId, width: u32, height: u32, extradata: &[u8]) -> Option<Self> {
-        // TODO: WASM WebCodecs async copy_to_cpu not yet wired to sync try_frame.
-        if cfg!(target_arch = "wasm32") {
-            log::info!(
-                "HW decoder disabled for {}x{} (wasm async), using SW",
-                width,
-                height
-            );
-            return None;
-        }
-        if cfg!(target_os = "linux")
-            && (width == 1920 && height == 1080 || matches!(codec, HwCodecId::Hevc))
-        {
-            log::info!(
-                "HW decoder disabled for {}x{} codec {:?} (linux VAAPI tiling/HEVC), using SW",
-                width,
-                height,
-                codec
-            );
+        if width == 0 || height == 0 {
+            log::info!("HW decoder disabled for 0-sized stream, using SW");
             return None;
         }
         let description = if extradata.is_empty() {
@@ -232,7 +216,8 @@ fn hw_frame_to_decoded(
     let (y_plane, uv_plane) = match frame.format {
         baabaabaabaabababbababbaa::PixelFormat::Nv12 => {
             let y_size = (w as usize) * (h as usize);
-            let uv_size = (w as usize) * ((h as usize + 1) / 2);
+            let uv_row = ((w as usize + 1) / 2) * 2;
+            let uv_size = uv_row * ((h as usize + 1) / 2);
             if data.len() < y_size + uv_size {
                 log::warn!("hw Nv12 frame too short");
                 return None;
@@ -942,7 +927,7 @@ pub fn parse_avcc(data: &[u8]) -> Vec<u8> {
 }
 
 pub fn avcc_to_annexb_with_len(data: &[u8], len_size: usize) -> Vec<u8> {
-    if len_size == 0 {
+    if !(1..=4).contains(&len_size) {
         return data.to_vec();
     }
     let start_code: &[u8] = &[0x00, 0x00, 0x00, 0x01];
