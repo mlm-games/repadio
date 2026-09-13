@@ -569,6 +569,7 @@ impl VideoDecoder {
                     if msg.contains("Dropped")
                         || msg.contains("NoBackend")
                         || msg.contains("Platform")
+                        || msg.contains("InvalidConfig")
                         || msg.contains("Only linear")
                     {
                         if let Some((codec, w, h, extradata)) = self.fallback.take() {
@@ -729,6 +730,7 @@ impl VideoDecoder {
                         if msg.contains("Dropped")
                             || msg.contains("NoBackend")
                             || msg.contains("Platform")
+                            || msg.contains("InvalidConfig")
                             || msg.contains("Only linear")
                         {
                             self.fallback_to_software(&msg);
