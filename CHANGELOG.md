@@ -1,3 +1,8 @@
+## v0.3.2
+
+- No user-facing changes were mentioned since previous release
+
+
 ## v0.3.1
 
 - Update AUR deploy action to use main branch
