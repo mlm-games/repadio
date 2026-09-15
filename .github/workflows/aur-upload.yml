@@ -1,5 +1,7 @@
 name: AUR upload (repadio-bin)
 
+# Thin dispatcher: rust-app-release dispatches here with version_name,
+# we delegate to the shared reusable (desktop entry + icon included).
 on:
   workflow_dispatch:
     inputs:
@@ -9,53 +11,22 @@ on:
 
 jobs:
   aur-upload:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Download release artifacts
-        uses: robinraju/release-downloader@v1
-        with:
-          tag: v${{ inputs.version_name }}
-          fileName: '*.tar.gz'
-          out-file-path: artifacts
-
-      - name: Generate PKGBUILD
-        shell: bash
-        run: |
-          set -euo pipefail
-          PKG="repadio"
-          VER="${{ inputs.version_name }}"
-
-          SHA256_X86_64=$(sha256sum artifacts/*x86_64*.tar.gz | cut -d' ' -f1)
-          SHA256_AARCH64=$(sha256sum artifacts/*aarch64*.tar.gz | cut -d' ' -f1)
-
-          cat > PKGBUILD <<-EOF
-          # Maintainer: MLM Games <dev@mlm.games>
-          pkgname=${PKG}-bin
-          pkgver=${VER}
-          pkgrel=1
-          pkgdesc="Pure-Rust audio player built with Symphonia and CPAL on the Repose GUI framework"
-          arch=('x86_64' 'aarch64')
-          url="https://github.com/mlm-games/repadio"
-          license=('LGPL-2.1')
-          provides=('${PKG}')
-          conflicts=('${PKG}')
-          source_x86_64=("https://github.com/mlm-games/repadio/releases/download/v${VER}/${PKG}-${VER}-x86_64-unknown-linux-gnu.tar.gz")
-          source_aarch64=("https://github.com/mlm-games/repadio/releases/download/v${VER}/${PKG}-${VER}-aarch64-unknown-linux-gnu.tar.gz")
-          sha256sums_x86_64=('${SHA256_X86_64}')
-          sha256sums_aarch64=('${SHA256_AARCH64}')
-
-          package() {
-            cd "\${srcdir}"
-            install -Dm755 ${PKG} "\${pkgdir}/usr/bin/${PKG}"
-            install -Dm644 LICENSE "\${pkgdir}/usr/share/licenses/${PKG}/LICENSE"
-          }
-          EOF
-          cat PKGBUILD
-
-      - name: Publish to AUR
-        uses: mlm-games/aur-deploy-action@main
-        with:
-          package: repadio-bin
-          ssh_key: ${{ secrets.AUR_SSH_KEY }}
+    uses: mlm-games/ci/.github/workflows/aur-upload.yml@v1
+    with:
+      pkgname: repadio-bin
+      pkgdesc: "Pure-Rust audio player built with Symphonia and CPAL on the Repose GUI framework"
+      binary-name: repadio-${{ inputs.version_name }}-x86_64-unknown-linux-gnu.tar.gz
+      binary-name-aarch64: repadio-${{ inputs.version_name }}-aarch64-unknown-linux-gnu.tar.gz
+      app-name: "Repadio"
+      license: "GPL-3.0-or-later"
+      provides: "repadio"
+      conflicts: "repadio"
+      desktop-categories: "Audio;AudioVideo;Player;"
+      desktop-mime-type: "audio/mpeg;audio/flac;audio/ogg;audio/x-wav;audio/mp4;audio/aac;video/mp4;video/webm;video/x-matroska;video/quicktime;"
+      desktop-args: "%F"
+      icon-url: "https://raw.githubusercontent.com/mlm-games/repadio/main/others/packaging/icon.svg"
+      version: ${{ inputs.version_name }}
+      maintainer-name: "MLM Games"
+      maintainer-email: "dev@mlm.games"
+    secrets:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
