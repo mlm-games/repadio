@@ -151,6 +151,8 @@ struct PlayerSettings {
     default_speed: f32,
     remember_speed: bool,
     show_playlist_thumbs: bool,
+    hw_accel: bool,
+    disable_sw_decoders: bool,
 }
 
 impl Default for PlayerSettings {
@@ -165,14 +167,23 @@ impl Default for PlayerSettings {
             default_speed: 1.0,
             remember_speed: true,
             show_playlist_thumbs: true,
+            hw_accel: true,
+            disable_sw_decoders: false,
         }
     }
 }
 
 impl PlayerSettings {
+    fn video_prefs(&self) -> player_core::video::VideoDecoderPrefs {
+        player_core::video::VideoDecoderPrefs {
+            try_hw: self.hw_accel,
+            allow_sw: !self.disable_sw_decoders,
+        }
+    }
+
     fn to_json(&self) -> String {
         format!(
-            r#"{{"auto_fullscreen_on_open":{},"hide_controls_ms":{},"seek_small_s":{},"seek_medium_s":{},"seek_large_s":{},"volume_step":{},"default_speed":{},"remember_speed":{},"show_playlist_thumbs":{}}}"#,
+            r#"{{"auto_fullscreen_on_open":{},"hide_controls_ms":{},"seek_small_s":{},"seek_medium_s":{},"seek_large_s":{},"volume_step":{},"default_speed":{},"remember_speed":{},"show_playlist_thumbs":{},"hw_accel":{},"disable_sw_decoders":{}}}"#,
             self.auto_fullscreen_on_open,
             self.hide_controls_ms,
             self.seek_small_s,
@@ -182,6 +193,8 @@ impl PlayerSettings {
             self.default_speed,
             self.remember_speed,
             self.show_playlist_thumbs,
+            self.hw_accel,
+            self.disable_sw_decoders,
         )
     }
 
@@ -207,6 +220,8 @@ impl PlayerSettings {
         out.default_speed = get_f("default_speed", 1.0) as f32;
         out.remember_speed = !s.contains("\"remember_speed\":false");
         out.show_playlist_thumbs = !s.contains("\"show_playlist_thumbs\":false");
+        out.hw_accel = !s.contains("\"hw_accel\":false");
+        out.disable_sw_decoders = get_bool("disable_sw_decoders");
         out
     }
 }
@@ -498,7 +513,7 @@ pub fn run_desktop() -> anyhow::Result<()> {
 
     player_platform::init();
 
-    let player = AudioPlayer::spawn()?;
+    let player = AudioPlayer::spawn_with_prefs(load_settings_sync().video_prefs())?;
     let video_sink = Rc::new(RefCell::new(VideoSink::new(
         player.video_rx(),
         player.clone(),
@@ -535,7 +550,8 @@ pub async fn wasm_main() {
 
     player_platform::init();
 
-    let player = AudioPlayer::spawn().expect("failed to spawn audio player");
+    let player =
+        AudioPlayer::spawn_with_prefs(load_settings_sync().video_prefs()).expect("failed to spawn audio player");
     let video_sink = Rc::new(RefCell::new(VideoSink::new(
         player.video_rx(),
         player.clone(),
@@ -626,7 +642,8 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
         }
     }
 
-    let player = AudioPlayer::spawn().expect("failed to spawn audio player");
+    let player =
+        AudioPlayer::spawn_with_prefs(load_settings_sync().video_prefs()).expect("failed to spawn audio player");
     let video_sink = Rc::new(RefCell::new(VideoSink::new(
         player.video_rx(),
         player.clone(),
@@ -2459,6 +2476,68 @@ fn SettingsScreen(
                                     let mut s = settings.get();
                                     s.remember_speed = v;
                                     save_settings_sync(&s);
+                                    settings.set(s);
+                                }
+                            },
+                            m3::SwitchConfig::default(),
+                        ),
+                    )),
+                )),
+                Column(Modifier::new().fill_max_width().gap(10.0)).child((
+                    Text("Video").size(14.0).color(theme().primary),
+                    Row(
+                        Modifier::new()
+                            .fill_max_width()
+                            .align_items(AlignItems::CENTER),
+                    )
+                    .child((
+                        Column(Modifier::new().weight(1.0).gap(2.0)).child((
+                            Text("Hardware decoding").size(14.0),
+                            Text("Use VAAPI / MediaCodec / WebCodecs when available. Takes effect on next file.")
+                                .size(12.0)
+                                .color(theme().on_surface.with_alpha(160)),
+                        )),
+                        m3::Switch(
+                            s.hw_accel,
+                            {
+                                let settings = settings.clone();
+                                let player = player.clone();
+                                move |v| {
+                                    let mut s = settings.get();
+                                    s.hw_accel = v;
+                                    save_settings_sync(&s);
+                                    let _ = player.set_video_prefs(s.video_prefs());
+                                    settings.set(s);
+                                }
+                            },
+                            m3::SwitchConfig::default(),
+                        ),
+                    )),
+                )),
+                Column(Modifier::new().fill_max_width().gap(10.0)).child((
+                    Text("Dev options").size(14.0).color(theme().primary),
+                    Row(
+                        Modifier::new()
+                            .fill_max_width()
+                            .align_items(AlignItems::CENTER),
+                    )
+                    .child((
+                        Column(Modifier::new().weight(1.0).gap(2.0)).child((
+                            Text("Disable software decoders").size(14.0),
+                            Text("HW-only mode: video fails if no hardware backend works. Takes effect on next file.")
+                                .size(12.0)
+                                .color(theme().on_surface.with_alpha(160)),
+                        )),
+                        m3::Switch(
+                            s.disable_sw_decoders,
+                            {
+                                let settings = settings.clone();
+                                let player = player.clone();
+                                move |v| {
+                                    let mut s = settings.get();
+                                    s.disable_sw_decoders = v;
+                                    save_settings_sync(&s);
+                                    let _ = player.set_video_prefs(s.video_prefs());
                                     settings.set(s);
                                 }
                             },

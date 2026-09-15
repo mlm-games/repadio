@@ -49,6 +49,47 @@ enum DecoderInner {
     Hardware(Box<HwDecoder>),
 }
 
+/// Preferences controlling hardware vs software video decoding.
+/// Sourced from UI settings; applied when a file's decoder is created.
+#[derive(Debug, Clone, Copy)]
+pub struct VideoDecoderPrefs {
+    /// Try a hardware backend first (VAAPI/MediaCodec/WebCodecs).
+    pub try_hw: bool,
+    /// Allow software decoding, either directly or as fallback when
+    /// hardware fails. When false, decoding is HW-only and fails if no
+    /// hardware backend works.
+    pub allow_sw: bool,
+}
+
+impl Default for VideoDecoderPrefs {
+    fn default() -> Self {
+        Self {
+            try_hw: true,
+            allow_sw: true,
+        }
+    }
+}
+
+impl VideoDecoderPrefs {
+    pub fn hw_only() -> Self {
+        Self {
+            try_hw: true,
+            allow_sw: false,
+        }
+    }
+
+    pub(crate) fn bits(&self) -> u32 {
+        (u32::from(self.try_hw)) | (u32::from(self.allow_sw) << 1)
+    }
+
+    pub(crate) fn from_bits(bits: u32) -> Self {
+        Self {
+            try_hw: bits & 1 != 0,
+            allow_sw: bits & 2 != 0,
+        }
+    }
+}
+
 #[cfg(feature = "hw")]
 struct HwDecoder {
     #[cfg(not(target_arch = "wasm32"))]
@@ -656,27 +697,43 @@ impl VideoDecoder {
         Ok(Box::new(inner))
     }
 
-    pub fn new_h264(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
+    pub fn new_h264(
+        width: u32,
+        height: u32,
+        extradata: &[u8],
+        prefs: VideoDecoderPrefs,
+    ) -> Result<Self> {
         #[cfg(feature = "hw")]
         {
-            if let Some(hw) = HwDecoder::try_new(
-                HwCodecId::H264 {
-                    profile: None,
-                    level: None,
-                },
-                width,
-                height,
-                extradata,
-            ) {
-                log::info!("video: H.264 HW decoder selected [hw] hwdec-current=hw");
-                return Ok(Self {
-                    inner: DecoderInner::Hardware(Box::new(hw)),
-                    reorder: Vec::new(),
-                    fallback: Some((FallbackCodec::H264, width, height, extradata.to_vec())),
-                });
-            } else {
-                log::info!("video: H.264 HW unavailable, using SW [sw]");
+            if prefs.try_hw {
+                if let Some(hw) = HwDecoder::try_new(
+                    HwCodecId::H264 {
+                        profile: None,
+                        level: None,
+                    },
+                    width,
+                    height,
+                    extradata,
+                ) {
+                    log::info!("video: H.264 HW decoder selected [hw] hwdec-current=hw");
+                    return Ok(Self {
+                        inner: DecoderInner::Hardware(Box::new(hw)),
+                        reorder: Vec::new(),
+                        fallback: if prefs.allow_sw {
+                            Some((FallbackCodec::H264, width, height, extradata.to_vec()))
+                        } else {
+                            None
+                        },
+                    });
+                } else if prefs.allow_sw {
+                    log::info!("video: H.264 HW unavailable, using SW [sw]");
+                } else {
+                    anyhow::bail!("H.264 hardware decoder unavailable and software is disabled");
+                }
             }
+        }
+        if !prefs.allow_sw {
+            anyhow::bail!("H.264 hardware is disabled and software is disabled");
         }
         Ok(Self {
             inner: DecoderInner::Software(Self::software_fallback_h264(width, height, extradata)?),
@@ -708,19 +765,35 @@ impl VideoDecoder {
         Ok(Box::new(inner))
     }
 
-    pub fn new_av1(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
+    pub fn new_av1(
+        width: u32,
+        height: u32,
+        extradata: &[u8],
+        prefs: VideoDecoderPrefs,
+    ) -> Result<Self> {
         #[cfg(feature = "hw")]
         {
-            if let Some(hw) = HwDecoder::try_new(HwCodecId::Av1, width, height, extradata) {
-                log::info!("video: AV1 HW decoder selected [hw] hwdec-current=hw");
-                return Ok(Self {
-                    inner: DecoderInner::Hardware(Box::new(hw)),
-                    reorder: Vec::new(),
-                    fallback: Some((FallbackCodec::Av1, width, height, extradata.to_vec())),
-                });
-            } else {
-                log::info!("video: AV1 HW unavailable, using SW [sw]");
+            if prefs.try_hw {
+                if let Some(hw) = HwDecoder::try_new(HwCodecId::Av1, width, height, extradata) {
+                    log::info!("video: AV1 HW decoder selected [hw] hwdec-current=hw");
+                    return Ok(Self {
+                        inner: DecoderInner::Hardware(Box::new(hw)),
+                        reorder: Vec::new(),
+                        fallback: if prefs.allow_sw {
+                            Some((FallbackCodec::Av1, width, height, extradata.to_vec()))
+                        } else {
+                            None
+                        },
+                    });
+                } else if prefs.allow_sw {
+                    log::info!("video: AV1 HW unavailable, using SW [sw]");
+                } else {
+                    anyhow::bail!("AV1 hardware decoder unavailable and software is disabled");
+                }
             }
+        }
+        if !prefs.allow_sw {
+            anyhow::bail!("AV1 hardware is disabled and software is disabled");
         }
         Ok(Self {
             inner: DecoderInner::Software(Self::software_fallback_av1(width, height, extradata)?),
@@ -752,19 +825,35 @@ impl VideoDecoder {
         Ok(Box::new(inner))
     }
 
-    pub fn new_vp8(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
+    pub fn new_vp8(
+        width: u32,
+        height: u32,
+        extradata: &[u8],
+        prefs: VideoDecoderPrefs,
+    ) -> Result<Self> {
         #[cfg(feature = "hw")]
         {
-            if let Some(hw) = HwDecoder::try_new(HwCodecId::Vp8, width, height, extradata) {
-                log::info!("video: VP8 HW decoder selected [hw] hwdec-current=hw");
-                return Ok(Self {
-                    inner: DecoderInner::Hardware(Box::new(hw)),
-                    reorder: Vec::new(),
-                    fallback: Some((FallbackCodec::Vp8, width, height, extradata.to_vec())),
-                });
-            } else {
-                log::info!("video: VP8 HW unavailable, using SW [sw]");
+            if prefs.try_hw {
+                if let Some(hw) = HwDecoder::try_new(HwCodecId::Vp8, width, height, extradata) {
+                    log::info!("video: VP8 HW decoder selected [hw] hwdec-current=hw");
+                    return Ok(Self {
+                        inner: DecoderInner::Hardware(Box::new(hw)),
+                        reorder: Vec::new(),
+                        fallback: if prefs.allow_sw {
+                            Some((FallbackCodec::Vp8, width, height, extradata.to_vec()))
+                        } else {
+                            None
+                        },
+                    });
+                } else if prefs.allow_sw {
+                    log::info!("video: VP8 HW unavailable, using SW [sw]");
+                } else {
+                    anyhow::bail!("VP8 hardware decoder unavailable and software is disabled");
+                }
             }
+        }
+        if !prefs.allow_sw {
+            anyhow::bail!("VP8 hardware is disabled and software is disabled");
         }
         Ok(Self {
             inner: DecoderInner::Software(Self::software_fallback_vp8(width, height, extradata)?),
@@ -801,19 +890,35 @@ impl VideoDecoder {
         Ok(Box::new(inner))
     }
 
-    pub fn new_vp9(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
+    pub fn new_vp9(
+        width: u32,
+        height: u32,
+        extradata: &[u8],
+        prefs: VideoDecoderPrefs,
+    ) -> Result<Self> {
         #[cfg(feature = "hw")]
         {
-            if let Some(hw) = HwDecoder::try_new(HwCodecId::Vp9, width, height, extradata) {
-                log::info!("video: VP9 HW decoder selected [hw] hwdec-current=hw");
-                return Ok(Self {
-                    inner: DecoderInner::Hardware(Box::new(hw)),
-                    reorder: Vec::new(),
-                    fallback: Some((FallbackCodec::Vp9, width, height, extradata.to_vec())),
-                });
-            } else {
-                log::info!("video: VP9 HW unavailable, using SW [sw]");
+            if prefs.try_hw {
+                if let Some(hw) = HwDecoder::try_new(HwCodecId::Vp9, width, height, extradata) {
+                    log::info!("video: VP9 HW decoder selected [hw] hwdec-current=hw");
+                    return Ok(Self {
+                        inner: DecoderInner::Hardware(Box::new(hw)),
+                        reorder: Vec::new(),
+                        fallback: if prefs.allow_sw {
+                            Some((FallbackCodec::Vp9, width, height, extradata.to_vec()))
+                        } else {
+                            None
+                        },
+                    });
+                } else if prefs.allow_sw {
+                    log::info!("video: VP9 HW unavailable, using SW [sw]");
+                } else {
+                    anyhow::bail!("VP9 hardware decoder unavailable and software is disabled");
+                }
             }
+        }
+        if !prefs.allow_sw {
+            anyhow::bail!("VP9 hardware is disabled and software is disabled");
         }
         Ok(Self {
             inner: DecoderInner::Software(Self::software_fallback_vp9(width, height, extradata)?),
@@ -854,19 +959,35 @@ impl VideoDecoder {
         Ok(Box::new(inner))
     }
 
-    pub fn new_hevc(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
+    pub fn new_hevc(
+        width: u32,
+        height: u32,
+        extradata: &[u8],
+        prefs: VideoDecoderPrefs,
+    ) -> Result<Self> {
         #[cfg(feature = "hw")]
         {
-            if let Some(hw) = HwDecoder::try_new(HwCodecId::Hevc, width, height, extradata) {
-                log::info!("video: HEVC HW decoder selected [hw] hwdec-current=hw");
-                return Ok(Self {
-                    inner: DecoderInner::Hardware(Box::new(hw)),
-                    reorder: Vec::new(),
-                    fallback: Some((FallbackCodec::H265, width, height, extradata.to_vec())),
-                });
-            } else {
-                log::info!("video: HEVC HW unavailable, using SW [sw]");
+            if prefs.try_hw {
+                if let Some(hw) = HwDecoder::try_new(HwCodecId::Hevc, width, height, extradata) {
+                    log::info!("video: HEVC HW decoder selected [hw] hwdec-current=hw");
+                    return Ok(Self {
+                        inner: DecoderInner::Hardware(Box::new(hw)),
+                        reorder: Vec::new(),
+                        fallback: if prefs.allow_sw {
+                            Some((FallbackCodec::H265, width, height, extradata.to_vec()))
+                        } else {
+                            None
+                        },
+                    });
+                } else if prefs.allow_sw {
+                    log::info!("video: HEVC HW unavailable, using SW [sw]");
+                } else {
+                    anyhow::bail!("HEVC hardware decoder unavailable and software is disabled");
+                }
             }
+        }
+        if !prefs.allow_sw {
+            anyhow::bail!("HEVC hardware is disabled and software is disabled");
         }
         Ok(Self {
             inner: DecoderInner::Software(Self::software_fallback_hevc(width, height, extradata)?),

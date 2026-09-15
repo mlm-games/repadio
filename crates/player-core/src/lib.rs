@@ -165,6 +165,7 @@ enum Command {
     SetMuted(bool),
     ToggleMute,
     SetSpeed(f32),
+    SetVideoPrefs(video::VideoDecoderPrefs),
     Shutdown,
 }
 
@@ -240,6 +241,9 @@ struct Shared {
     /// Incremented on every video frame successfully sent to the video channel.
     /// The audio thread can check this without waiting for the UI thread.
     video_frames_sent: AtomicU64,
+    /// Hardware-decode preference bits: bit0 = try_hw, bit1 = allow_sw.
+    /// Written by `SetVideoPrefs`, read when a file's decoder is created.
+    video_pref_bits: AtomicU32,
 }
 
 // CPAL streams are not `Send`/`Sync`, so need thread-local storage for wasm.
@@ -250,6 +254,10 @@ thread_local! {
 
 impl AudioPlayer {
     pub fn spawn() -> Result<Self> {
+        Self::spawn_with_prefs(video::VideoDecoderPrefs::default())
+    }
+
+    pub fn spawn_with_prefs(prefs: video::VideoDecoderPrefs) -> Result<Self> {
         let shared = Arc::new(Shared {
             status: Mutex::new(PlayerSnapshot::default()),
             is_playing: AtomicBool::new(false),
@@ -267,6 +275,7 @@ impl AudioPlayer {
 
             has_video: AtomicBool::new(false),
             video_frames_sent: AtomicU64::new(0),
+            video_pref_bits: AtomicU32::new(prefs.bits()),
         });
 
         let (tx, rx) = unbounded();
@@ -296,6 +305,7 @@ impl AudioPlayer {
                             out_channels,
                             out_sample_rate,
                             &thread_video_tx,
+                            prefs,
                         );
 
                         drop(stream);
@@ -310,7 +320,7 @@ impl AudioPlayer {
         }
 
         #[cfg(target_arch = "wasm32")]
-        audio_thread_wasm(rx, thread_shared, &video_tx).context("failed to start WASM audio")?;
+        audio_thread_wasm(rx, thread_shared, &video_tx, prefs).context("failed to start WASM audio")?;
 
         Ok(Self {
             inner: Arc::new(AudioPlayerInner {
@@ -420,6 +430,17 @@ impl AudioPlayer {
     }
     pub fn has_video(&self) -> bool {
         self.inner.shared.has_video.load(Ordering::Acquire)
+    }
+    /// Hardware-decode preferences. Takes effect on the next file load
+    /// (decoder creation), not mid-stream.
+    pub fn set_video_prefs(&self, prefs: video::VideoDecoderPrefs) -> Result<()> {
+        self.inner.shared.video_pref_bits.store(prefs.bits(), Ordering::Release);
+        self.send(Command::SetVideoPrefs(prefs))
+    }
+    pub fn video_prefs(&self) -> video::VideoDecoderPrefs {
+        video::VideoDecoderPrefs::from_bits(
+            self.inner.shared.video_pref_bits.load(Ordering::Acquire),
+        )
     }
 
     /// Current playback position derived from output frames.
@@ -590,6 +611,7 @@ fn audio_thread_wasm(
     cmd_rx: Receiver<Command>,
     shared: Arc<Shared>,
     video_tx: &crossbeam_channel::Sender<video::DecodedVideoFrame>,
+    prefs: video::VideoDecoderPrefs,
 ) -> Result<()> {
     #[cfg(target_feature = "atomics")]
     let host = cpal::available_hosts()
@@ -674,6 +696,7 @@ fn audio_thread_wasm(
             out_channels,
             out_sample_rate,
             &thread_video_tx,
+            prefs,
         );
         if let Err(err) = result {
             set_error(shared.as_ref(), &err);
@@ -753,14 +776,15 @@ fn set_error(shared: &Shared, err: &(impl std::fmt::Display + ?Sized)) {
     s.error = Some(err.to_string());
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_command_loop(
-    cmd_rx: &Receiver<Command>,
-    sample_tx: &Sender<f32>,
+    cmd_rx: &Receiver<Command>,    sample_tx: &Sender<f32>,
     flush_rx: &Receiver<f32>,
     shared: &Arc<Shared>,
     out_channels: usize,
     out_sample_rate: u32,
     video_tx: &crossbeam_channel::Sender<video::DecodedVideoFrame>,
+    prefs: video::VideoDecoderPrefs,
 ) -> Result<()> {
     loop {
         match cmd_rx.recv() {
@@ -787,6 +811,7 @@ fn run_command_loop(
                         out_sample_rate,
                         video_tx,
                         pending_seek.take(),
+                        prefs,
                     ) {
                         Ok(DecodeOutcome::Idle) => next = None,
                         Ok(DecodeOutcome::Seek(target, serial)) => {
@@ -817,6 +842,7 @@ fn run_command_loop(
                         out_sample_rate,
                         video_tx,
                         None,
+                        prefs,
                     ) {
                         log::error!("decode error: {err:#}");
                         set_error(shared.as_ref(), &format!("{err:#}"));
@@ -1275,6 +1301,7 @@ fn decode_file_to_queue(
     out_rate: u32,
     video_tx: &crossbeam_channel::Sender<video::DecodedVideoFrame>,
     initial_seek: Option<(Duration, u64)>,
+    prefs: video::VideoDecoderPrefs,
 ) -> Result<DecodeOutcome> {
     reset_audio_queue_and_clock(&shared, flush_rx);
     shared.load_serial.fetch_add(1, Ordering::Release);
@@ -1333,6 +1360,9 @@ fn decode_file_to_queue(
     let mut video_state: Option<VideoDecodeState> = None;
     let mut video_duration: Option<Duration> = None;
     'video_init: {
+        let prefs = video::VideoDecoderPrefs::from_bits(
+            shared.video_pref_bits.load(Ordering::Acquire),
+        );
         let vtrack = format
             .default_track(TrackType::Video)
             .or_else(|| format.first_track_known_codec(TrackType::Video));
@@ -1366,7 +1396,7 @@ fn decode_file_to_queue(
             .unwrap_or(&[]);
         let (name, dec) = match vp.codec {
             c if c == video_codec_ids::CODEC_ID_H264 => {
-                match video::VideoDecoder::new_h264(w, h, extradata) {
+                match video::VideoDecoder::new_h264(w, h, extradata, prefs) {
                     Ok(d) => ("H.264", d),
                     Err(e) => {
                         log::warn!("failed to init H.264 decoder: {e}");
@@ -1375,7 +1405,7 @@ fn decode_file_to_queue(
                 }
             }
             c if c == video_codec_ids::CODEC_ID_HEVC => {
-                match video::VideoDecoder::new_hevc(w, h, extradata) {
+                match video::VideoDecoder::new_hevc(w, h, extradata, prefs) {
                     Ok(d) => ("H.265", d),
                     Err(e) => {
                         log::warn!("failed to init H.265 decoder: {e}");
@@ -1384,7 +1414,7 @@ fn decode_file_to_queue(
                 }
             }
             c if c == video_codec_ids::CODEC_ID_AV1 => {
-                match video::VideoDecoder::new_av1(w, h, extradata) {
+                match video::VideoDecoder::new_av1(w, h, extradata, prefs) {
                     Ok(d) => ("AV1", d),
                     Err(e) => {
                         log::warn!("failed to init AV1 decoder: {e}");
@@ -1393,7 +1423,7 @@ fn decode_file_to_queue(
                 }
             }
             c if c == video_codec_ids::CODEC_ID_VP8 => {
-                match video::VideoDecoder::new_vp8(w, h, extradata) {
+                match video::VideoDecoder::new_vp8(w, h, extradata, prefs) {
                     Ok(d) => ("VP8", d),
                     Err(e) => {
                         log::warn!("failed to init VP8 decoder: {e}");
@@ -1402,7 +1432,7 @@ fn decode_file_to_queue(
                 }
             }
             c if c == video_codec_ids::CODEC_ID_VP9 => {
-                match video::VideoDecoder::new_vp9(w, h, extradata) {
+                match video::VideoDecoder::new_vp9(w, h, extradata, prefs) {
                     Ok(d) => ("VP9", d),
                     Err(e) => {
                         log::warn!("failed to init VP9 decoder: {e}");
@@ -2256,6 +2286,13 @@ fn apply_command(cmd: Command, shared: &Arc<Shared>) -> CommandAction {
         Command::SetSpeed(s) => {
             let mut st = lock_status(shared);
             st.playback_rate = s.clamp(0.25, 4.0);
+            CommandAction::Continue
+        }
+
+        Command::SetVideoPrefs(prefs) => {
+            shared
+                .video_pref_bits
+                .store(prefs.bits(), Ordering::Release);
             CommandAction::Continue
         }
 
