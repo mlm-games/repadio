@@ -12,21 +12,47 @@ fn write_playlist(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
     p
 }
 
+fn write_sine_wav(dir: &std::path::Path, name: &str) -> PathBuf {
+    // 1s 440Hz sine, 16-bit mono 44100Hz. Enough for symphonia's
+    // riff reader + pcm decoder to probe a real duration.
+    let rate: u32 = 44100;
+    let samples: Vec<i16> = (0..rate)
+        .map(|i| {
+            (f32::sin(i as f32 * 440.0 * std::f32::consts::TAU / rate as f32) * 30000.0) as i16
+        })
+        .collect();
+    let data_len = samples.len() * 2;
+    let mut wav = Vec::with_capacity(44 + data_len);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&((36 + data_len) as u32).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&rate.to_le_bytes());
+    wav.extend_from_slice(&(rate * 2).to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&(data_len as u32).to_le_bytes());
+    for s in samples {
+        wav.extend_from_slice(&s.to_le_bytes());
+    }
+    let p = dir.join(name);
+    std::fs::write(&p, wav).unwrap();
+    p
+}
+
 #[test]
 fn playlist_expands_with_titles_and_missing_kept() {
     let dir = std::env::temp_dir().join("repadio-pl-e2e");
     std::fs::create_dir_all(&dir).unwrap();
 
-    let real: Vec<PathBuf> = ["/home/ymsr/Music/peaceful-ringtone.mp3"]
-        .into_iter()
-        .map(PathBuf::from)
-        .filter(|p| p.exists())
-        .collect();
-    assert!(!real.is_empty(), "need a real mp3 on disk for this test");
+    let real = write_sine_wav(&dir, "tone.wav");
 
     let body = format!(
         "#EXTM3U\n#EXTINF:-1,Playlist Given Title\n{}\n/does/not/exist.mp3\n",
-        real[0].display()
+        real.display()
     );
     let pl = write_playlist(&dir, "list.m3u", &body);
 
