@@ -1519,11 +1519,14 @@ fn decode_file_to_queue(
             vs.non_zero_pts_seen = 0;
             vs.frame_duration_us = 0;
         }
-        let video_track_id = video_state.as_ref().map(|vs| vs.track_id);
+        let seek_track_id = video_state
+            .as_ref()
+            .map(|vs| vs.track_id)
+            .or((track_id != u32::MAX).then_some(track_id));
         perform_seek(
             &mut *format,
             &mut decoder,
-            video_track_id,
+            seek_track_id,
             target,
             serial,
             duration,
@@ -1600,11 +1603,14 @@ fn decode_file_to_queue(
                     vs.frame_duration_us = 0;
                 }
                 shared.video_frames_sent.store(0, Ordering::Release);
-                let video_track_id = video_state.as_ref().map(|vs| vs.track_id);
+                let seek_track_id = video_state
+                    .as_ref()
+                    .map(|vs| vs.track_id)
+                    .or((track_id != u32::MAX).then_some(track_id));
                 perform_seek(
                     &mut *format,
                     &mut decoder,
-                    video_track_id,
+                    seek_track_id,
                     target,
                     serial,
                     duration,
@@ -1873,11 +1879,14 @@ fn decode_file_to_queue(
                                     vs2.frame_duration_us = 0;
                                 }
                                 shared.video_frames_sent.store(0, Ordering::Release);
-                                let video_track_id = video_state.as_ref().map(|vs| vs.track_id);
+                                let seek_track_id = video_state
+                                    .as_ref()
+                                    .map(|vs| vs.track_id)
+                                    .or((track_id != u32::MAX).then_some(track_id));
                                 perform_seek(
                                     &mut *format,
                                     &mut decoder,
-                                    video_track_id,
+                                    seek_track_id,
                                     target,
                                     serial,
                                     duration,
@@ -2004,11 +2013,14 @@ fn decode_file_to_queue(
                                     vs.frame_duration_us = 0;
                                 }
                                 shared.video_frames_sent.store(0, Ordering::Release);
-                                let video_track_id = video_state.as_ref().map(|vs| vs.track_id);
+                                let seek_track_id = video_state
+                                    .as_ref()
+                                    .map(|vs| vs.track_id)
+                                    .or((track_id != u32::MAX).then_some(track_id));
                                 perform_seek(
                                     &mut *format,
                                     &mut decoder,
-                                    video_track_id,
+                                    seek_track_id,
                                     target,
                                     serial,
                                     duration,
@@ -2065,7 +2077,7 @@ fn decode_file_to_queue(
 fn perform_seek(
     format: &mut dyn symphonia::core::formats::FormatReader,
     decoder: &mut Option<Box<dyn AudioDecoder>>,
-    video_track_id: Option<u32>,
+    seek_track_id: Option<u32>,
     target: Duration,
     serial: u64,
     duration: Option<Duration>,
@@ -2082,13 +2094,11 @@ fn perform_seek(
     let was_playing = shared.is_playing.load(Ordering::Acquire);
     shared.resume_intent.store(was_playing, Ordering::Release);
 
-    let seek_track = video_track_id.unwrap_or(0);
-
     match format.seek(
         SeekMode::Accurate,
         SeekTo::Time {
             time,
-            track_id: Some(seek_track),
+            track_id: seek_track_id,
         },
     ) {
         Ok(_) => {
