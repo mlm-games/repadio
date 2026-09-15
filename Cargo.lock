@@ -3310,7 +3310,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "player-core"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "baabaabaabaabababbababbaa",
@@ -3335,7 +3335,7 @@ dependencies = [
 
 [[package]]
 name = "player-platform"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "futures-lite",
  "js-sys",
@@ -3349,7 +3349,7 @@ dependencies = [
 
 [[package]]
 name = "player-sync"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "player-core",
  "web-time",
@@ -3706,7 +3706,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "repadio"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "android_logger",
  "anyhow",

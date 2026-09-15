@@ -64,6 +64,19 @@
     <control>touch</control>
   </supports>
   <releases>
+    <release version="0.3.3" date="2026-09-15" type="stable">
+      <description>
+        <ul>
+          <li>fix: drop audio/midi from advertised types</li>
+          <li>fix(test): portable missing-file assertion for Windows</li>
+          <li>fix(test): self-contained playlist test (synth wav, no local path)</li>
+          <li>feat: expand M3U/M3U8/PLS playlists into queue entries</li>
+          <li>ci(aur): take .desktop from flathub file</li>
+          <li>feat: mpv-parity mime types + Video category</li>
+          <li>fix: setup-android packages '' (legacy tools pkg removed)</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.2" date="2026-09-14" type="stable">
       <description>
         <ul>

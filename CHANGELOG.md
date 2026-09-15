@@ -1,3 +1,14 @@
+## v0.3.3
+
+- fix: drop audio/midi from advertised types
+- fix(test): portable missing-file assertion for Windows
+- fix(test): self-contained playlist test (synth wav, no local path)
+- feat: expand M3U/M3U8/PLS playlists into queue entries
+- ci(aur): take .desktop from flathub file
+- feat: mpv-parity mime types + Video category
+- fix: setup-android packages '' (legacy tools pkg removed)
+
+
 ## v0.3.2
 
 - No user-facing changes were mentioned since previous release
