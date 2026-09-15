@@ -51,8 +51,9 @@ fn playlist_expands_with_titles_and_missing_kept() {
     let real = write_sine_wav(&dir, "tone.wav");
 
     let body = format!(
-        "#EXTM3U\n#EXTINF:-1,Playlist Given Title\n{}\n/does/not/exist.mp3\n",
-        real.display()
+        "#EXTM3U\n#EXTINF:-1,Playlist Given Title\n{}\n{}\n",
+        real.display(),
+        dir.join("definitely-not-here.mp3").display()
     );
     let pl = write_playlist(&dir, "list.m3u", &body);
 
@@ -60,7 +61,9 @@ fn playlist_expands_with_titles_and_missing_kept() {
     assert_eq!(out.len(), 2);
     assert_eq!(out[0].1.as_deref(), Some("Playlist Given Title"));
     assert_eq!(out[1].1, None);
-    assert!(matches!(&out[1].0, MediaSource::Path(p) if p.to_str() == Some("/does/not/exist.mp3")));
+    let missing = dir.join("definitely-not-here.mp3");
+    assert!(!missing.exists());
+    assert_eq!(out[1].0, MediaSource::Path(missing));
 
     // Real entry probes to valid metadata (title overridden later by playlist).
     let meta = probe_media_source(out[0].0.clone());
