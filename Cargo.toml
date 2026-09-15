@@ -20,6 +20,7 @@ rlobkit-dialogs = "0.5"
 # rlobkit-app-events = { path = "../rlobkit/rlobkit-app-events" }
 rlobkit-app-events = { version = "0.5" }
 futures-lite = "2"
+pls = "0.2"
 
 repose-core = "0.28"
 repose-ui = "0.28"
@@ -86,6 +87,7 @@ symphonia-format-riff = { git = "https://github.com/mlm-games/symphonia", packag
 
 [dev-dependencies]
 symphonia.workspace = true
+player-core = { path = "crates/player-core" }
 
 [package]
 name = "repadio"

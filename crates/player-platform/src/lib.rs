@@ -20,6 +20,8 @@ pub const MEDIA_EXTENSIONS: &[&str] = &[
     "mp3", "flac", "wav", "ogg", "oga", "m4a", "aac", "aiff", "caf",
     // containers / video
     "mp4", "m4v", "mkv", "webm", "mov", "mka",
+    // playlists (expanded into entries on load)
+    "m3u", "m3u8", "pls",
 ];
 
 /// Back-compat alias.

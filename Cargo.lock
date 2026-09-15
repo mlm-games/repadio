@@ -3319,6 +3319,7 @@ dependencies = [
  "crossbeam-channel",
  "js-sys",
  "log",
+ "pls",
  "repose-core",
  "rubato",
  "symphonia",
@@ -3352,6 +3353,15 @@ version = "0.3.2"
 dependencies = [
  "player-core",
  "web-time",
+]
+
+[[package]]
+name = "pls"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d9b4706f4bdab6c8904537069910c3e4209169c9a6a8b58ed18e9f94b4679cc"
+dependencies = [
+ "rust-ini",
 ]
 
 [[package]]
@@ -4025,6 +4035,12 @@ dependencies = [
  "visibility",
  "windowfunctions",
 ]
+
+[[package]]
+name = "rust-ini"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a654c5bda722c699be6b0fe4c0d90de218928da5b724c3e467fc48865c37263"
 
 [[package]]
 name = "rust_h264"

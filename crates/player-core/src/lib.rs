@@ -53,7 +53,10 @@ fn get_codecs() -> &'static CodecRegistry {
 const MIN_VIDEO_FRAMES_PREROLL: u64 = 8;
 const PREROLL_MS: u32 = 500;
 
+pub mod playlist;
 pub mod video;
+
+pub use playlist::{expand_playlist, is_playlist_name, is_playlist_source};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackState {
@@ -514,7 +517,10 @@ pub fn probe_media_source(source: MediaSource) -> TrackMeta {
     ) {
         Ok(r) => r,
         Err(e) => {
-            log::warn!("probe_media_source({}): probe failed: {e}", source.display_name());
+            log::warn!(
+                "probe_media_source({}): probe failed: {e}",
+                source.display_name()
+            );
             return meta;
         }
     };
@@ -760,10 +766,9 @@ fn run_command_loop(
         match cmd_rx.recv() {
             Ok(Command::Load(path)) => {
                 match &path {
-                    MediaSource::Path(p) => log::info!(
-                        "audio thread processing load: {} (path)",
-                        p.display()
-                    ),
+                    MediaSource::Path(p) => {
+                        log::info!("audio thread processing load: {} (path)", p.display())
+                    }
                     MediaSource::Bytes { name, bytes } => log::info!(
                         "audio thread processing load: {name} ({} bytes)",
                         bytes.len()

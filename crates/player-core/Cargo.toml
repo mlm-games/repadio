@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 crossbeam-channel.workspace = true
+pls.workspace = true
 symphonia.workspace = true
 symphonia-adapter-oporus.workspace = true
 log.workspace = true

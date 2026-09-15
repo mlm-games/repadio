@@ -86,10 +86,16 @@ struct Entry {
     id: u64,
     source: MediaSource,
     meta: TrackMeta,
+    /// Title from the playlist file (EXTINF / PLS Title). Wins over probed
+    /// media tags, mpv-style.
+    playlist_title: Option<String>,
 }
 
 impl Entry {
     fn display_title(&self) -> String {
+        if let Some(t) = self.playlist_title.clone() {
+            return t;
+        }
         self.meta
             .title
             .clone()
@@ -691,7 +697,13 @@ fn App(
             let mut list = playlist.get();
             for (source, meta) in probed {
                 if let Some(entry) = list.iter_mut().find(|e| e.source == source) {
-                    entry.meta = meta;
+                    if entry.playlist_title.is_some() {
+                        let title = entry.playlist_title.clone();
+                        entry.meta = meta;
+                        entry.meta.title = title;
+                    } else {
+                        entry.meta = meta;
+                    }
                 }
             }
             playlist.set(list);
@@ -701,13 +713,20 @@ fn App(
         if !new_files.is_empty() {
             let mut list = playlist.get();
             let was_empty = list.is_empty();
+            let mut to_probe = Vec::new();
             for source in &new_files {
-                let id = pending.next_id.fetch_add(1, Ordering::Relaxed);
-                list.push(Entry {
-                    id,
-                    source: source.clone(),
-                    meta: TrackMeta::default(),
-                });
+                for (expanded, title) in player_core::expand_playlist(source) {
+                    let id = pending.next_id.fetch_add(1, Ordering::Relaxed);
+                    let mut meta = TrackMeta::default();
+                    meta.title = title.clone();
+                    to_probe.push(expanded.clone());
+                    list.push(Entry {
+                        id,
+                        source: expanded,
+                        meta,
+                        playlist_title: title,
+                    });
+                }
             }
             playlist.set(list.clone());
             if was_empty && !list.is_empty() {
@@ -728,7 +747,6 @@ fn App(
 
             // Probe metadata in background (blocking I/O).
             let pending = pending.clone();
-            let to_probe = new_files.clone();
             thread::spawn(move || {
                 for source in to_probe {
                     let meta = probe_media_source(source.clone());
@@ -885,9 +903,7 @@ fn App(
                                 player_platform::PickedFile::Bytes { name, data } => {
                                     log::info!("picked bytes: {name} ({} bytes)", data.len());
                                     if data.is_empty() {
-                                        log::error!(
-                                            "picked file {name} has 0 bytes, ignoring"
-                                        );
+                                        log::error!("picked file {name} has 0 bytes, ignoring");
                                     }
                                     MediaSource::Bytes {
                                         name,
