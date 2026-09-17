@@ -1,3 +1,8 @@
+## v0.3.4
+
+- No user-facing changes were mentioned since previous release
+
+
 ## v0.3.3
 
 - fix: drop audio/midi from advertised types
