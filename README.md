@@ -1,9 +1,9 @@
 # Repadio
 
-Cross-platform **audio & video** player (H.264 / H.265 / AV1 + common audio codecs).  
-Reference app for the [Repose](https://github.com/mlm-games/repose) GUI stack. Runs on **Linux, macOS, Windows, Android, and Web (WASM).**
+Cross-platform audio & video player (H.264 / H.265 / AV1 + common audio codecs).  
+Reference app (vid and aud) for my [Repose](https://github.com/mlm-games/repose) UI stack. Runs on Linux, macOS, Windows, Android, and Web (WASM).
 
-**Demo:** https://mlm-games.github.io/repadio/
+Demo (will be laggier than native devices due to being single-threaded): https://mlm-games.github.io/repadio/
 
 ## Features
 
