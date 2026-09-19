@@ -1,3 +1,8 @@
+## v0.3.5
+
+- Revise README for clarity and demo note
+
+
 ## v0.3.4
 
 - No user-facing changes were mentioned since previous release

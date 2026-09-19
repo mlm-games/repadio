@@ -1,0 +1,1 @@
+- Revise README for clarity and demo note

@@ -64,6 +64,13 @@
     <control>touch</control>
   </supports>
   <releases>
+    <release version="0.3.5" date="2026-09-19" type="stable">
+      <description>
+        <ul>
+          <li>Revise README for clarity and demo note</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.4" date="2026-09-17" type="stable">
       <description>
         <ul>
