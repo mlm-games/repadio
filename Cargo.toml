@@ -66,22 +66,22 @@ player-platform = { path = "crates/player-platform" }
 [patch.crates-io]
 # baabaabaabaabababbababbaa = { path = "../baa4bababab2baa", package = "baabaabaabaabababbababbaa" }
 # nuxodecs = { path = "../cros-codecs", package = "nuxodecs" }
-symphonia = { git = "https://github.com/mlm-games/symphonia", branch = "add-av1c-atom-support", package = "symphonia" }
-symphonia-core = { git = "https://github.com/mlm-games/symphonia", branch = "add-av1c-atom-support", package = "symphonia-core" }
-symphonia-common = { git = "https://github.com/mlm-games/symphonia", branch = "add-av1c-atom-support", package = "symphonia-common" }
-symphonia-metadata = { git = "https://github.com/mlm-games/symphonia", branch = "add-av1c-atom-support", package = "symphonia-metadata" }
-symphonia-bundle-flac = { git = "https://github.com/mlm-games/symphonia", branch = "add-av1c-atom-support", package = "symphonia-bundle-flac" }
-symphonia-bundle-mp3 = { git = "https://github.com/mlm-games/symphonia", branch = "add-av1c-atom-support", package = "symphonia-bundle-mp3" }
-symphonia-codec-aac = { git = "https://github.com/mlm-games/symphonia", branch = "add-av1c-atom-support", package = "symphonia-codec-aac" }
-symphonia-codec-adpcm = { git = "https://github.com/mlm-games/symphonia", branch = "add-av1c-atom-support", package = "symphonia-codec-adpcm" }
-symphonia-codec-alac = { git = "https://github.com/mlm-games/symphonia", branch = "add-av1c-atom-support", package = "symphonia-codec-alac" }
-symphonia-codec-pcm = { git = "https://github.com/mlm-games/symphonia", branch = "add-av1c-atom-support", package = "symphonia-codec-pcm" }
-symphonia-codec-vorbis = { git = "https://github.com/mlm-games/symphonia", branch = "add-av1c-atom-support", package = "symphonia-codec-vorbis" }
-symphonia-format-caf = { git = "https://github.com/mlm-games/symphonia", branch = "add-av1c-atom-support", package = "symphonia-format-caf" }
-symphonia-format-isomp4 = { git = "https://github.com/mlm-games/symphonia", branch = "add-av1c-atom-support", package = "symphonia-format-isomp4" }
-symphonia-format-mkv = { git = "https://github.com/mlm-games/symphonia", branch = "add-av1c-atom-support", package = "symphonia-format-mkv" }
-symphonia-format-ogg = { git = "https://github.com/mlm-games/symphonia", branch = "add-av1c-atom-support", package = "symphonia-format-ogg" }
-symphonia-format-riff = { git = "https://github.com/mlm-games/symphonia", branch = "add-av1c-atom-support", package = "symphonia-format-riff" }
+symphonia = { git = "https://github.com/mlm-games/symphonia", package = "symphonia" }
+symphonia-core = { git = "https://github.com/mlm-games/symphonia", package = "symphonia-core" }
+symphonia-common = { git = "https://github.com/mlm-games/symphonia", package = "symphonia-common" }
+symphonia-metadata = { git = "https://github.com/mlm-games/symphonia", package = "symphonia-metadata" }
+symphonia-bundle-flac = { git = "https://github.com/mlm-games/symphonia", package = "symphonia-bundle-flac" }
+symphonia-bundle-mp3 = { git = "https://github.com/mlm-games/symphonia", package = "symphonia-bundle-mp3" }
+symphonia-codec-aac = { git = "https://github.com/mlm-games/symphonia", package = "symphonia-codec-aac" }
+symphonia-codec-adpcm = { git = "https://github.com/mlm-games/symphonia", package = "symphonia-codec-adpcm" }
+symphonia-codec-alac = { git = "https://github.com/mlm-games/symphonia", package = "symphonia-codec-alac" }
+symphonia-codec-pcm = { git = "https://github.com/mlm-games/symphonia", package = "symphonia-codec-pcm" }
+symphonia-codec-vorbis = { git = "https://github.com/mlm-games/symphonia", package = "symphonia-codec-vorbis" }
+symphonia-format-caf = { git = "https://github.com/mlm-games/symphonia", package = "symphonia-format-caf" }
+symphonia-format-isomp4 = { git = "https://github.com/mlm-games/symphonia", package = "symphonia-format-isomp4" }
+symphonia-format-mkv = { git = "https://github.com/mlm-games/symphonia", package = "symphonia-format-mkv" }
+symphonia-format-ogg = { git = "https://github.com/mlm-games/symphonia", package = "symphonia-format-ogg" }
+symphonia-format-riff = { git = "https://github.com/mlm-games/symphonia", package = "symphonia-format-riff" }
 # repose-core = { path = "../repose/crates/repose-core" }
 # repose-ui = { path = "../repose/crates/repose-ui" }
 # repose-material = { path = "../repose/crates/repose-material" }
