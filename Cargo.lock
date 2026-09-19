@@ -4401,7 +4401,7 @@ dependencies = [
 [[package]]
 name = "symphonia"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#17408e4a6340cd2e245217413b34e4bee154da3f"
+source = "git+https://github.com/mlm-games/symphonia?branch=add-av1c-atom-support#17408e4a6340cd2e245217413b34e4bee154da3f"
 dependencies = [
  "lazy_static",
  "symphonia-bundle-flac",
@@ -4434,7 +4434,7 @@ dependencies = [
 [[package]]
 name = "symphonia-bundle-flac"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#17408e4a6340cd2e245217413b34e4bee154da3f"
+source = "git+https://github.com/mlm-games/symphonia?branch=add-av1c-atom-support#17408e4a6340cd2e245217413b34e4bee154da3f"
 dependencies = [
  "log",
  "symphonia-common",
@@ -4445,7 +4445,7 @@ dependencies = [
 [[package]]
 name = "symphonia-bundle-mp3"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#17408e4a6340cd2e245217413b34e4bee154da3f"
+source = "git+https://github.com/mlm-games/symphonia?branch=add-av1c-atom-support#17408e4a6340cd2e245217413b34e4bee154da3f"
 dependencies = [
  "lazy_static",
  "log",
@@ -4455,7 +4455,7 @@ dependencies = [
 [[package]]
 name = "symphonia-codec-aac"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#17408e4a6340cd2e245217413b34e4bee154da3f"
+source = "git+https://github.com/mlm-games/symphonia?branch=add-av1c-atom-support#17408e4a6340cd2e245217413b34e4bee154da3f"
 dependencies = [
  "lazy_static",
  "log",
@@ -4466,7 +4466,7 @@ dependencies = [
 [[package]]
 name = "symphonia-codec-adpcm"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#17408e4a6340cd2e245217413b34e4bee154da3f"
+source = "git+https://github.com/mlm-games/symphonia?branch=add-av1c-atom-support#17408e4a6340cd2e245217413b34e4bee154da3f"
 dependencies = [
  "log",
  "symphonia-core",
@@ -4475,7 +4475,7 @@ dependencies = [
 [[package]]
 name = "symphonia-codec-alac"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#17408e4a6340cd2e245217413b34e4bee154da3f"
+source = "git+https://github.com/mlm-games/symphonia?branch=add-av1c-atom-support#17408e4a6340cd2e245217413b34e4bee154da3f"
 dependencies = [
  "log",
  "symphonia-common",
@@ -4485,7 +4485,7 @@ dependencies = [
 [[package]]
 name = "symphonia-codec-pcm"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#17408e4a6340cd2e245217413b34e4bee154da3f"
+source = "git+https://github.com/mlm-games/symphonia?branch=add-av1c-atom-support#17408e4a6340cd2e245217413b34e4bee154da3f"
 dependencies = [
  "log",
  "symphonia-core",
@@ -4494,7 +4494,7 @@ dependencies = [
 [[package]]
 name = "symphonia-codec-vorbis"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#17408e4a6340cd2e245217413b34e4bee154da3f"
+source = "git+https://github.com/mlm-games/symphonia?branch=add-av1c-atom-support#17408e4a6340cd2e245217413b34e4bee154da3f"
 dependencies = [
  "log",
  "symphonia-common",
@@ -4504,7 +4504,7 @@ dependencies = [
 [[package]]
 name = "symphonia-common"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#17408e4a6340cd2e245217413b34e4bee154da3f"
+source = "git+https://github.com/mlm-games/symphonia?branch=add-av1c-atom-support#17408e4a6340cd2e245217413b34e4bee154da3f"
 dependencies = [
  "log",
  "symphonia-core",
@@ -4514,7 +4514,7 @@ dependencies = [
 [[package]]
 name = "symphonia-core"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#17408e4a6340cd2e245217413b34e4bee154da3f"
+source = "git+https://github.com/mlm-games/symphonia?branch=add-av1c-atom-support#17408e4a6340cd2e245217413b34e4bee154da3f"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",
@@ -4528,7 +4528,7 @@ dependencies = [
 [[package]]
 name = "symphonia-format-caf"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#17408e4a6340cd2e245217413b34e4bee154da3f"
+source = "git+https://github.com/mlm-games/symphonia?branch=add-av1c-atom-support#17408e4a6340cd2e245217413b34e4bee154da3f"
 dependencies = [
  "log",
  "symphonia-common",
@@ -4538,7 +4538,7 @@ dependencies = [
 [[package]]
 name = "symphonia-format-isomp4"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#17408e4a6340cd2e245217413b34e4bee154da3f"
+source = "git+https://github.com/mlm-games/symphonia?branch=add-av1c-atom-support#17408e4a6340cd2e245217413b34e4bee154da3f"
 dependencies = [
  "log",
  "symphonia-common",
@@ -4549,7 +4549,7 @@ dependencies = [
 [[package]]
 name = "symphonia-format-mkv"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#17408e4a6340cd2e245217413b34e4bee154da3f"
+source = "git+https://github.com/mlm-games/symphonia?branch=add-av1c-atom-support#17408e4a6340cd2e245217413b34e4bee154da3f"
 dependencies = [
  "lazy_static",
  "log",
@@ -4560,7 +4560,7 @@ dependencies = [
 [[package]]
 name = "symphonia-format-ogg"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#17408e4a6340cd2e245217413b34e4bee154da3f"
+source = "git+https://github.com/mlm-games/symphonia?branch=add-av1c-atom-support#17408e4a6340cd2e245217413b34e4bee154da3f"
 dependencies = [
  "log",
  "symphonia-common",
@@ -4571,7 +4571,7 @@ dependencies = [
 [[package]]
 name = "symphonia-format-riff"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#17408e4a6340cd2e245217413b34e4bee154da3f"
+source = "git+https://github.com/mlm-games/symphonia?branch=add-av1c-atom-support#17408e4a6340cd2e245217413b34e4bee154da3f"
 dependencies = [
  "extended",
  "log",
@@ -4582,7 +4582,7 @@ dependencies = [
 [[package]]
 name = "symphonia-metadata"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#17408e4a6340cd2e245217413b34e4bee154da3f"
+source = "git+https://github.com/mlm-games/symphonia?branch=add-av1c-atom-support#17408e4a6340cd2e245217413b34e4bee154da3f"
 dependencies = [
  "lazy_static",
  "log",
