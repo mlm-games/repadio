@@ -14,7 +14,8 @@ use videoson::{
 use baabaabaabaabababbababbaa::traits::{VideoDecoderInputBoxed, VideoDecoderOutputBoxed};
 #[cfg(feature = "hw")]
 use baabaabaabaabababbababbaa::{
-    Dimensions, VideoCodecId as HwCodecId, VideoDecoderConfig, VideoOutputMode, default_host,
+    Dimensions, VideoCodecId as HwCodecId, VideoDecoderConfig, VideoDescriptionFormat,
+    VideoOutputMode, default_host,
 };
 #[cfg(feature = "hw")]
 use bytes::Bytes;
@@ -361,6 +362,19 @@ impl HwDecoder {
         } else {
             Some(Bytes::copy_from_slice(extradata))
         };
+        let description_format = if extradata.is_empty() {
+            None
+        } else {
+            // `extradata` here is the raw MP4 configuration record (avcC /
+            // hvcC / av1C), not Annex-B: the Annex-B conversion only happens
+            // per-packet in `decode()`.
+            Some(match &codec {
+                HwCodecId::H264 { .. } => VideoDescriptionFormat::AvcC,
+                HwCodecId::Hevc => VideoDescriptionFormat::HvcC,
+                HwCodecId::Av1 => VideoDescriptionFormat::Av1C,
+                _ => VideoDescriptionFormat::CodecPrivate,
+            })
+        };
         // The pump awaits decoded frames with async `frame()`, which performs
         // the WebCodecs `copyTo()` inline on the main thread. `Cpu` output is
         // only unsupported for *synchronous* `try_frame()` on wasm; the worker
@@ -370,6 +384,7 @@ impl HwDecoder {
             codec: codec.clone(),
             resolution: Some(Dimensions::new(width, height)),
             description,
+            description_format,
             hardware_acceleration: Some(true),
             output_mode,
         };
@@ -715,7 +730,7 @@ impl VideoDecoder {
                     height,
                     extradata,
                 ) {
-                    log::info!("video: H.264 HW decoder selected [hw] hwdec-current=hw");
+                    log::info!("video: H.264 HW decoder selected [hw] hwdec-current=hw video-codec=H.264 width={width} height={height} extradata={} avcC-present={}", extradata.len(), !extradata.is_empty());
                     return Ok(Self {
                         inner: DecoderInner::Hardware(Box::new(hw)),
                         reorder: Vec::new(),
@@ -775,7 +790,7 @@ impl VideoDecoder {
         {
             if prefs.try_hw {
                 if let Some(hw) = HwDecoder::try_new(HwCodecId::Av1, width, height, extradata) {
-                    log::info!("video: AV1 HW decoder selected [hw] hwdec-current=hw");
+                    log::info!("video: AV1 HW decoder selected [hw] hwdec-current=hw video-codec=AV1 width={width} height={height} extradata={} av1C-present={}", extradata.len(), !extradata.is_empty());
                     return Ok(Self {
                         inner: DecoderInner::Hardware(Box::new(hw)),
                         reorder: Vec::new(),
@@ -835,7 +850,7 @@ impl VideoDecoder {
         {
             if prefs.try_hw {
                 if let Some(hw) = HwDecoder::try_new(HwCodecId::Vp8, width, height, extradata) {
-                    log::info!("video: VP8 HW decoder selected [hw] hwdec-current=hw");
+                    log::info!("video: VP8 HW decoder selected [hw] hwdec-current=hw video-codec=VP8 width={width} height={height} extradata={}", extradata.len());
                     return Ok(Self {
                         inner: DecoderInner::Hardware(Box::new(hw)),
                         reorder: Vec::new(),
@@ -900,7 +915,7 @@ impl VideoDecoder {
         {
             if prefs.try_hw {
                 if let Some(hw) = HwDecoder::try_new(HwCodecId::Vp9, width, height, extradata) {
-                    log::info!("video: VP9 HW decoder selected [hw] hwdec-current=hw");
+                    log::info!("video: VP9 HW decoder selected [hw] hwdec-current=hw video-codec=VP9 width={width} height={height} extradata={}", extradata.len());
                     return Ok(Self {
                         inner: DecoderInner::Hardware(Box::new(hw)),
                         reorder: Vec::new(),
@@ -969,7 +984,7 @@ impl VideoDecoder {
         {
             if prefs.try_hw {
                 if let Some(hw) = HwDecoder::try_new(HwCodecId::Hevc, width, height, extradata) {
-                    log::info!("video: HEVC HW decoder selected [hw] hwdec-current=hw");
+                    log::info!("video: HEVC HW decoder selected [hw] hwdec-current=hw video-codec=HEVC width={width} height={height} extradata={} hvcC-present={}", extradata.len(), !extradata.is_empty());
                     return Ok(Self {
                         inner: DecoderInner::Hardware(Box::new(hw)),
                         reorder: Vec::new(),
