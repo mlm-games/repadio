@@ -237,16 +237,14 @@ impl HwDecoder {
         };
         let mut send_sync = is_sync;
         if let Some(cfg) = self.pending_config.take() {
-            // Prepend SPS/PPS as SEPARATE Annex-B units: MediaCodec's CSD
-            // handling expects start-code-delimited NALUs, and a bare
-            // concatenation without its own start code can fuse with the
-            // following unit. (Observed: all-IDR streams stall with zero
-            // output until this is respected.)
-            let mut prefixed = Vec::with_capacity(cfg.len() + payload.len() + 4);
+            // Prepend SPS/PPS as SEPARATE Annex-B units: some decoders only
+            // start emitting once parameter sets arrive in-band even when
+            // csd-0 was provided at configure time. `parse_avcc` already
+            // emits each unit with its own start code; `avcc_to_annexb_*`
+            // does the same for packet data, so no extra separator is needed
+            // (a stray zero unit would fuse with the following NALU).
+            let mut prefixed = Vec::with_capacity(cfg.len() + payload.len());
             prefixed.extend_from_slice(&cfg);
-            if !has_annexb_start_code(&payload) {
-                prefixed.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
-            }
             prefixed.extend_from_slice(&payload);
             payload = prefixed;
             send_sync = true;
