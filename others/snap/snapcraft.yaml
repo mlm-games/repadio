@@ -43,4 +43,10 @@ parts:
       - libudev1
     override-build: |
       craftctl default
-      chmod +x $CRAFT_PART_INSTALL/repadio
+      if [ ! -f "$CRAFT_PART_INSTALL/repadio" ]; then
+        found="$(find "$CRAFT_PART_INSTALL" -maxdepth 2 -type f -name 'repadio*' | head -n 1)"
+        if [ -n "$found" ]; then
+          mv "$found" "$CRAFT_PART_INSTALL/repadio"
+        fi
+      fi
+      chmod +x "$CRAFT_PART_INSTALL/repadio"

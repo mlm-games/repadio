@@ -11,7 +11,14 @@ concurrency:
 
 jobs:
   snap:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            asset: '*x86_64-unknown-linux-gnu.tar.gz'
+          - runner: ubuntu-26.04-arm
+            asset: '*aarch64-unknown-linux-gnu.tar.gz'
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
 
@@ -19,16 +26,23 @@ jobs:
         uses: robinraju/release-downloader@v1
         with:
           tag: v${{ inputs.version_name }}
-          fileName: '*x86_64*.tar.gz'
-          out-file-path: builds
+          fileName: ${{ matrix.asset }}
+          out-file-path: others/snap/builds
 
       - name: Extract binary
         shell: bash
         run: |
-          mkdir -p builds
-          tar xzf builds/*.tar.gz -C builds
-          rm builds/*.tar.gz
-          ls -la builds/
+          tar xzf others/snap/builds/*.tar.gz -C others/snap/builds
+          rm others/snap/builds/*.tar.gz
+          if [ ! -f others/snap/builds/repadio ]; then
+            found="$(find others/snap/builds -maxdepth 3 -type f -name 'repadio*' | head -n 1)"
+            if [ -n "$found" ]; then
+              mv "$found" others/snap/builds/repadio
+            fi
+          fi
+          rm -rf others/snap/builds/repadio-*/
+          ls -la others/snap/builds/
+          test -f others/snap/builds/repadio
 
       - name: Prepare snap files
         shell: bash
@@ -39,6 +53,7 @@ jobs:
           sed -i "s/version: '.*'/version: '${{ inputs.version_name }}'/" others/snap/snapcraft.yaml
 
       - name: Build snap
+        id: snapcraft
         uses: snapcore/action-build@v1
         with:
           path: others/snap
@@ -47,5 +62,5 @@ jobs:
         uses: snapcore/action-publish@v1
         with:
           store_login: ${{ secrets.SNAP_STORE_LOGIN }}
-          snap: repadio_*.snap
+          snap: ${{ steps.snapcraft.outputs.snap }}
           release: stable
