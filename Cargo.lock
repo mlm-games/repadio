@@ -3317,6 +3317,7 @@ dependencies = [
  "videoson",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasodecs",
  "web-sys",
  "web-time",
  "web-workers",

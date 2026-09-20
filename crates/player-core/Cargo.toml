@@ -34,3 +34,4 @@ wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 web-sys = { workspace = true, features = ["Window", "console"] }
 web-workers.workspace = true
+wasodecs = "0.3"
