@@ -603,9 +603,23 @@ fn intent_to_media_source(dir: &std::path::Path) -> Option<MediaSource> {
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "C" fn android_main(android_app: winit::platform::android::activity::AndroidApp) {
-    android_logger::init_once(
-        android_logger::Config::default().with_max_level(log::LevelFilter::Info),
-    );
+    #[cfg(all(target_os = "android", feature = "android-log"))]
+    {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        use tracing_subscriber::util::SubscriberInitExt as _;
+        let android_layer = paranoid_android::layer("repadio");
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::EnvFilter::try_new(
+                    std::env::var("RUST_LOG").unwrap_or_else(|_| {
+                        "repadio=debug,player_core=debug,player_sync=debug,player_platform=debug".into()
+                    }),
+                )
+                .unwrap_or_else(|_| "repadio=debug".parse().unwrap()),
+            )
+            .with(android_layer)
+            .init();
+    }
     repose_core::locals::set_theme_default(app_theme());
     rlobkit_dialogs::init_shared_pending_state();
     rlobkit_dialogs::init_with_android_context(
