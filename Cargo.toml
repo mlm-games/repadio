@@ -103,7 +103,7 @@ default-run = "repadio-desktop"
 [features]
 default = ["hw"]
 hw = ["player-core/hw"]
-android-log = ["dep:tracing", "dep:tracing-subscriber", "dep:paranoid-android"]
+android-log = ["dep:tracing", "dep:tracing-subscriber", "dep:tracing-log", "dep:paranoid-android"]
 
 [lib]
 name = "repadio"
@@ -179,6 +179,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
     "env-filter",
     "fmt",
 ], optional = true }
+tracing-log = { version = "0.2", default-features = false, features = ["log-tracer", "std"], optional = true }
 paranoid-android = { version = "0.2", default-features = false, optional = true }
 
 player-core.workspace = true

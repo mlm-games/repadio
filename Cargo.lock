@@ -3740,6 +3740,7 @@ dependencies = [
  "rlobkit-dialogs",
  "symphonia",
  "tracing",
+ "tracing-log",
  "tracing-subscriber",
  "wasm-bindgen",
  "wasm-bindgen-futures",

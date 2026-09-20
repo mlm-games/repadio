@@ -619,6 +619,7 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
             )
             .with(android_layer)
             .init();
+        let _ = tracing_log::LogTracer::init();
     }
     repose_core::locals::set_theme_default(app_theme());
     rlobkit_dialogs::init_shared_pending_state();
