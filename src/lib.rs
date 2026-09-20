@@ -612,7 +612,7 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
             .with(
                 tracing_subscriber::EnvFilter::try_new(
                     std::env::var("RUST_LOG").unwrap_or_else(|_| {
-                        "repadio=debug,player_core=debug,player_sync=debug,player_platform=debug".into()
+                        "repadio=debug,player_core=debug,player_sync=debug,player_platform=debug,baabaabaabaabababbababbaa=trace".into()
                     }),
                 )
                 .unwrap_or_else(|_| "repadio=debug".parse().unwrap()),
