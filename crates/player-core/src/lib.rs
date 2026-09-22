@@ -965,6 +965,8 @@ struct VideoDecodeState {
     /// Cached frame_duration_us computed from gcd_pts_ticks + time_base.
     /// Only meaningful when `non_zero_pts_seen >= 2`.
     frame_duration_us: u64,
+    /// Consecutive packets with zero drained frames (HW stall watchdog).
+    stall_packets: u32,
 }
 
 /// State for the two-phase accurate seek / buffering.
@@ -1257,6 +1259,26 @@ fn handle_video_packet(
         0
     };
     let frames = state.decoder.drain_frames(fallback, load_serial, fd);
+    // HW stall watchdog: MediaCodec failures are silent (zero output, zero
+    // error), so a HW decoder that accepts packets but emits nothing would
+    // spin forever on a black screen. After 60 consecutive empty drains,
+    // force SW fallback the same way a decode error does.
+    if frames.is_empty() && drain_was_hw {
+        state.stall_packets = state.stall_packets.saturating_add(1);
+    } else {
+        state.stall_packets = 0;
+    }
+    if state.stall_packets >= 60 && state.decoder.is_hardware() {
+        log::warn!("HW stall: 60 packets with zero output, falling back to SW");
+        state.decoder.fallback_to_software("hw stall watchdog");
+        state.decoder.reset();
+        state.need_keyframe = true;
+        state.gcd_pts_ticks = 0;
+        state.non_zero_pts_seen = 0;
+        state.frame_duration_us = 0;
+        state.stall_packets = 0;
+        return;
+    }
     if drain_was_hw && !state.decoder.is_hardware() {
         log::warn!("HW->SW fallback during drain, waiting for next keyframe");
         state.need_keyframe = true;
@@ -1476,6 +1498,7 @@ fn decode_file_to_queue(
             gcd_pts_ticks: 0,
             non_zero_pts_seen: 0,
             frame_duration_us: 0,
+            stall_packets: 0,
         });
     }
 

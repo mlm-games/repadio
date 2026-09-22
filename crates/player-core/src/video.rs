@@ -947,7 +947,7 @@ impl VideoDecoder {
         unsafe { arc.assume_init() }
     }
 
-    fn fallback_to_software(&mut self, _reason: &str) -> bool {
+    pub fn fallback_to_software(&mut self, _reason: &str) -> bool {
         #[cfg(feature = "hw")]
         if let Some((codec, w, h, extradata)) = self.fallback.take() {
             log::warn!("HW drain failed ({_reason}), falling back to SW");

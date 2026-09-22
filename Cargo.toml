@@ -17,8 +17,7 @@ log = "0.4"
 symphonia = { version = "0.6", features = ["all"] }
 symphonia-adapter-oporus = "0.1"
 rlobkit-dialogs = "0.5"
-# rlobkit-app-events = { path = "../rlobkit/rlobkit-app-events" }
-rlobkit-app-events = { version = "0.5" }
+rlobkit-app-events = { path = "../rlobkit/rlobkit-app-events" }
 futures-lite = "2"
 pls = "0.2"
 
