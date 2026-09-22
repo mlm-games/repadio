@@ -1270,7 +1270,9 @@ fn handle_video_packet(
     }
     if state.stall_packets >= 60 && state.decoder.is_hardware() {
         log::warn!("HW stall: 60 packets with zero output, falling back to SW");
-        state.decoder.fallback_to_software("hw stall watchdog");
+        if !state.decoder.fallback_to_software("hw stall watchdog") {
+            log::warn!("HW stall: no SW fallback available; resetting HW decoder");
+        }
         state.decoder.reset();
         state.need_keyframe = true;
         state.gcd_pts_ticks = 0;
