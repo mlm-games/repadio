@@ -607,15 +607,22 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
     {
         use tracing_subscriber::layer::SubscriberExt as _;
         use tracing_subscriber::util::SubscriberInitExt as _;
-        let android_layer = paranoid_android::layer("repadio");
+        let android_layer = paranoid_android::layer(env!("CARGO_PKG_NAME"));
         tracing_subscriber::registry()
             .with(
                 tracing_subscriber::EnvFilter::try_new(
                     std::env::var("RUST_LOG").unwrap_or_else(|_| {
-                        "repadio=debug,player_core=debug,player_sync=debug,player_platform=debug,baabaabaabaabababbababbaa=trace".into()
+                        format!(
+                            "{}=debug,player_core=debug,player_sync=debug,player_platform=debug,baabaabaabaabababbababbaa=trace",
+                            env!("CARGO_PKG_NAME")
+                        )
                     }),
                 )
-                .unwrap_or_else(|_| "repadio=debug".parse().unwrap()),
+                .unwrap_or_else(|_| {
+                    format!("{}=debug", env!("CARGO_PKG_NAME"))
+                        .parse()
+                        .unwrap()
+                }),
             )
             .with(android_layer)
             .init();

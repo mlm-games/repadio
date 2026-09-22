@@ -115,6 +115,7 @@ path = "src/main.rs"
 [package.metadata.android]
 package = "org.mlm.repadio"
 apk_name = "repadio"
+features = ["android-log"]
 build_targets = [
     "aarch64-linux-android",
     "armv7-linux-androideabi",

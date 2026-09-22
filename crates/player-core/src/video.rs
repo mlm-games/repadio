@@ -830,9 +830,15 @@ impl VideoDecoder {
                     is_sync,
                     data: data.to_vec(),
                 };
-                inner
-                    .send_packet(&packet)
-                    .map_err(|e| anyhow::anyhow!("videoson send: {e:?}"))
+                inner.send_packet(&packet).map_err(|e| {
+                    log::warn!(
+                        "videoson send failed: len={} is_sync={} pts={}: {e:?}",
+                        data.len(),
+                        is_sync,
+                        pts_us
+                    );
+                    anyhow::anyhow!("videoson send: {e:?}")
+                })
             }
             #[cfg(feature = "hw")]
             DecoderInner::Hardware(hw) => {
