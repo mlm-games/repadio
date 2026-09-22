@@ -1020,7 +1020,9 @@ impl VideoDecoder {
                 }
             }
             DecoderInner::Software(inner) => {
+                let mut received = 0usize;
                 while let Ok(Some(frame)) = inner.receive_frame() {
+                    received += 1;
                     if frame.plane_data.len() < 2 {
                         log::warn!("video drain: frame with <2 planes, skipping");
                         continue;
@@ -1065,6 +1067,9 @@ impl VideoDecoder {
                         color_info: ColorInfo::default(),
                         poc: frame.poc,
                     });
+                }
+                if received > 0 {
+                    log::warn!("SW drain: received {received} frames from videoson");
                 }
             }
         }
