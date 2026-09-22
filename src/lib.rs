@@ -604,30 +604,13 @@ fn intent_to_media_source(dir: &std::path::Path) -> Option<MediaSource> {
 #[unsafe(no_mangle)]
 pub extern "C" fn android_main(android_app: winit::platform::android::activity::AndroidApp) {
     #[cfg(all(target_os = "android", feature = "android-log"))]
-    {
-        use tracing_subscriber::layer::SubscriberExt as _;
-        use tracing_subscriber::util::SubscriberInitExt as _;
-        let android_layer = paranoid_android::layer(env!("CARGO_PKG_NAME"));
-        tracing_subscriber::registry()
-            .with(
-                tracing_subscriber::EnvFilter::try_new(
-                    std::env::var("RUST_LOG").unwrap_or_else(|_| {
-                        format!(
-                            "{}=debug,player_core=debug,player_sync=debug,player_platform=debug,baabaabaabaabababbababbaa=trace",
-                            env!("CARGO_PKG_NAME")
-                        )
-                    }),
-                )
-                .unwrap_or_else(|_| {
-                    format!("{}=debug", env!("CARGO_PKG_NAME"))
-                        .parse()
-                        .unwrap()
-                }),
-            )
-            .with(android_layer)
-            .init();
-        let _ = tracing_log::LogTracer::init();
-    }
+    rlobkit_app_events::android_log::init(
+        env!("CARGO_PKG_NAME"),
+        concat!(
+            env!("CARGO_PKG_NAME"),
+            "=debug,player_core=debug,player_sync=debug,player_platform=debug,baabaabaabaabababbababbaa=trace"
+        ),
+    );
     repose_core::locals::set_theme_default(app_theme());
     rlobkit_dialogs::init_shared_pending_state();
     rlobkit_dialogs::init_with_android_context(

@@ -830,15 +830,9 @@ impl VideoDecoder {
                     is_sync,
                     data: data.to_vec(),
                 };
-                inner.send_packet(&packet).map_err(|e| {
-                    log::warn!(
-                        "videoson send failed: len={} is_sync={} pts={}: {e:?}",
-                        data.len(),
-                        is_sync,
-                        pts_us
-                    );
-                    anyhow::anyhow!("videoson send: {e:?}")
-                })
+                inner
+                    .send_packet(&packet)
+                    .map_err(|e| anyhow::anyhow!("videoson send: {e:?}"))
             }
             #[cfg(feature = "hw")]
             DecoderInner::Hardware(hw) => {
@@ -1020,9 +1014,7 @@ impl VideoDecoder {
                 }
             }
             DecoderInner::Software(inner) => {
-                let mut received = 0usize;
                 while let Ok(Some(frame)) = inner.receive_frame() {
-                    received += 1;
                     if frame.plane_data.len() < 2 {
                         log::warn!("video drain: frame with <2 planes, skipping");
                         continue;
@@ -1067,9 +1059,6 @@ impl VideoDecoder {
                         color_info: ColorInfo::default(),
                         poc: frame.poc,
                     });
-                }
-                if received > 0 {
-                    log::warn!("SW drain: received {received} frames from videoson");
                 }
             }
         }

@@ -102,7 +102,7 @@ default-run = "repadio-desktop"
 [features]
 default = ["hw"]
 hw = ["player-core/hw"]
-android-log = ["dep:tracing", "dep:tracing-subscriber", "dep:tracing-log", "dep:paranoid-android"]
+android-log = ["rlobkit-app-events/android-log"]
 
 [lib]
 name = "repadio"
@@ -174,13 +174,6 @@ mime_type = "video/*"
 anyhow.workspace = true
 log.workspace = true
 crossbeam-channel.workspace = true
-tracing = { version = "0.1", default-features = false, features = ["std"], optional = true }
-tracing-subscriber = { version = "0.3", default-features = false, features = [
-    "env-filter",
-    "fmt",
-], optional = true }
-tracing-log = { version = "0.2", default-features = false, features = ["log-tracer", "std"], optional = true }
-paranoid-android = { version = "0.2", default-features = false, optional = true }
 
 player-core.workspace = true
 player-sync.workspace = true
@@ -197,7 +190,7 @@ rlobkit-app-events.workspace = true
 web-time.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
-rlobkit-app-events = { workspace = true, features = ["jni-bridge"] }
+rlobkit-app-events = { workspace = true, features = ["jni-bridge", "android-log"] }
 
 [target.'cfg(not(any(target_os = "android", target_arch = "wasm32")))'.dependencies]
 env_logger.workspace = true
