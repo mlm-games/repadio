@@ -1535,7 +1535,7 @@ fn decode_file_to_queue(
             (Some(frames), Some(rate)) if rate > 0 => {
                 Some(Duration::from_secs_f64(frames as f64 / rate as f64))
             }
-            _ => None,
+            _ => track_duration_secs(track),
         };
         decoder = Some(
             get_codecs()
@@ -1870,7 +1870,7 @@ fn decode_file_to_queue(
                         (Some(frames), Some(rate)) if rate > 0 => {
                             Some(Duration::from_secs_f64(frames as f64 / rate as f64))
                         }
-                        _ => None,
+                        _ => track_duration_secs(track),
                     };
                     decoder = Some(
                         get_codecs()
