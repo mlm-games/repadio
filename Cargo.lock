@@ -5019,8 +5019,6 @@ dependencies = [
 [[package]]
 name = "videoson-codec-h264"
 version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9ecc8fff0d30a6b674860af324fa1de4b8b11e2aeee8488d5ec0f9fc58b5d99"
 dependencies = [
  "rust_h264",
  "videoson-core",
@@ -5078,8 +5076,6 @@ checksum = "b90088552866a18d965877019033d9f34cf449661bb7181ab20e1ee7988c75c9"
 [[package]]
 name = "videoson-core"
 version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efa3ebb4675166382f762ffe4fc855025414f06bc16958caa5a3ecc29f8ed88a"
 
 [[package]]
 name = "videoson-format-ivf"
