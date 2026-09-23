@@ -137,7 +137,7 @@ fn test_pts_monotonic() {
             .unwrap_or(false);
 
         decoder
-            .send_packet(&packet.data, pts_us, is_sync)
+            .send_packet(&packet.data, pts_us, is_sync, 0)
             .expect("send_packet");
 
         let fd = if non_zero_pts_seen >= 2 {
