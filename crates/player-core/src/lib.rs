@@ -129,6 +129,10 @@ pub struct PlayerSnapshot {
     pub has_video: bool,
     pub video_codec: Option<String>,
     pub video_hw: bool,
+    pub video_width: u32,
+    pub video_height: u32,
+    pub video_fps: Option<f64>,
+    pub video_frames_sent: u64,
     pub error: Option<String>,
 }
 
@@ -149,6 +153,10 @@ impl Default for PlayerSnapshot {
             has_video: false,
             video_codec: None,
             video_hw: false,
+            video_width: 0,
+            video_height: 0,
+            video_fps: None,
+            video_frames_sent: 0,
             error: None,
         }
     }
@@ -468,6 +476,7 @@ impl AudioPlayer {
         snap.muted = shared.muted.load(Ordering::Acquire);
         snap.playback_rate = f32::from_bits(shared.playback_rate_bits.load(Ordering::Acquire));
         snap.has_video = shared.has_video.load(Ordering::Acquire);
+        snap.video_frames_sent = shared.video_frames_sent.load(Ordering::Acquire);
         snap
     }
 }
@@ -600,6 +609,21 @@ fn track_duration_secs(track: &symphonia::core::formats::Track) -> Option<Durati
         }
     }
     None
+}
+
+fn track_fps(track: &symphonia::core::formats::Track) -> Option<f64> {
+    let tb = track.time_base?;
+    let tick_secs = tb.numer.get() as f64 / tb.denom.get() as f64;
+    if tick_secs <= 0.0 {
+        return None;
+    }
+    let fps = match (track.duration, track.num_frames) {
+        (Some(d), Some(nf)) if d.get() > 0 && nf > 0 => {
+            nf as f64 / (d.get() as f64 * tick_secs)
+        }
+        _ => return None,
+    };
+    (fps.is_finite() && fps > 0.0).then_some(fps)
 }
 
 /// WASM entry point: sets up CPAL synchronously, stores the stream in a
@@ -1478,6 +1502,9 @@ fn decode_file_to_queue(
             let mut s = lock_status(&shared);
             s.video_codec = Some(name.to_string());
             s.video_hw = is_hw;
+            s.video_width = w;
+            s.video_height = h;
+            s.video_fps = track_fps(vtrack);
         }
         let nal_len_size = match vp.codec {
             c if c == video_codec_ids::CODEC_ID_HEVC => {
@@ -1511,6 +1538,10 @@ fn decode_file_to_queue(
         let mut s = lock_status(&shared);
         s.video_codec = None;
         s.video_hw = false;
+        s.video_width = 0;
+        s.video_height = 0;
+        s.video_fps = None;
+        s.video_frames_sent = 0;
     }
     if audio_track.is_none() && video_state.is_none() {
         anyhow::bail!("no supported audio or video track in this file");

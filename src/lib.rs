@@ -50,6 +50,7 @@ material_symbols! {
     settings       : '\u{E8B8}',
     speed          : '\u{E9E4}',
     movie          : '\u{E02C}',
+    info           : '\u{E88E}',
 }
 use repose_ui::lazy_states::LazyColumnState;
 use repose_ui::{
@@ -1294,6 +1295,9 @@ fn FullscreenVideo(
     let controls_visible = remember(|| signal(true));
     let last_activity = remember(|| signal(Instant::now()));
     let scrubbing = remember(|| signal(false));
+    let show_stats = remember(|| signal(false));
+    let stats_lines = playback_stats_lines(&snap);
+    let stats_visible = show_stats.get();
     let osd = remember(|| signal(Option::<(String, Instant)>::None));
 
     let exit_fs = {
@@ -1369,6 +1373,7 @@ fn FullscreenVideo(
         let snap = snap.clone();
         let bump = bump_activity.clone();
         let show_osd = show_osd.clone();
+        let show_stats = show_stats.clone();
         let exit_fs = exit_fs.clone();
         let speed = speed.clone();
         move |ev: KeyEvent| -> bool {
@@ -1452,6 +1457,11 @@ fn FullscreenVideo(
                 Key::Character('o') | Key::Character('O') => {
                     bump();
                     show_osd(format!("{osd_pos} / {osd_dur}"));
+                    true
+                }
+                Key::Character('i') | Key::Character('I') => {
+                    bump();
+                    show_stats.set(!show_stats.get());
                     true
                 }
                 _ => false,
@@ -1539,6 +1549,43 @@ fn FullscreenVideo(
                         .font_weight(FontWeight::MEDIUM),
                 ),
             )
+        } else if stats_visible {
+            Box(Modifier::new()
+                .fill_max_size()
+                .align_items(AlignItems::START)
+                .justify_content(JustifyContent::START)
+                .padding_values(PaddingValues {
+                    left: 16.0,
+                    right: 16.0,
+                    top: 64.0,
+                    bottom: 10.0,
+                })
+                .hit_passthrough())
+            .child(
+                Box(Modifier::new()
+                    .padding_values(PaddingValues {
+                        left: 12.0,
+                        right: 12.0,
+                        top: 8.0,
+                        bottom: 8.0,
+                    })
+                    .background(Color::BLACK.with_alpha(200))
+                    .clip_rounded(8.0))
+                .child(
+                    Column(Modifier::new().gap(2.0)).child(
+                        stats_lines
+                            .iter()
+                            .map(|line| {
+                                Text(line.clone())
+                                    .size(13.0)
+                                    .color(Color::WHITE)
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .single_line()
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
+                ),
+            )
         } else {
             Box(Modifier::new().height(0.0))
         },
@@ -1570,6 +1617,17 @@ fn FullscreenVideo(
                             .overflow_ellipsize(),
                         Spacer(),
                         StatusChip(snap.state),
+                        m3::IconButton(
+                            Icon(Symbols::info).size(22.0).color(Color::WHITE),
+                            {
+                                let show_stats = show_stats.clone();
+                                move || show_stats.set(!show_stats.get())
+                            },
+                            m3::IconButtonConfig {
+                                container_size: Some(40.0),
+                                ..Default::default()
+                            },
+                        ),
                         m3::IconButton(
                             Icon(Symbols::fullscreen_exit)
                                 .size(22.0)
@@ -2259,6 +2317,39 @@ fn format_position(d: Duration) -> String {
     } else {
         format!("{m}:{s:02}")
     }
+}
+
+fn playback_stats_lines(snap: &player_core::PlayerSnapshot) -> Vec<String> {
+    let pos = format_position(snap.position);
+    let dur = snap
+        .duration
+        .map(format_position)
+        .unwrap_or_else(|| "--:--".into());
+    let mut lines = vec![
+        format!("state: {:?}  {} / {}", snap.state, pos, dur),
+        format!("speed: {:.2}x  volume: {:.0}%", snap.playback_rate, snap.volume * 100.0),
+    ];
+    if snap.has_video {
+        let codec = snap.video_codec.as_deref().unwrap_or("?");
+        let backend = if snap.video_hw { "hw" } else { "sw" };
+        let res = if snap.video_width > 0 {
+            format!("{}x{}", snap.video_width, snap.video_height)
+        } else {
+            "?".into()
+        };
+        let fps = snap
+            .video_fps
+            .map(|f| format!("{f:.2} fps"))
+            .unwrap_or_else(|| "? fps".into());
+        lines.push(format!("video: {codec} [{backend}] {res} {fps}"));
+        lines.push(format!("frames sent: {}", snap.video_frames_sent));
+    } else {
+        lines.push("video: none".into());
+    }
+    if let Some(e) = &snap.error {
+        lines.push(format!("error: {e}"));
+    }
+    lines
 }
 
 fn relative_seek(player: &AudioPlayer, snap: &player_core::PlayerSnapshot, delta: f64) {

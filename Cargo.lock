@@ -5018,7 +5018,7 @@ dependencies = [
 
 [[package]]
 name = "videoson-codec-h264"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "rust_h264",
  "videoson-core",
@@ -5075,7 +5075,7 @@ checksum = "b90088552866a18d965877019033d9f34cf449661bb7181ab20e1ee7988c75c9"
 
 [[package]]
 name = "videoson-core"
-version = "0.5.3"
+version = "0.5.4"
 
 [[package]]
 name = "videoson-format-ivf"
