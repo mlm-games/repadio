@@ -1549,35 +1549,6 @@ fn FullscreenVideo(
                         .font_weight(FontWeight::MEDIUM),
                 ),
             )
-        } else if stats_visible {
-            Box(Modifier::new()
-                .fill_max_size()
-                .align_items(AlignItems::START)
-                .justify_content(JustifyContent::START)
-                .padding_values(PaddingValues {
-                    left: 16.0,
-                    right: 16.0,
-                    top: 64.0,
-                    bottom: 10.0,
-                })
-                .hit_passthrough())
-            .child(
-                Box(Modifier::new()
-                    .padding_values(PaddingValues {
-                        left: 12.0,
-                        right: 12.0,
-                        top: 8.0,
-                        bottom: 8.0,
-                    })
-                    .background(Color::BLACK.with_alpha(200))
-                    .clip_rounded(8.0))
-                .child(
-                    Text(stats_text.clone())
-                        .size(13.0)
-                        .color(Color::WHITE)
-                        .font_weight(FontWeight::MEDIUM),
-                ),
-            )
         } else {
             Box(Modifier::new().height(0.0))
         },
@@ -1596,43 +1567,54 @@ fn FullscreenVideo(
                         }),
                 )
                 .child(
-                    Row(Modifier::new()
-                        .fill_max_width()
-                        .align_items(AlignItems::CENTER)
-                        .gap(12.0))
-                    .child((
-                        Text(title)
-                            .size(16.0)
-                            .color(Color::WHITE)
-                            .font_weight(FontWeight::MEDIUM)
-                            .max_lines(1)
-                            .overflow_ellipsize(),
-                        Spacer(),
-                        StatusChip(snap.state),
-                        m3::IconButton(
-                            Icon(Symbols::info).size(22.0).color(Color::WHITE),
-                            {
-                                let show_stats = show_stats.clone();
-                                move || show_stats.set(!show_stats.get())
-                            },
-                            m3::IconButtonConfig {
-                                container_size: Some(40.0),
-                                ..Default::default()
-                            },
-                        ),
-                        m3::IconButton(
-                            Icon(Symbols::fullscreen_exit)
-                                .size(22.0)
-                                .color(Color::WHITE),
-                            {
-                                let exit_fs = exit_fs.clone();
-                                move || exit_fs()
-                            },
-                            m3::IconButtonConfig {
-                                container_size: Some(40.0),
-                                ..Default::default()
-                            },
-                        ),
+                    Column(Modifier::new().fill_max_width().gap(2.0)).child((
+                        Row(Modifier::new()
+                            .fill_max_width()
+                            .align_items(AlignItems::CENTER)
+                            .gap(12.0))
+                        .child((
+                            Text(title)
+                                .size(16.0)
+                                .color(Color::WHITE)
+                                .font_weight(FontWeight::MEDIUM)
+                                .max_lines(1)
+                                .overflow_ellipsize(),
+                            Spacer(),
+                            StatusChip(snap.state),
+                            m3::IconButton(
+                                Icon(Symbols::info).size(22.0).color(Color::WHITE),
+                                {
+                                    let show_stats = show_stats.clone();
+                                    move || show_stats.set(!show_stats.get())
+                                },
+                                m3::IconButtonConfig {
+                                    container_size: Some(40.0),
+                                    ..Default::default()
+                                },
+                            ),
+                            m3::IconButton(
+                                Icon(Symbols::fullscreen_exit)
+                                    .size(22.0)
+                                    .color(Color::WHITE),
+                                {
+                                    let exit_fs = exit_fs.clone();
+                                    move || exit_fs()
+                                },
+                                m3::IconButtonConfig {
+                                    container_size: Some(40.0),
+                                    ..Default::default()
+                                },
+                            ),
+                        )),
+                        if stats_visible {
+                            Text(stats_text.clone())
+                                .size(12.0)
+                                .color(Color::WHITE.with_alpha(220))
+                                .max_lines(1)
+                                .overflow_ellipsize()
+                        } else {
+                            Box(Modifier::new().height(0.0))
+                        },
                     )),
                 ),
                 Column(
