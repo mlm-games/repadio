@@ -1256,7 +1256,7 @@ fn handle_video_packet(
         was_hw,
         state.need_keyframe
     );
-    if let Err(e) = state.decoder.send_packet(&packet.data, pts_us, is_sync) {
+    if let Err(e) = state.decoder.send_packet(&packet.data, pts_us, is_sync, load_serial) {
         log::warn!("video decode error: {e}, resetting decoder");
         state.decoder.reset();
         state.need_keyframe = true;
@@ -1274,7 +1274,28 @@ fn handle_video_packet(
         if !is_sync {
             return;
         }
-        // is_sync case was already forwarded inside fallback, so fall through to drain
+        // is_sync case was already forwarded inside fallback, so feed it to
+        // the fresh SW decoder below instead of dropping it.
+        let pts_us = packet_pts_us(packet, &state.time_base);
+        let fallback = Duration::from_micros(pts_us.max(0) as u64);
+        if let Err(e) = state.decoder.send_packet(&packet.data, pts_us, true, load_serial) {
+            log::warn!("video decode error after HW->SW fallback: {e}");
+            return;
+        }
+        let drain_was_hw = false;
+        let frames = state.decoder.drain_frames(fallback, load_serial, 0);
+        for frame in frames.into_iter() {
+            if let Some(min) = min_pts {
+                if frame.pts + Duration::from_millis(500) < min {
+                    continue;
+                }
+            }
+            shared.video_frames_sent.fetch_add(1, Ordering::Release);
+            if video_tx.try_send(frame).is_err() {
+                log::trace!("[hvp] video_tx full, dropping frame (non-blocking)");
+            }
+        }
+        return;
     }
     let drain_was_hw = state.decoder.is_hardware();
     let fd = if state.non_zero_pts_seen >= 2 {
@@ -1294,10 +1315,32 @@ fn handle_video_packet(
     }
     if state.stall_packets >= 60 && state.decoder.is_hardware() {
         log::warn!("HW stall: 60 packets with zero output, falling back to SW");
-        if !state.decoder.fallback_to_software("hw stall watchdog") {
+        let fell_back = state.decoder.fallback_to_software("hw stall watchdog");
+        if !fell_back {
             log::warn!("HW stall: no SW fallback available; resetting HW decoder");
         }
         state.decoder.reset();
+        // When fallback created a fresh SW decoder, feed the current packet
+        // to it if it is a keyframe (it references no prior HW state), then
+        // drain. Otherwise the SW decoder sits empty until the *next*
+        // keyframe while preroll keeps waiting.
+        if fell_back && !state.decoder.is_hardware() && is_sync {
+            let pts_us = packet_pts_us(packet, &state.time_base);
+            let fb = Duration::from_micros(pts_us.max(0) as u64);
+            if state.decoder.send_packet(&packet.data, pts_us, true, load_serial).is_ok() {
+                for frame in state.decoder.drain_frames(fb, load_serial, 0) {
+                    if let Some(min) = min_pts {
+                        if frame.pts + Duration::from_millis(500) < min {
+                            continue;
+                        }
+                    }
+                    shared.video_frames_sent.fetch_add(1, Ordering::Release);
+                    if video_tx.try_send(frame).is_err() {
+                        log::trace!("[hvp] video_tx full, dropping frame (non-blocking)");
+                    }
+                }
+            }
+        }
         state.need_keyframe = true;
         state.gcd_pts_ticks = 0;
         state.non_zero_pts_seen = 0;

@@ -1296,7 +1296,7 @@ fn FullscreenVideo(
     let last_activity = remember(|| signal(Instant::now()));
     let scrubbing = remember(|| signal(false));
     let show_stats = remember(|| signal(false));
-    let stats_lines = playback_stats_lines(&snap);
+    let stats_text = playback_stats_text(&snap);
     let stats_visible = show_stats.get();
     let osd = remember(|| signal(Option::<(String, Instant)>::None));
 
@@ -1572,18 +1572,10 @@ fn FullscreenVideo(
                     .background(Color::BLACK.with_alpha(200))
                     .clip_rounded(8.0))
                 .child(
-                    Column(Modifier::new().gap(2.0)).child(
-                        stats_lines
-                            .iter()
-                            .map(|line| {
-                                Text(line.clone())
-                                    .size(13.0)
-                                    .color(Color::WHITE)
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .single_line()
-                            })
-                            .collect::<Vec<_>>(),
-                    ),
+                    Text(stats_text.clone())
+                        .size(13.0)
+                        .color(Color::WHITE)
+                        .font_weight(FontWeight::MEDIUM),
                 ),
             )
         } else {
@@ -2319,7 +2311,7 @@ fn format_position(d: Duration) -> String {
     }
 }
 
-fn playback_stats_lines(snap: &player_core::PlayerSnapshot) -> Vec<String> {
+fn playback_stats_text(snap: &player_core::PlayerSnapshot) -> String {
     let pos = format_position(snap.position);
     let dur = snap
         .duration
@@ -2349,7 +2341,7 @@ fn playback_stats_lines(snap: &player_core::PlayerSnapshot) -> Vec<String> {
     if let Some(e) = &snap.error {
         lines.push(format!("error: {e}"));
     }
-    lines
+    lines.join("  |  ")
 }
 
 fn relative_seek(player: &AudioPlayer, snap: &player_core::PlayerSnapshot, delta: f64) {

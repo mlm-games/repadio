@@ -229,7 +229,31 @@ impl HwDecoder {
         }
     }
 
-    fn decode(&mut self, data: &[u8], pts: Duration, is_sync: bool) -> Result<()> {
+    fn decode(
+        &mut self,
+        data: &[u8],
+        pts: Duration,
+        is_sync: bool,
+        pre_drain: &mut Vec<baabaabaabaabababbababbaa::VideoFrame>,
+    ) -> Result<()> {
+        // Miniter shape: drain available frames BEFORE submitting, so the
+        // decoder never sits with all input buffers queued and none released
+        // (observed: 121 in-flight, zero output, zero error on MediaCodec).
+        // Drained frames are returned for the caller to convert + stash;
+        // errors are non-fatal.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            loop {
+                match self.output.try_frame() {
+                    Ok(Some(f)) => pre_drain.push(f),
+                    _ => break,
+                }
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = pre_drain;
+        }
         let mut payload: Vec<u8> = if self.nal_len_size > 0 && !has_annexb_start_code(data) {
             avcc_to_annexb_with_len(data, self.nal_len_size)
         } else {
@@ -254,9 +278,23 @@ impl HwDecoder {
             timestamp: pts,
             keyframe: send_sync,
         };
-        self.input
+        let res = self
+            .input
             .decode(pkt)
-            .map_err(|e| anyhow::anyhow!("hw decode: {e:?}"))
+            .map_err(|e| anyhow::anyhow!("hw decode: {e:?}"));
+        // Miniter shape: drain again right after submitting, so a decoder
+        // that emits synchronously (output ready as soon as input lands)
+        // surfaces the frame on this packet's drain instead of lagging.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            loop {
+                match self.output.try_frame() {
+                    Ok(Some(f)) => pre_drain.push(f),
+                    _ => break,
+                }
+            }
+        }
+        res
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -819,7 +857,13 @@ impl VideoDecoder {
         })
     }
 
-    pub fn send_packet(&mut self, data: &[u8], pts_us: i64, is_sync: bool) -> Result<()> {
+    pub fn send_packet(
+        &mut self,
+        data: &[u8],
+        pts_us: i64,
+        is_sync: bool,
+        load_serial: u64,
+    ) -> Result<()> {
         match &mut self.inner {
             DecoderInner::Software(inner) => {
                 let packet = videoson::Packet {
@@ -842,7 +886,16 @@ impl VideoDecoder {
             }
             #[cfg(feature = "hw")]
             DecoderInner::Hardware(hw) => {
-                let res = hw.decode(data, Duration::from_micros(pts_us.max(0) as u64), is_sync);
+                let pts = Duration::from_micros(pts_us.max(0) as u64);
+                // Miniter shape: drain-before-submit inside decode; convert
+                // stashed frames here where `load_serial` is known.
+                let mut pre: Vec<baabaabaabaabababbababbaa::VideoFrame> = Vec::new();
+                let res = hw.decode(data, pts, is_sync, &mut pre);
+                for f in pre {
+                    if let Some(decoded) = hw_frame_to_decoded(f, pts, load_serial) {
+                        self.reorder.push(decoded);
+                    }
+                }
                 if let Err(e) = &res {
                     let msg = format!("{e:?}");
                     if msg.contains("Dropped")
