@@ -1267,6 +1267,7 @@ fn handle_video_packet(
     }
     if was_hw && !state.decoder.is_hardware() {
         log::warn!("HW->SW fallback mid-stream, waiting for next keyframe");
+        lock_status(shared).video_hw = false;
         state.need_keyframe = true;
         state.gcd_pts_ticks = 0;
         state.non_zero_pts_seen = 0;
@@ -1282,7 +1283,7 @@ fn handle_video_packet(
             log::warn!("video decode error after HW->SW fallback: {e}");
             return;
         }
-        let drain_was_hw = false;
+        let _drain_was_hw = false;
         let frames = state.decoder.drain_frames(fallback, load_serial, 0);
         for frame in frames.into_iter() {
             if let Some(min) = min_pts {
@@ -1322,6 +1323,8 @@ fn handle_video_packet(
         if !fell_back {
             log::warn!("HW stall: no SW fallback available; resetting HW decoder");
             state.decoder.reset();
+        } else {
+            lock_status(shared).video_hw = false;
         }
         // When fallback created a fresh SW decoder, feed the current packet
         // to it if it is a keyframe (it references no prior HW state), then
@@ -1353,6 +1356,7 @@ fn handle_video_packet(
     }
     if drain_was_hw && !state.decoder.is_hardware() {
         log::warn!("HW->SW fallback during drain, waiting for next keyframe");
+        lock_status(shared).video_hw = false;
         state.need_keyframe = true;
         state.gcd_pts_ticks = 0;
         state.non_zero_pts_seen = 0;

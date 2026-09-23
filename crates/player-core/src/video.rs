@@ -1073,9 +1073,11 @@ impl VideoDecoder {
                 }
             }
             DecoderInner::Software(inner) => {
+                let mut received = 0u32;
+                let mut skipped = 0u32;
                 while let Ok(Some(frame)) = inner.receive_frame() {
                     if frame.plane_data.len() < 2 {
-                        log::warn!("video drain: frame with <2 planes, skipping");
+                        skipped += 1;
                         continue;
                     }
 
@@ -1118,6 +1120,15 @@ impl VideoDecoder {
                         color_info: ColorInfo::default(),
                         poc: frame.poc,
                     });
+                    received += 1;
+                }
+                if received + skipped > 0 {
+                    log::debug!(
+                        "sw drain: received={} skipped_short={} reorder={}",
+                        received,
+                        skipped,
+                        self.reorder.len()
+                    );
                 }
             }
         }
