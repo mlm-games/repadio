@@ -64,6 +64,30 @@
     <control>touch</control>
   </supports>
   <releases>
+    <release version="0.3.10" date="2026-09-23" type="stable">
+      <description>
+        <ul>
+          <li>tests: fix send_packet call for load_serial arg</li>
+          <li>player-core: live video_hw flag on HW-&gt;SW fallback, SW drain debug log</li>
+          <li>player-core: hw stall watchdog 60 -&gt; 10 packets, keep SW state on fallback</li>
+          <li>Revert "ui: move stats line into top chrome bar below title row"</li>
+          <li>ui: move stats line into top chrome bar below title row (save)</li>
+          <li>player-core: feed fallback keyframe to fresh SW decoder; ui: single-line stats text</li>
+          <li>ui: playback stats overlay (i key + info button)</li>
+          <li>player-core: fall back to track duration when num_frames unknown</li>
+          <li>player-core: patch videoson h264 with IDR streaming fix</li>
+          <li>player-core: log SW send failures with packet shape</li>
+          <li>player-core: remove stall-debug logging</li>
+          <li>player-core: log SW drain receive count</li>
+          <li>player-core: log SW send failures with packet shape</li>
+          <li>player-core: warn when stall fallback unavailable</li>
+          <li>player-core: HW stall watchdog with SW fallback</li>
+          <li>hw: fix misleading Annex-B prefix comment</li>
+          <li>hw: separate Annex-B start code before prefixed config</li>
+          <li>wasm hw: decode on calling thread like Miniter, drop supervisor/pump</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.9" date="2026-09-20" type="stable">
       <description>
         <ul>

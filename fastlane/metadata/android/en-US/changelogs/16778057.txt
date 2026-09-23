@@ -1,0 +1,18 @@
+- tests: fix send_packet call for load_serial arg
+- player-core: live video_hw flag on HW->SW fallback, SW drain debug log
+- player-core: hw stall watchdog 60 -> 10 packets, keep SW state on fallback
+- Revert "ui: move stats line into top chrome bar below title row"
+- ui: move stats line into top chrome bar below title row (save)
+- player-core: feed fallback keyframe to fresh SW decoder; ui: single-line stats text
+- ui: playback stats overlay (i key + info button)
+- player-core: fall back to track duration when num_frames unknown
+- player-core: patch videoson h264 with IDR streaming fix
+- player-core: log SW send failures with packet shape
+- player-core: remove stall-debug logging
+- player-core: log SW drain receive count
+- player-core: log SW send failures with packet shape
+- player-core: warn when stall fallback unavailable
+- player-core: HW stall watchdog with SW fallback
+- hw: fix misleading Annex-B prefix comment
+- hw: separate Annex-B start code before prefixed config
+- wasm hw: decode on calling thread like Miniter, drop supervisor/pump
