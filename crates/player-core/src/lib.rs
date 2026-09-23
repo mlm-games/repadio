@@ -1306,20 +1306,23 @@ fn handle_video_packet(
     let frames = state.decoder.drain_frames(fallback, load_serial, fd);
     // HW stall watchdog: MediaCodec failures are silent (zero output, zero
     // error), so a HW decoder that accepts packets but emits nothing would
-    // spin forever on a black screen. After 60 consecutive empty drains,
-    // force SW fallback the same way a decode error does.
+    // spin forever on a black screen. After 10 consecutive empty drains,
+    // force SW fallback the same way a decode error does. 10 is enough to
+    // ride out normal HW pipeline latency but short enough that files whose
+    // keyframes are minutes apart (e.g. 2 keyframes in a 10s file) still
+    // fall back before the stream ends.
     if frames.is_empty() && drain_was_hw {
         state.stall_packets = state.stall_packets.saturating_add(1);
     } else {
         state.stall_packets = 0;
     }
-    if state.stall_packets >= 60 && state.decoder.is_hardware() {
-        log::warn!("HW stall: 60 packets with zero output, falling back to SW");
+    if state.stall_packets >= 10 && state.decoder.is_hardware() {
+        log::warn!("HW stall: 10 packets with zero output, falling back to SW");
         let fell_back = state.decoder.fallback_to_software("hw stall watchdog");
         if !fell_back {
             log::warn!("HW stall: no SW fallback available; resetting HW decoder");
+            state.decoder.reset();
         }
-        state.decoder.reset();
         // When fallback created a fresh SW decoder, feed the current packet
         // to it if it is a keyframe (it references no prior HW state), then
         // drain. Otherwise the SW decoder sits empty until the *next*
