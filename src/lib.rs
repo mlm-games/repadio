@@ -603,7 +603,6 @@ fn intent_to_media_source(dir: &std::path::Path) -> Option<MediaSource> {
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "C" fn android_main(android_app: winit::platform::android::activity::AndroidApp) {
-    #[cfg(all(target_os = "android", feature = "android-log"))]
     rlobkit_app_events::android_log::init(
         env!("CARGO_PKG_NAME"),
         concat!(

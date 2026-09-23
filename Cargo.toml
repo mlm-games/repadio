@@ -102,7 +102,6 @@ default-run = "repadio-desktop"
 [features]
 default = ["hw"]
 hw = ["player-core/hw"]
-android-log = ["rlobkit-app-events/android-log"]
 
 [lib]
 name = "repadio"
@@ -115,7 +114,6 @@ path = "src/main.rs"
 [package.metadata.android]
 package = "org.mlm.repadio"
 apk_name = "repadio"
-features = ["android-log"]
 build_targets = [
     "aarch64-linux-android",
     "armv7-linux-androideabi",
@@ -190,7 +188,7 @@ rlobkit-app-events.workspace = true
 web-time.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
-rlobkit-app-events = { workspace = true, features = ["jni-bridge", "android-log"] }
+rlobkit-app-events = { workspace = true, features = ["jni-bridge"] }
 
 [target.'cfg(not(any(target_os = "android", target_arch = "wasm32")))'.dependencies]
 env_logger.workspace = true
