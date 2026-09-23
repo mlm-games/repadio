@@ -631,7 +631,9 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "baabaabaabaabababbababbaa"
-version = "0.1.17"
+version = "0.1.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8fd39c0174cecbc79fc9e700e1367392588eba6f0641c16fb3d7e5a7b3beec0"
 dependencies = [
  "anodecs",
  "bytes",
@@ -1616,6 +1618,7 @@ version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc"
 dependencies = [
+ "futures-channel",
  "futures-core",
  "futures-macro",
  "futures-task",
@@ -1711,6 +1714,18 @@ name = "glob"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
+
+[[package]]
+name = "gloo-timers"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "js-sys",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "glow"
@@ -2219,9 +2234,9 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libredox"
-version = "0.1.24"
+version = "0.1.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6480ccc157a1389bb2e4891b24751b0f798ba640d22386f23143fbcc89da195a"
+checksum = "61ff90caf6077a803a240f62fdbe88645a890bbca49ef8174c3cb0404362171d"
 dependencies = [
  "bitflags 2.13.2",
  "libc",
@@ -3972,9 +3987,9 @@ dependencies = [
 
 [[package]]
 name = "rlobkit-core"
-version = "0.5.4"
+version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96cf252b37cf4f0ba52d1bc39b9f613220554c9883f0a83c65f6e54f862f3630"
+checksum = "0cec8f8599302bfb2112044191a76b9a57b8579d240ed0cec4a6c0e2e8feb5f4"
 dependencies = [
  "bytes",
  "dirs",
@@ -3985,9 +4000,9 @@ dependencies = [
 
 [[package]]
 name = "rlobkit-dialogs"
-version = "0.5.4"
+version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07374dffd24cc6f27c8766842cd1e6ff85b30c6a43ff99b2d5c1567326fe9b59"
+checksum = "54cfd30dbf591318adbb4450eee40001f559dde4865aa8ae719b680a552e0539"
 dependencies = [
  "bytes",
  "futures-lite",
@@ -4106,7 +4121,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5004,9 +5019,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "videoson"
-version = "0.5.3"
+version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "147a8991feb0e4f13cecfca327857ecc966ce62f21e125d2d8d78cbcd6e959fe"
+checksum = "c0ca1d6ef5eafefdd651f0eea75668b3b05354fa325fc2f17942d683d39cb7b7"
 dependencies = [
  "videoson-codec-h264",
  "videoson-codec-h265",
@@ -5021,6 +5036,8 @@ dependencies = [
 [[package]]
 name = "videoson-codec-h264"
 version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7051369962e23b7ee9ad8f81008de1f43872e9f9bf2d1ae539d5c3981e8ab373"
 dependencies = [
  "rust_h264",
  "videoson-core",
@@ -5028,9 +5045,9 @@ dependencies = [
 
 [[package]]
 name = "videoson-codec-h265"
-version = "0.5.3"
+version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "545ee8eaa863666b5f75d5777e9df8ba6728ec2cadb8df97a7d34983ac250f66"
+checksum = "ea22a89ca0675dbbdd419b58612919b2fa69ed209d7f351eaa51f88e52acbf8a"
 dependencies = [
  "oxideav-core",
  "oxideav-h265",
@@ -5040,9 +5057,9 @@ dependencies = [
 
 [[package]]
 name = "videoson-codec-rav1d"
-version = "0.5.3"
+version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "821616bc3c620368d1acd2acef744fba425e7d50f7964eefd869166454ed10ec"
+checksum = "60e5de3bd4f753b3f865529557ae9fa3fa475b939d1173121ef850addded2636"
 dependencies = [
  "rav1d-safe",
  "videoson-core",
@@ -5050,9 +5067,9 @@ dependencies = [
 
 [[package]]
 name = "videoson-codec-vp8"
-version = "0.5.3"
+version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73274dcdbdc3a16fbf36780e8966aa05551021263cbc0ad719d90699e5ca1ae1"
+checksum = "9f1c8e88e1857453600a5679f2c231c6fc8ab9053490afaa5a3ac0c7a72cf3a0"
 dependencies = [
  "oxideav-vp8",
  "videoson-core",
@@ -5060,9 +5077,9 @@ dependencies = [
 
 [[package]]
 name = "videoson-codec-vp9"
-version = "0.5.3"
+version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa2561d8b590deaef09c04aafdd751f82b192caed8ffc532387ce3ae35399315"
+checksum = "6353f5f1b530f8dcae1df8aebd2c879dc854afdd0476fb31ae5077e5bdb18f57"
 dependencies = [
  "oxideav-core",
  "oxideav-vp9",
@@ -5071,19 +5088,21 @@ dependencies = [
 
 [[package]]
 name = "videoson-common"
-version = "0.5.3"
+version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b90088552866a18d965877019033d9f34cf449661bb7181ab20e1ee7988c75c9"
+checksum = "5b3c265e071d52aabbcacbd0c05a2c90e4d7f34d9eb0229b1b5aa9be8fb4102b"
 
 [[package]]
 name = "videoson-core"
 version = "0.5.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6526040b031f104d89be02e308ecb5fe0e00a91eaa00c892def68d36b53de12"
 
 [[package]]
 name = "videoson-format-ivf"
-version = "0.5.3"
+version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39ad3759e538c592665c73aa43b3b148dcf0c068bf9b497bfddec65cbf1b40fe"
+checksum = "3f9d8fb5edd76eb870937a78b73110db03fc98c57d1cb7e4990c64fb9e503e8a"
 dependencies = [
  "oxideav-bitstream",
  "videoson-common",
@@ -5323,16 +5342,21 @@ dependencies = [
 
 [[package]]
 name = "web-workers"
-version = "0.3.6"
+version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4606593135f49a636c98f948be9b986525a05ea44a5181d12253df7084f5ac59"
+checksum = "45a3851eee3524c600dbdc84849ca844d06e73d548e86492df959eec4138bec0"
 dependencies = [
  "atomic-waker",
  "continue",
+ "futures-util",
+ "gloo-timers",
  "js-sys",
  "minicov",
  "pin-project",
  "pollster",
+ "serde",
+ "serde_json",
+ "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -5708,6 +5732,15 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
+dependencies = [
+ "windows-targets",
+]
+
+[[package]]
+name = "windows-sys"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets",
 ]

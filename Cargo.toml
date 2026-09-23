@@ -63,9 +63,9 @@ player-sync = { path = "crates/player-sync" }
 player-platform = { path = "crates/player-platform" }
 
 [patch.crates-io]
-baabaabaabaabababbababbaa = { path = "../baa4bababab2baa", package = "baabaabaabaabababbababbaa" }
-videoson-codec-h264 = { path = "../videoson/videoson-codec-h264" }
-videoson-core = { path = "../videoson/videoson-core" }
+# baabaabaabaabababbababbaa = { path = "../baa4bababab2baa", package = "baabaabaabaabababbababbaa" }
+# videoson-codec-h264 = { path = "../videoson/videoson-codec-h264" }
+# videoson-core = { path = "../videoson/videoson-core" }
 # nuxodecs = { path = "../cros-codecs", package = "nuxodecs" }
 symphonia = { git = "https://github.com/mlm-games/symphonia", package = "symphonia" }
 symphonia-core = { git = "https://github.com/mlm-games/symphonia", package = "symphonia-core" }
