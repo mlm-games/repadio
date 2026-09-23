@@ -890,14 +890,14 @@ fn App(
     let playlist_len = playlist.get().len();
 
     let top_bar = m3::TopAppBar(
-        Row(Modifier::new().gap(10.0)).child((
-            Icon(Symbols::graphic_eq).size(22.0).color(theme().primary),
-            Text("Repadio").size(20.0),
+        Row(Modifier::new().gap(10.0.dp())).child((
+            Icon(Symbols::graphic_eq).size(22.0.sp()).color(theme().primary),
+            Text("Repadio").size(20.0.sp()),
         )),
         None,
         None,
         vec![m3::IconButton(
-            Icon(Symbols::settings).size(22.0),
+            Icon(Symbols::settings).size(22.0.sp()),
             {
                 let show_settings = show_settings.clone();
                 move || show_settings.set(true)
@@ -908,7 +908,7 @@ fn App(
     );
 
     let fab = m3::FAB(
-        Icon(Symbols::add).size(24.0),
+        Icon(Symbols::add).size(24.0.sp()),
         {
             let pending = pending.clone();
             move || {
@@ -963,12 +963,12 @@ fn App(
                 Modifier::new()
                     .fill_max_size()
                     .padding_values(PaddingValues {
-                        top: 12.0,
-                        bottom: 12.0,
-                        left: 12.0,
-                        right: 12.0,
+                        top: 12.0.dp(),
+                        bottom: 12.0.dp(),
+                        left: 12.0.dp(),
+                        right: 12.0.dp(),
                     })
-                    .gap(16.0),
+                    .gap(16.0.dp()),
             )
             .child((
                 ErrorBanner(snap.error.clone(), dismissed_error.clone()),
@@ -1026,36 +1026,36 @@ fn ErrorBanner(error: Option<String>, dismissed: Rc<Signal<Option<String>>>) -> 
     };
 
     if !should_show {
-        return Box(Modifier::new().height(0.0));
+        return Box(Modifier::new().height(0.0.dp()));
     }
 
     let msg = error.clone().unwrap_or_default();
 
     Row(Modifier::new()
         .fill_max_width()
-        .padding(14.0)
-        .clip_rounded(16.0)
+        .padding(14.0.dp())
+        .clip_rounded(16.0.dp())
         .background(theme().error_container)
-        .gap(12.0)
+        .gap(12.0.dp())
         .align_items(AlignItems::CENTER))
     .child((
         Icon(Symbols::error_icon)
-            .size(20.0)
+            .size(20.0.sp())
             .color(theme().on_error_container),
         Text(msg)
-            .size(13.0)
+            .size(13.0.sp())
             .color(theme().on_error_container)
             .modifier(Modifier::new().weight(1.0)),
         m3::IconButton(
             Icon(Symbols::close)
-                .size(18.0)
+                .size(18.0.sp())
                 .color(theme().on_error_container),
             {
                 let dismissed = dismissed.clone();
                 move || dismissed.set(error.clone())
             },
             m3::IconButtonConfig {
-                container_size: Some(28.0),
+                container_size: Some(28.0.dp()),
                 ..Default::default()
             },
         ),
@@ -1110,19 +1110,19 @@ fn NowPlayingCard(
     Column(
         Modifier::new()
             .fill_max_width()
-            .padding(20.0)
-            .clip_rounded(24.0)
+            .padding(20.0.dp())
+            .clip_rounded(24.0.dp())
             .background(theme().surface_container)
-            .gap(16.0),
+            .gap(16.0.dp()),
     )
     .child((
         if has_video {
             let aspect = video_sink.borrow().aspect();
-            Column(Modifier::new().fill_max_width().gap(12.0)).child((
+            Column(Modifier::new().fill_max_width().gap(12.0.dp())).child((
                 Box(Modifier::new()
                     .fill_max_width()
                     .aspect_ratio(aspect)
-                    .clip_rounded(20.0)
+                    .clip_rounded(20.0.dp())
                     .background(art_bg))
                 .child(
                     ZStack(Modifier::new().fill_max_size().on_double_click({
@@ -1145,27 +1145,27 @@ fn NowPlayingCard(
                                 },
                             ))
                         } else {
-                            Box(Modifier::new().height(0.0))
+                            Box(Modifier::new().height(0.0.dp()))
                         },
                         Box(Modifier::new()
                             .fill_max_size()
                             .align_items(AlignItems::FLEX_END)
                             .justify_content(JustifyContent::FLEX_END)
-                            .padding(10.0)
+                            .padding(10.0.dp())
                             .hit_passthrough())
                         .child(
                             Box(Modifier::new()
                                 .background(Color::BLACK.with_alpha(120))
-                                .clip_rounded(20.0)
-                                .padding(4.0))
+                                .clip_rounded(20.0.dp())
+                                .padding(4.0.dp()))
                             .child(m3::IconButton(
-                                Icon(Symbols::fullscreen).size(20.0).color(Color::WHITE),
+                                Icon(Symbols::fullscreen).size(20.0.sp()).color(Color::WHITE),
                                 {
                                     let is_fullscreen = is_fullscreen.clone();
                                     move || is_fullscreen.set(true)
                                 },
                                 m3::IconButtonConfig {
-                                    container_size: Some(36.0),
+                                    container_size: Some(36.0.dp()),
                                     ..Default::default()
                                 },
                             )),
@@ -1174,12 +1174,12 @@ fn NowPlayingCard(
                 ),
                 Row(Modifier::new()
                     .fill_max_width()
-                    .gap(16.0)
+                    .gap(16.0.dp())
                     .align_items(AlignItems::CENTER))
-                .child((Column(Modifier::new().weight(1.0).gap(6.0)).child((
-                    Text(title).size(20.0).single_line().overflow_ellipsize(),
+                .child((Column(Modifier::new().weight(1.0).gap(6.0.dp())).child((
+                    Text(title).size(20.0.sp()).single_line().overflow_ellipsize(),
                     Text(sub_line)
-                        .size(13.0)
+                        .size(13.0.sp())
                         .color(theme().on_surface.with_alpha(170))
                         .single_line()
                         .overflow_ellipsize(),
@@ -1189,13 +1189,13 @@ fn NowPlayingCard(
         } else {
             Row(Modifier::new()
                 .fill_max_width()
-                .gap(16.0)
+                .gap(16.0.dp())
                 .align_items(AlignItems::CENTER))
             .child((
                 Box(Modifier::new()
-                    .width(88.0)
-                    .height(88.0)
-                    .clip_rounded(20.0)
+                    .width(88.0.dp())
+                    .height(88.0.dp())
+                    .clip_rounded(20.0.dp())
                     .background(art_bg)
                     .align_items(AlignItems::CENTER)
                     .justify_content(JustifyContent::CENTER))
@@ -1207,13 +1207,13 @@ fn NowPlayingCard(
                     } else {
                         Symbols::music_note
                     })
-                    .size(36.0)
+                    .size(36.0.sp())
                     .color(art_fg)
                 }),
-                Column(Modifier::new().weight(1.0).gap(6.0)).child((
-                    Text(title).size(20.0).single_line().overflow_ellipsize(),
+                Column(Modifier::new().weight(1.0).gap(6.0.dp())).child((
+                    Text(title).size(20.0.sp()).single_line().overflow_ellipsize(),
                     Text(sub_line)
-                        .size(13.0)
+                        .size(13.0.sp())
                         .color(theme().on_surface.with_alpha(170))
                         .single_line()
                         .overflow_ellipsize(),
@@ -1221,7 +1221,7 @@ fn NowPlayingCard(
                 )),
             ))
         },
-        Column(Modifier::new().fill_max_width().gap(4.0)).child((
+        Column(Modifier::new().fill_max_width().gap(4.0.dp())).child((
             m3::Slider(
                 slider_value,
                 (0.0, 1.0),
@@ -1268,11 +1268,11 @@ fn NowPlayingCard(
             ),
             Row(Modifier::new().fill_max_width()).child((
                 Text(pos)
-                    .size(12.0)
+                    .size(12.0.sp())
                     .color(theme().on_surface.with_alpha(150)),
                 Spacer(),
                 Text(dur)
-                    .size(12.0)
+                    .size(12.0.sp())
                     .color(theme().on_surface.with_alpha(150)),
             )),
         )),
@@ -1524,7 +1524,7 @@ fn FullscreenVideo(
                 },
             ))
         } else {
-            Box(Modifier::new().height(0.0))
+            Box(Modifier::new().height(0.0.dp()))
         },
         if let Some((ref msg, _)) = osd.get() {
             Box(Modifier::new()
@@ -1535,16 +1535,16 @@ fn FullscreenVideo(
             .child(
                 Box(Modifier::new()
                     .padding_values(PaddingValues {
-                        left: 16.0,
-                        right: 16.0,
-                        top: 10.0,
-                        bottom: 10.0,
+                        left: 16.0.dp(),
+                        right: 16.0.dp(),
+                        top: 10.0.dp(),
+                        bottom: 10.0.dp(),
                     })
                     .background(Color::BLACK.with_alpha(180))
-                    .clip_rounded(8.0))
+                    .clip_rounded(8.0.dp()))
                 .child(
                     Text(msg.clone())
-                        .size(18.0)
+                        .size(18.0.sp())
                         .color(Color::WHITE)
                         .font_weight(FontWeight::MEDIUM),
                 ),
@@ -1555,31 +1555,31 @@ fn FullscreenVideo(
                 .align_items(AlignItems::START)
                 .justify_content(JustifyContent::START)
                 .padding_values(PaddingValues {
-                    left: 16.0,
-                    right: 16.0,
-                    top: 64.0,
-                    bottom: 10.0,
+                    left: 16.0.dp(),
+                    right: 16.0.dp(),
+                    top: 64.0.dp(),
+                    bottom: 10.0.dp(),
                 })
                 .hit_passthrough())
             .child(
                 Box(Modifier::new()
                     .padding_values(PaddingValues {
-                        left: 12.0,
-                        right: 12.0,
-                        top: 8.0,
-                        bottom: 8.0,
+                        left: 12.0.dp(),
+                        right: 12.0.dp(),
+                        top: 8.0.dp(),
+                        bottom: 8.0.dp(),
                     })
                     .background(Color::BLACK.with_alpha(200))
-                    .clip_rounded(8.0))
+                    .clip_rounded(8.0.dp()))
                 .child(
                     Text(stats_text.clone())
-                        .size(13.0)
+                        .size(13.0.sp())
                         .color(Color::WHITE)
                         .font_weight(FontWeight::MEDIUM),
                 ),
             )
         } else {
-            Box(Modifier::new().height(0.0))
+            Box(Modifier::new().height(0.0.dp()))
         },
         if show_chrome {
             ZStack(Modifier::new().fill_max_size()).child((
@@ -1589,20 +1589,20 @@ fn FullscreenVideo(
                         .align_self(AlignSelf::START)
                         .background(Color::BLACK.with_alpha(160))
                         .padding_values(PaddingValues {
-                            left: 16.0,
-                            right: 8.0,
-                            top: 10.0,
-                            bottom: 12.0,
+                            left: 16.0.dp(),
+                            right: 8.0.dp(),
+                            top: 10.0.dp(),
+                            bottom: 12.0.dp(),
                         }),
                 )
                 .child(
                     Row(Modifier::new()
                         .fill_max_width()
                         .align_items(AlignItems::CENTER)
-                        .gap(12.0))
+                        .gap(12.0.dp()))
                     .child((
                         Text(title)
-                            .size(16.0)
+                            .size(16.0.sp())
                             .color(Color::WHITE)
                             .font_weight(FontWeight::MEDIUM)
                             .max_lines(1)
@@ -1610,26 +1610,26 @@ fn FullscreenVideo(
                         Spacer(),
                         StatusChip(snap.state),
                         m3::IconButton(
-                            Icon(Symbols::info).size(22.0).color(Color::WHITE),
+                            Icon(Symbols::info).size(22.0.sp()).color(Color::WHITE),
                             {
                                 let show_stats = show_stats.clone();
                                 move || show_stats.set(!show_stats.get())
                             },
                             m3::IconButtonConfig {
-                                container_size: Some(40.0),
+                                container_size: Some(40.0.dp()),
                                 ..Default::default()
                             },
                         ),
                         m3::IconButton(
                             Icon(Symbols::fullscreen_exit)
-                                .size(22.0)
+                                .size(22.0.sp())
                                 .color(Color::WHITE),
                             {
                                 let exit_fs = exit_fs.clone();
                                 move || exit_fs()
                             },
                             m3::IconButtonConfig {
-                                container_size: Some(40.0),
+                                container_size: Some(40.0.dp()),
                                 ..Default::default()
                             },
                         ),
@@ -1641,12 +1641,12 @@ fn FullscreenVideo(
                         .align_self(AlignSelf::END)
                         .background(Color::BLACK.with_alpha(170))
                         .padding_values(PaddingValues {
-                            left: 16.0,
-                            right: 16.0,
-                            top: 10.0,
-                            bottom: 14.0,
+                            left: 16.0.dp(),
+                            right: 16.0.dp(),
+                            top: 10.0.dp(),
+                            bottom: 14.0.dp(),
                         })
-                        .gap(6.0)
+                        .gap(6.0.dp())
                         .on_pointer_enter({
                             let bump = bump_activity.clone();
                             move |_| bump()
@@ -1664,10 +1664,10 @@ fn FullscreenVideo(
                     Row(Modifier::new()
                         .fill_max_width()
                         .align_items(AlignItems::CENTER)
-                        .gap(10.0))
+                        .gap(10.0.dp()))
                     .child((
                         Text(pos_label)
-                            .size(13.0)
+                            .size(13.0.sp())
                             .color(Color::WHITE.with_alpha(220))
                             .font_family("monospace")
                             .single_line(),
@@ -1697,7 +1697,7 @@ fn FullscreenVideo(
                             },
                         ),
                         Text(dur_label)
-                            .size(13.0)
+                            .size(13.0.sp())
                             .color(Color::WHITE.with_alpha(220))
                             .font_family("monospace")
                             .single_line(),
@@ -1706,10 +1706,10 @@ fn FullscreenVideo(
                         .fill_max_width()
                         .align_items(AlignItems::CENTER)
                         .justify_content(JustifyContent::CENTER)
-                        .gap(8.0))
+                        .gap(8.0.dp()))
                     .child((
                         m3::IconButton(
-                            Icon(Symbols::replay_10).size(24.0).color(Color::WHITE),
+                            Icon(Symbols::replay_10).size(24.0.sp()).color(Color::WHITE),
                             {
                                 let player = player.clone();
                                 let snap = snap.clone();
@@ -1722,7 +1722,7 @@ fn FullscreenVideo(
                                 }
                             },
                             m3::IconButtonConfig {
-                                container_size: Some(44.0),
+                                container_size: Some(44.0.dp()),
                                 ..Default::default()
                             },
                         ),
@@ -1732,7 +1732,7 @@ fn FullscreenVideo(
                             } else {
                                 Symbols::play_arrow
                             })
-                            .size(28.0),
+                            .size(28.0.sp()),
                             {
                                 let player = player.clone();
                                 let bump = bump_activity.clone();
@@ -1742,12 +1742,12 @@ fn FullscreenVideo(
                                 }
                             },
                             m3::IconButtonConfig {
-                                container_size: Some(56.0),
+                                container_size: Some(56.0.dp()),
                                 ..Default::default()
                             },
                         ),
                         m3::IconButton(
-                            Icon(Symbols::forward_10).size(24.0).color(Color::WHITE),
+                            Icon(Symbols::forward_10).size(24.0.sp()).color(Color::WHITE),
                             {
                                 let player = player.clone();
                                 let snap = snap.clone();
@@ -1760,7 +1760,7 @@ fn FullscreenVideo(
                                 }
                             },
                             m3::IconButtonConfig {
-                                container_size: Some(44.0),
+                                container_size: Some(44.0.dp()),
                                 ..Default::default()
                             },
                         ),
@@ -1785,7 +1785,7 @@ fn FullscreenVideo(
                                 }
                             },
                             Text(format!("{:.2}x", speed.get()))
-                                .size(13.0)
+                                .size(13.0.sp())
                                 .color(Color::WHITE),
                             None,
                             None,
@@ -1797,7 +1797,7 @@ fn FullscreenVideo(
                             } else {
                                 Symbols::volume_up
                             })
-                            .size(22.0)
+                            .size(22.0.sp())
                             .color(Color::WHITE),
                             {
                                 let player = player.clone();
@@ -1808,7 +1808,7 @@ fn FullscreenVideo(
                                 }
                             },
                             m3::IconButtonConfig {
-                                container_size: Some(44.0),
+                                container_size: Some(44.0.dp()),
                                 ..Default::default()
                             },
                         ),
@@ -1816,7 +1816,7 @@ fn FullscreenVideo(
                 )),
             ))
         } else {
-            Box(Modifier::new().height(0.0))
+            Box(Modifier::new().height(0.0.dp()))
         },
     ))
 }
@@ -1858,14 +1858,14 @@ fn StatusChip(state: PlaybackState) -> View {
 
     Box(Modifier::new()
         .padding_values(PaddingValues {
-            left: 10.0,
-            right: 10.0,
-            top: 4.0,
-            bottom: 4.0,
+            left: 10.0.dp(),
+            right: 10.0.dp(),
+            top: 4.0.dp(),
+            bottom: 4.0.dp(),
         })
-        .clip_rounded(999.0)
+        .clip_rounded(999.0.dp())
         .background(bg))
-    .child(Text(label).size(11.0).color(fg))
+    .child(Text(label).size(11.0.sp()).color(fg))
 }
 
 fn TransportBar(
@@ -1878,12 +1878,12 @@ fn TransportBar(
 ) -> View {
     Row(Modifier::new()
         .fill_max_width()
-        .gap(12.0)
+        .gap(12.0.dp())
         .align_items(AlignItems::CENTER)
         .justify_content(JustifyContent::CENTER))
     .child((
         m3::OutlinedIconButton(
-            Icon(Symbols::skip_previous).size(22.0),
+            Icon(Symbols::skip_previous).size(22.0.sp()),
             {
                 let player = player.clone();
                 let playlist = playlist.clone();
@@ -1901,7 +1901,7 @@ fn TransportBar(
                 }
             },
             m3::IconButtonConfig {
-                container_size: Some(48.0),
+                container_size: Some(48.0.dp()),
                 ..Default::default()
             },
         ),
@@ -1913,7 +1913,7 @@ fn TransportBar(
                     Symbols::play_arrow
                 },
             )
-            .size(30.0),
+            .size(30.0.sp()),
             {
                 let player = player.clone();
                 move || {
@@ -1923,12 +1923,12 @@ fn TransportBar(
                 }
             },
             m3::IconButtonConfig {
-                container_size: Some(64.0),
+                container_size: Some(64.0.dp()),
                 ..Default::default()
             },
         ),
         m3::OutlinedIconButton(
-            Icon(Symbols::skip_next).size(22.0),
+            Icon(Symbols::skip_next).size(22.0.sp()),
             {
                 let player = player.clone();
                 let playlist = playlist.clone();
@@ -1946,7 +1946,7 @@ fn TransportBar(
                 }
             },
             m3::IconButtonConfig {
-                container_size: Some(48.0),
+                container_size: Some(48.0.dp()),
                 ..Default::default()
             },
         ),
@@ -1972,8 +1972,8 @@ fn TransportBar(
                     }
                 }
             },
-            Text(format!("{:.2}x", speed.get())).size(12.0),
-            Some(Icon(Symbols::speed).size(16.0)),
+            Text(format!("{:.2}x", speed.get())).size(12.0.sp()),
+            Some(Icon(Symbols::speed).size(16.0.sp())),
             None,
             m3::ChipConfig::default(),
         ),
@@ -1993,17 +1993,17 @@ fn VolumeRow(player: AudioPlayer, volume: Rc<Signal<f32>>, muted: bool) -> View 
     Row(Modifier::new()
         .fill_max_width()
         .padding_values(PaddingValues {
-            left: 4.0,
-            right: 4.0,
-            top: 0.0,
-            bottom: 0.0,
+            left: 4.0.dp(),
+            right: 4.0.dp(),
+            top: 0.0.dp(),
+            bottom: 0.0.dp(),
         })
-        .gap(10.0)
+        .gap(10.0.dp())
         .align_items(AlignItems::CENTER))
     .child((
         m3::IconButton(
             Icon(icon)
-                .size(18.0)
+                .size(18.0.sp())
                 .color(theme().on_surface.with_alpha(170)),
             {
                 let player = player.clone();
@@ -2012,7 +2012,7 @@ fn VolumeRow(player: AudioPlayer, volume: Rc<Signal<f32>>, muted: bool) -> View 
                 }
             },
             m3::IconButtonConfig {
-                container_size: Some(32.0),
+                container_size: Some(32.0.dp()),
                 ..Default::default()
             },
         ),
@@ -2036,33 +2036,33 @@ fn VolumeRow(player: AudioPlayer, volume: Rc<Signal<f32>>, muted: bool) -> View 
             },
         ),
         Text(format!("{:.0}%", v * 100.0))
-            .size(12.0)
+            .size(12.0.sp())
             .color(theme().on_surface.with_alpha(170))
-            .modifier(Modifier::new().width(40.0)),
+            .modifier(Modifier::new().width(40.0.dp())),
     ))
 }
 
 fn PlaylistHeader(count: usize) -> View {
     Row(Modifier::new()
         .fill_max_width()
-        .gap(8.0)
+        .gap(8.0.dp())
         .align_items(AlignItems::CENTER))
     .child((
         Text("Playlist")
-            .size(16.0)
+            .size(16.0.sp())
             .color(theme().on_surface.with_alpha(220)),
         Box(Modifier::new()
             .padding_values(PaddingValues {
-                left: 8.0,
-                right: 8.0,
-                top: 2.0,
-                bottom: 2.0,
+                left: 8.0.dp(),
+                right: 8.0.dp(),
+                top: 2.0.dp(),
+                bottom: 2.0.dp(),
             })
-            .clip_rounded(999.0)
+            .clip_rounded(999.0.dp())
             .background(theme().secondary_container))
         .child(
             Text(count.to_string())
-                .size(11.0)
+                .size(11.0.sp())
                 .color(theme().on_secondary_container),
         ),
         Spacer(),
@@ -2074,29 +2074,29 @@ fn EmptyPlaylist(pending: PendingFiles) -> View {
         Modifier::new()
             .fill_max_width()
             .weight(1.0)
-            .padding(32.0)
-            .gap(12.0),
+            .padding(32.0.dp())
+            .gap(12.0.dp()),
     )
     .child((
         Spacer(),
         Row(Modifier::new().fill_max_width()).child((
             Spacer(),
             Icon(Symbols::library_music)
-                .size(48.0)
+                .size(48.0.sp())
                 .color(theme().on_surface.with_alpha(100)),
             Spacer(),
         )),
         Row(Modifier::new().fill_max_width()).child((
             Spacer(),
             Text("No tracks yet")
-                .size(16.0)
+                .size(16.0.sp())
                 .color(theme().on_surface.with_alpha(200)),
             Spacer(),
         )),
         Row(Modifier::new().fill_max_width()).child((
             Spacer(),
             Text("Tap + to add media files")
-                .size(13.0)
+                .size(13.0.sp())
                 .color(theme().on_surface.with_alpha(150)),
             Spacer(),
         )),
@@ -2134,7 +2134,7 @@ fn EmptyPlaylist(pending: PendingFiles) -> View {
                     }
                 },
                 m3::ButtonConfig::default(),
-                || Row(Modifier::new().gap(8.0)).child((Icon(Symbols::add), Text("Add files"))),
+                || Row(Modifier::new().gap(8.0.dp())).child((Icon(Symbols::add), Text("Add files"))),
             ),
             Spacer(),
         )),
@@ -2196,8 +2196,8 @@ fn TrackRow(
     Column(Modifier::new().fill_max_width()).child((
         Row(Modifier::new()
             .fill_max_width()
-            .padding(10.0)
-            .clip_rounded(14.0)
+            .padding(10.0.dp())
+            .clip_rounded(14.0.dp())
             .background(if is_current {
                 surface_tint(theme().primary_container, 60)
             } else {
@@ -2213,28 +2213,28 @@ fn TrackRow(
                     }
                 }
             })
-            .gap(12.0)
+            .gap(12.0.dp())
             .align_items(AlignItems::CENTER))
         .child((
             Box(Modifier::new()
-                .width(40.0)
-                .height(40.0)
-                .clip_rounded(10.0)
+                .width(40.0.dp())
+                .height(40.0.dp())
+                .clip_rounded(10.0.dp())
                 .background(leading_bg)
                 .align_items(AlignItems::CENTER)
                 .justify_content(JustifyContent::CENTER))
             .child(if let Some(h) = thumb {
                 Image(Modifier::new().fill_max_size(), h)
             } else if is_current {
-                Icon(Symbols::graphic_eq).size(18.0).color(leading_fg)
+                Icon(Symbols::graphic_eq).size(18.0.sp()).color(leading_fg)
             } else if is_video_source(&entry.source) {
-                Icon(Symbols::movie).size(18.0).color(leading_fg)
+                Icon(Symbols::movie).size(18.0.sp()).color(leading_fg)
             } else {
-                Text(format!("{}", idx + 1)).size(13.0).color(leading_fg)
+                Text(format!("{}", idx + 1)).size(13.0.sp()).color(leading_fg)
             }),
-            Column(Modifier::new().weight(1.0).gap(2.0)).child((
+            Column(Modifier::new().weight(1.0).gap(2.0.dp())).child((
                 Text(entry.display_title())
-                    .size(14.0)
+                    .size(14.0.sp())
                     .color(if is_current {
                         theme().primary
                     } else {
@@ -2249,7 +2249,7 @@ fn TrackRow(
                         .clone()
                         .unwrap_or_else(|| "Unknown artist".into()),
                 )
-                .size(12.0)
+                .size(12.0.sp())
                 .color(theme().on_surface.with_alpha(150))
                 .single_line()
                 .overflow_ellipsize(),
@@ -2261,17 +2261,17 @@ fn TrackRow(
                     .map(format_duration)
                     .unwrap_or_else(|| "--:--".into()),
             )
-            .size(12.0)
+            .size(12.0.sp())
             .color(theme().on_surface.with_alpha(150)),
         )),
         m3::HorizontalDivider(m3::DividerConfig {
             modifier: Modifier::new()
                 .fill_max_width()
                 .padding_values(PaddingValues {
-                    left: 62.0,
-                    right: 0.0,
-                    top: 0.0,
-                    bottom: 0.0,
+                    left: 62.0.dp(),
+                    right: 0.0.dp(),
+                    top: 0.0.dp(),
+                    bottom: 0.0.dp(),
                 }),
             ..Default::default()
         }),
@@ -2485,26 +2485,26 @@ fn SettingsScreen(
     let s = settings.get();
     m3::Scaffold(
         move |_| {
-            Column(Modifier::new().fill_max_size().padding(16.0).gap(16.0)).child((
+            Column(Modifier::new().fill_max_size().padding(16.0.dp()).gap(16.0.dp())).child((
                 Row(
                     Modifier::new()
                         .fill_max_width()
                         .align_items(AlignItems::CENTER)
-                        .gap(8.0),
+                        .gap(8.0.dp()),
                 )
                 .child((
                     m3::IconButton(
-                        Icon(Symbols::close).size(22.0),
+                        Icon(Symbols::close).size(22.0.sp()),
                         {
                             let show = show.clone();
                             move || show.set(false)
                         },
                         m3::IconButtonConfig::default(),
                     ),
-                    Text("Settings").size(20.0),
+                    Text("Settings").size(20.0.sp()),
                 )),
-                Column(Modifier::new().fill_max_width().gap(10.0)).child((
-                    Text("Playback").size(14.0).color(theme().primary),
+                Column(Modifier::new().fill_max_width().gap(10.0.dp())).child((
+                    Text("Playback").size(14.0.sp()).color(theme().primary),
                     Row(
                         Modifier::new()
                             .fill_max_width()
@@ -2570,18 +2570,18 @@ fn SettingsScreen(
                         ),
                     )),
                 )),
-                Column(Modifier::new().fill_max_width().gap(10.0)).child((
-                    Text("Video").size(14.0).color(theme().primary),
+                Column(Modifier::new().fill_max_width().gap(10.0.dp())).child((
+                    Text("Video").size(14.0.sp()).color(theme().primary),
                     Row(
                         Modifier::new()
                             .fill_max_width()
                             .align_items(AlignItems::CENTER),
                     )
                     .child((
-                        Column(Modifier::new().weight(1.0).gap(2.0)).child((
-                            Text("Hardware decoding").size(14.0),
+                        Column(Modifier::new().weight(1.0).gap(2.0.dp())).child((
+                            Text("Hardware decoding").size(14.0.sp()),
                             Text("Use VAAPI / MediaCodec / WebCodecs when available. Takes effect on next file.")
-                                .size(12.0)
+                                .size(12.0.sp())
                                 .color(theme().on_surface.with_alpha(160)),
                         )),
                         m3::Switch(
@@ -2601,18 +2601,18 @@ fn SettingsScreen(
                         ),
                     )),
                 )),
-                Column(Modifier::new().fill_max_width().gap(10.0)).child((
-                    Text("Dev options").size(14.0).color(theme().primary),
+                Column(Modifier::new().fill_max_width().gap(10.0.dp())).child((
+                    Text("Dev options").size(14.0.sp()).color(theme().primary),
                     Row(
                         Modifier::new()
                             .fill_max_width()
                             .align_items(AlignItems::CENTER),
                     )
                     .child((
-                        Column(Modifier::new().weight(1.0).gap(2.0)).child((
-                            Text("Disable software decoders").size(14.0),
+                        Column(Modifier::new().weight(1.0).gap(2.0.dp())).child((
+                            Text("Disable software decoders").size(14.0.sp()),
                             Text("HW-only mode: video fails if no hardware backend works. Takes effect on next file.")
-                                .size(12.0)
+                                .size(12.0.sp())
                                 .color(theme().on_surface.with_alpha(160)),
                         )),
                         m3::Switch(
@@ -2632,9 +2632,9 @@ fn SettingsScreen(
                         ),
                     )),
                 )),
-                Column(Modifier::new().fill_max_width().gap(6.0)).child((
-                    Text("Controls").size(14.0).color(theme().primary),
-                    Text(format!("Controls hide after: {} ms", s.hide_controls_ms)).size(13.0),
+                Column(Modifier::new().fill_max_width().gap(6.0.dp())).child((
+                    Text("Controls").size(14.0.sp()).color(theme().primary),
+                    Text(format!("Controls hide after: {} ms", s.hide_controls_ms)).size(13.0.sp()),
                     m3::Slider(
                         s.hide_controls_ms as f32,
                         (800.0, 8000.0),
@@ -2656,7 +2656,7 @@ fn SettingsScreen(
                             ..Default::default()
                         },
                     ),
-                    Text(format!("Seek (arrows), seconds: {:.0}", s.seek_medium_s)).size(13.0),
+                    Text(format!("Seek (arrows), seconds: {:.0}", s.seek_medium_s)).size(13.0.sp()),
                     m3::Slider(
                         s.seek_medium_s as f32,
                         (1.0, 30.0),
@@ -2678,7 +2678,7 @@ fn SettingsScreen(
                             ..Default::default()
                         },
                     ),
-                    Text(format!("Seek (up/down), seconds: {:.0}", s.seek_large_s)).size(13.0),
+                    Text(format!("Seek (up/down), seconds: {:.0}", s.seek_large_s)).size(13.0.sp()),
                     m3::Slider(
                         s.seek_large_s as f32,
                         (10.0, 180.0),
@@ -2701,9 +2701,9 @@ fn SettingsScreen(
                         },
                     ),
                 )),
-                Column(Modifier::new().fill_max_width().gap(8.0)).child((
-                    Text(format!("Default speed: {:.2}x", s.default_speed)).size(13.0),
-                    Row(Modifier::new().gap(8.0)).child(
+                Column(Modifier::new().fill_max_width().gap(8.0.dp())).child((
+                    Text(format!("Default speed: {:.2}x", s.default_speed)).size(13.0.sp()),
+                    Row(Modifier::new().gap(8.0.dp())).child(
                         SPEED_STEPS
                             .iter()
                             .map(|&step| {
@@ -2721,7 +2721,7 @@ fn SettingsScreen(
                                         let _ = player.set_speed(step);
                                         speed.set(step);
                                     },
-                                    Text(format!("{step:.2}x")).size(12.0),
+                                    Text(format!("{step:.2}x")).size(12.0.sp()),
                                     None,
                                     None,
                                     m3::ChipConfig::default(),
@@ -2730,12 +2730,12 @@ fn SettingsScreen(
                             .collect::<Vec<_>>(),
                     ),
                 )),
-                Column(Modifier::new().fill_max_width().gap(8.0)).child((
-                    Text("Hotkeys").size(14.0).color(theme().primary),
+                Column(Modifier::new().fill_max_width().gap(8.0.dp())).child((
+                    Text("Hotkeys").size(14.0.sp()).color(theme().primary),
                     Text(
                         "Space/P play·pause · F fullscreen · M mute · [/] speed · ←/→ seek · ↑/↓ ±1m · Ctrl+S settings · ,/. volume",
                     )
-                    .size(12.0)
+                    .size(12.0.sp())
                     .color(theme().on_surface.with_alpha(160)),
                 )),
             ))
