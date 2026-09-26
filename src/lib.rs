@@ -608,7 +608,7 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
         env!("CARGO_PKG_NAME"),
         concat!(
             env!("CARGO_PKG_NAME"),
-            "=debug,player_core=debug,player_sync=debug,player_platform=debug,baabaabaabaabababbababbaa=trace"
+            "=debug,player_core=debug,player_sync=debug,player_platform=debug,baabaabaabaabababbababbaa=debug"
         ),
     );
     repose_core::locals::set_theme_default(app_theme());
