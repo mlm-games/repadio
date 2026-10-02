@@ -57,6 +57,7 @@ material_symbols! {
     info           : '\u{E88E}',
 }
 use repose_ui::lazy_states::LazyColumnState;
+use repose_ui::overlay::{SnackbarController, ambient_overlay};
 use repose_ui::{
     Box, Column, Image, LazyColumn, LazyColumnConfig, Row, Spacer, Text, ViewExt, ZStack,
 };
@@ -734,12 +735,15 @@ fn App(
     let ended_index = remember(|| signal(None::<usize>));
     let scrubbing = remember(|| signal(None::<f32>));
     let dismissed_error = remember(|| signal(None::<String>));
+    let fallback_shown = remember(|| signal(None::<String>));
+    let snackbar_controller = remember(|| std::cell::RefCell::new(None::<SnackbarController>));
     let ui_tick = remember(|| signal(Instant::now()));
     let settings = remember(|| signal(load_settings_sync()));
     let show_settings = remember(|| signal(false));
     let is_fullscreen = remember(|| signal(false));
     let speed = remember(|| signal(player.playback_rate()));
     let art_cache = remember(|| Rc::new(RefCell::new(ArtCache::new())));
+    let state_tick = remember(|| signal(Instant::now()));
     {
         let needs_wake = pending.needs_wake.swap(false, Ordering::AcqRel);
 
@@ -818,8 +822,50 @@ fn App(
     }
 
     let snap = player.snapshot();
+
+    // A hardware-decoding fallback is silent by default: MediaCodec frequently
+    // stops producing frames without raising an error. Surface the reason the
+    // player recorded so it is diagnosable without a logcat session.
+    if let Some(reason) = snap.video_fallback.clone()
+        && fallback_shown.get().as_deref() != Some(reason.as_str())
+    {
+        fallback_shown.set(Some(reason.clone()));
+        let controller = {
+            let mut slot = snackbar_controller.borrow_mut();
+            if slot.is_none() {
+                *slot = ambient_overlay().map(SnackbarController::new);
+            }
+            slot.clone()
+        };
+        if let Some(controller) = controller {
+            m3::show_simple_snackbar(
+                &controller,
+                format!("Hardware video decoding disabled: {reason}"),
+                None,
+                None,
+                10_000,
+            );
+        }
+    }
     let has_video_frame = video_sink.borrow().active_handle().is_some();
     let has_video = has_video_frame || snap.has_video || player.has_video();
+
+    {
+        let last = state_tick.get();
+        if last.elapsed() >= Duration::from_millis(1000) {
+            state_tick.set(Instant::now());
+            log::info!(
+                "[diag] state={:?} pos={}ms dur={}ms vf={} hw={} err={:?} fallback={:?}",
+                snap.state,
+                snap.position.as_millis(),
+                snap.duration.map(|d| d.as_millis()).unwrap_or(0),
+                snap.video_frames_sent,
+                snap.video_hw,
+                snap.error,
+                snap.video_fallback
+            );
+        }
+    }
 
     // Upload art thumbnails (long-lived handles, only re-uploaded on change).
     if settings.get().show_playlist_thumbs {

@@ -4,12 +4,16 @@ use web_time::Duration;
 
 use anyhow::Result;
 use repose_core::color::ColorInfo;
+
+use crate::color::{avcc_color_info, fallback_color_info, hvcc_color_info, videoson_color_info};
 use videoson::{
     NalFormat, VideoCodecParams, VideoDecoder as VideoDecoderTrait, VideoDecoderOptions,
     VideoOutputFormat, codec_h264::H264Decoder, codec_h265::H265Decoder,
     codec_rav1d::Rav1dSafeDecoder, codec_vp8::Vp8Decoder, codec_vp9::Vp9Decoder,
 };
 
+#[cfg(all(feature = "hw", not(target_arch = "wasm32")))]
+use baabaabaabaabababbababbaa::default_host;
 #[cfg(feature = "hw")]
 use baabaabaabaabababbababbaa::traits::VideoDecoderInputBoxed;
 #[cfg(all(feature = "hw", not(target_arch = "wasm32")))]
@@ -19,8 +23,6 @@ use baabaabaabaabababbababbaa::{
     Dimensions, VideoCodecId as HwCodecId, VideoDecoderConfig, VideoDescriptionFormat,
     VideoOutputMode,
 };
-#[cfg(all(feature = "hw", not(target_arch = "wasm32")))]
-use baabaabaabaabababbababbaa::default_host;
 #[cfg(feature = "hw")]
 use bytes::Bytes;
 
@@ -117,6 +119,11 @@ struct HwDecoder {
     nal_len_size: usize,
     pending_config: Option<Vec<u8>>,
     initial_config: Vec<u8>,
+    /// First error seen while polling the output channel inside `decode()`.
+    /// MediaCodec reports failures here as well as on `try_drain_hw_frames`;
+    /// swallowing it would turn a hard failure into a silent stall.
+    #[cfg(not(target_arch = "wasm32"))]
+    output_error: Option<String>,
 }
 
 /// A completed async `copyTo()` from a WebCodecs hardware frame (wasm only).
@@ -128,6 +135,60 @@ struct PendingWasmCopy {
     height: u32,
     format: baabaabaabaabababbababbaa::PixelFormat,
     pts: Duration,
+}
+
+#[cfg(all(feature = "hw", not(target_arch = "wasm32")))]
+fn poll_hw_output(
+    output: &mut Box<dyn VideoDecoderOutputBoxed>,
+    output_error: &mut Option<String>,
+    out: &mut Vec<baabaabaabaabababbababbaa::VideoFrame>,
+) {
+    loop {
+        match output.try_frame() {
+            Ok(Some(f)) => out.push(f),
+            Ok(None) => break,
+            Err(e) => {
+                // Keep the first error: it is the decoder's own explanation
+                // (MediaCodec codec errors land here) and becomes the
+                // fallback reason shown to the user.
+                if output_error.is_none() {
+                    let msg = format!("{e:?}");
+                    log::warn!("hw output channel error: {msg}");
+                    *output_error = Some(msg);
+                }
+                break;
+            }
+        }
+    }
+}
+
+/// `true` when a hardware decode error means the backend cannot carry on,
+/// as opposed to a transient packet failure the next packet can clear.
+///
+/// Matched on the typed [`Error`] rather than its `Debug` text. Android reports
+/// most real failures as `Error::Failure(MediaFailure { .. })`, a struct variant
+/// whose name shares no substring with the legacy string list, so a substring
+/// match would miss it and the fallback would never fire.
+#[cfg(feature = "hw")]
+fn hw_error_is_fatal(e: &baabaabaabaabababbababbaa::Error) -> bool {
+    use baabaabaabaabababbababbaa::{Error, MediaFailureCode};
+    match e {
+        Error::Dropped | Error::NoBackend | Error::InvalidConfig(_) | Error::Unsupported => true,
+        Error::Platform(_) => true,
+        Error::Failure(f) => matches!(
+            f.code,
+            MediaFailureCode::UnsupportedOutputFormat
+                | MediaFailureCode::CodecConfiguration
+                | MediaFailureCode::DecoderUnavailable
+                | MediaFailureCode::DecoderInitialization
+                | MediaFailureCode::UnsupportedProfile
+                | MediaFailureCode::UnsupportedCodec
+                | MediaFailureCode::NoDecodableFrame
+                | MediaFailureCode::Timeout
+                | MediaFailureCode::BackendDisconnected
+                | MediaFailureCode::InvalidContainer
+        ),
+    }
 }
 
 #[cfg(feature = "hw")]
@@ -195,10 +256,9 @@ impl HwDecoder {
             // drain can call `try_frame_raw()`. `Host::create_video_decoder`
             // returns opaque impl-trait types, so go through the concrete
             // wasm constructor instead.
-            let (input, output) =
-                baabaabaabaabababbababbaa::platform::wasm::WebCodecsHost::new()
-                    .create_video_decoder(config)
-                    .ok()?;
+            let (input, output) = baabaabaabaabababbababbaa::platform::wasm::WebCodecsHost::new()
+                .create_video_decoder(config)
+                .ok()?;
             let (completed_copies_tx, completed_copies_rx) = std::sync::mpsc::channel();
             return Some(Self {
                 input: Box::new(input) as Box<dyn VideoDecoderInputBoxed>,
@@ -225,6 +285,7 @@ impl HwDecoder {
                 nal_len_size,
                 pending_config,
                 initial_config,
+                output_error: None,
             })
         }
     }
@@ -235,21 +296,14 @@ impl HwDecoder {
         pts: Duration,
         is_sync: bool,
         pre_drain: &mut Vec<baabaabaabaabababbababbaa::VideoFrame>,
-    ) -> Result<()> {
+    ) -> Result<(), baabaabaabaabababbababbaa::Error> {
         // Miniter shape: drain available frames BEFORE submitting, so the
         // decoder never sits with all input buffers queued and none released
         // (observed: 121 in-flight, zero output, zero error on MediaCodec).
         // Drained frames are returned for the caller to convert + stash;
         // errors are non-fatal.
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            loop {
-                match self.output.try_frame() {
-                    Ok(Some(f)) => pre_drain.push(f),
-                    _ => break,
-                }
-            }
-        }
+        poll_hw_output(&mut self.output, &mut self.output_error, pre_drain);
         #[cfg(target_arch = "wasm32")]
         {
             let _ = pre_drain;
@@ -278,29 +332,19 @@ impl HwDecoder {
             timestamp: pts,
             keyframe: send_sync,
         };
-        let res = self
-            .input
-            .decode(pkt)
-            .map_err(|e| anyhow::anyhow!("hw decode: {e:?}"));
+        let res = self.input.decode(pkt);
         // Miniter shape: drain again right after submitting, so a decoder
         // that emits synchronously (output ready as soon as input lands)
         // surfaces the frame on this packet's drain instead of lagging.
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            loop {
-                match self.output.try_frame() {
-                    Ok(Some(f)) => pre_drain.push(f),
-                    _ => break,
-                }
-            }
-        }
+        poll_hw_output(&mut self.output, &mut self.output_error, pre_drain);
         res
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     fn try_drain_hw_frames(
         &mut self,
-    ) -> Result<Vec<baabaabaabaabababbababbaa::VideoFrame>, anyhow::Error> {
+    ) -> Result<Vec<baabaabaabaabababbababbaa::VideoFrame>, baabaabaabaabababbababbaa::Error> {
         let mut out = Vec::new();
         loop {
             match self.output.try_frame() {
@@ -310,7 +354,7 @@ impl HwDecoder {
                     // Propagate HW errors so the VideoDecoder can fall back to SW.
                     // VAAPI mapping failures arriving as `Platform("Only linear ...")`
                     // surface here.
-                    return Err(anyhow::anyhow!("hw try_frame: {e:?}"));
+                    return Err(e);
                 }
             }
         }
@@ -326,7 +370,7 @@ impl HwDecoder {
     #[cfg(target_arch = "wasm32")]
     fn try_drain_hw_frames(
         &mut self,
-    ) -> Result<Vec<baabaabaabaabababbababbaa::VideoFrame>, anyhow::Error> {
+    ) -> Result<Vec<baabaabaabaabababbababbaa::VideoFrame>, baabaabaabaabababbababbaa::Error> {
         use baabaabaabaabababbababbaa::{Dimensions, VideoFrame, VideoPlanes};
 
         while let Some(raw) = self.output.try_frame_raw()? {
@@ -334,8 +378,7 @@ impl HwDecoder {
             let height = raw.display_height().max(1);
             let pts = raw.timestamp();
             let format = match raw.format() {
-                Some(web_sys::VideoPixelFormat::I420)
-                | Some(web_sys::VideoPixelFormat::I420a) => {
+                Some(web_sys::VideoPixelFormat::I420) | Some(web_sys::VideoPixelFormat::I420a) => {
                     baabaabaabaabababbababbaa::PixelFormat::Yuv420p
                 }
                 Some(web_sys::VideoPixelFormat::Nv12) => {
@@ -374,6 +417,19 @@ impl HwDecoder {
             });
         }
         Ok(out)
+    }
+
+    /// First error reported by the output channel while polling inside
+    /// `decode()`; the decoder's own explanation for abandoning it.
+    fn output_error(&self) -> Option<&str> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.output_error.as_deref()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            None
+        }
     }
 
     fn flush(&mut self) -> Result<()> {
@@ -421,6 +477,7 @@ fn hw_frame_to_decoded(
     mut frame: baabaabaabaabababbababbaa::VideoFrame,
     fallback_pts: Duration,
     load_serial: u64,
+    color_info: ColorInfo,
 ) -> Option<DecodedVideoFrame> {
     // Ensure CPU accessible (copies DmaBuf/WebCodecs hardware buffers)
     if frame.is_hardware() {
@@ -492,7 +549,7 @@ fn hw_frame_to_decoded(
         uv_plane,
         pts,
         load_serial,
-        color_info: ColorInfo::default(),
+        color_info,
         poc: None,
     })
 }
@@ -510,6 +567,12 @@ pub struct VideoDecoder {
 
     reorder: Vec<DecodedVideoFrame>,
     fallback: Option<(FallbackCodec, u32, u32, Vec<u8>)>,
+    /// Exact reason the hardware backend was abandoned, kept so it can be
+    /// shown to the user instead of only reaching the log.
+    fallback_reason: Option<String>,
+    /// Colour read once from the codec configuration record, so hardware and
+    /// software frames of the same stream render identically.
+    color_info: ColorInfo,
 }
 
 impl VideoDecoder {
@@ -564,6 +627,7 @@ impl VideoDecoder {
         extradata: &[u8],
         prefs: VideoDecoderPrefs,
     ) -> Result<Self> {
+        let color_info = avcc_color_info(extradata);
         #[cfg(feature = "hw")]
         {
             if prefs.try_hw {
@@ -576,9 +640,15 @@ impl VideoDecoder {
                     height,
                     extradata,
                 ) {
-                    log::info!("video: H.264 HW decoder selected [hw] hwdec-current=hw video-codec=H.264 width={width} height={height} extradata={} avcC-present={}", extradata.len(), !extradata.is_empty());
+                    log::info!(
+                        "video: H.264 HW decoder selected [hw] hwdec-current=hw video-codec=H.264 width={width} height={height} extradata={} avcC-present={}",
+                        extradata.len(),
+                        !extradata.is_empty()
+                    );
                     return Ok(Self {
                         inner: DecoderInner::Hardware(Box::new(hw)),
+                        color_info,
+                        fallback_reason: None,
                         reorder: Vec::new(),
                         fallback: if prefs.allow_sw {
                             Some((FallbackCodec::H264, width, height, extradata.to_vec()))
@@ -598,8 +668,10 @@ impl VideoDecoder {
         }
         Ok(Self {
             inner: DecoderInner::Software(Self::software_fallback_h264(width, height, extradata)?),
+            color_info,
             reorder: Vec::new(),
             fallback: None,
+            fallback_reason: None,
         })
     }
 
@@ -632,13 +704,20 @@ impl VideoDecoder {
         extradata: &[u8],
         prefs: VideoDecoderPrefs,
     ) -> Result<Self> {
+        let color_info = fallback_color_info();
         #[cfg(feature = "hw")]
         {
             if prefs.try_hw {
                 if let Some(hw) = HwDecoder::try_new(HwCodecId::Av1, width, height, extradata) {
-                    log::info!("video: AV1 HW decoder selected [hw] hwdec-current=hw video-codec=AV1 width={width} height={height} extradata={} av1C-present={}", extradata.len(), !extradata.is_empty());
+                    log::info!(
+                        "video: AV1 HW decoder selected [hw] hwdec-current=hw video-codec=AV1 width={width} height={height} extradata={} av1C-present={}",
+                        extradata.len(),
+                        !extradata.is_empty()
+                    );
                     return Ok(Self {
                         inner: DecoderInner::Hardware(Box::new(hw)),
+                        color_info,
+                        fallback_reason: None,
                         reorder: Vec::new(),
                         fallback: if prefs.allow_sw {
                             Some((FallbackCodec::Av1, width, height, extradata.to_vec()))
@@ -658,8 +737,10 @@ impl VideoDecoder {
         }
         Ok(Self {
             inner: DecoderInner::Software(Self::software_fallback_av1(width, height, extradata)?),
+            color_info,
             reorder: Vec::new(),
             fallback: None,
+            fallback_reason: None,
         })
     }
 
@@ -692,13 +773,19 @@ impl VideoDecoder {
         extradata: &[u8],
         prefs: VideoDecoderPrefs,
     ) -> Result<Self> {
+        let color_info = fallback_color_info();
         #[cfg(feature = "hw")]
         {
             if prefs.try_hw {
                 if let Some(hw) = HwDecoder::try_new(HwCodecId::Vp8, width, height, extradata) {
-                    log::info!("video: VP8 HW decoder selected [hw] hwdec-current=hw video-codec=VP8 width={width} height={height} extradata={}", extradata.len());
+                    log::info!(
+                        "video: VP8 HW decoder selected [hw] hwdec-current=hw video-codec=VP8 width={width} height={height} extradata={}",
+                        extradata.len()
+                    );
                     return Ok(Self {
                         inner: DecoderInner::Hardware(Box::new(hw)),
+                        color_info,
+                        fallback_reason: None,
                         reorder: Vec::new(),
                         fallback: if prefs.allow_sw {
                             Some((FallbackCodec::Vp8, width, height, extradata.to_vec()))
@@ -718,8 +805,10 @@ impl VideoDecoder {
         }
         Ok(Self {
             inner: DecoderInner::Software(Self::software_fallback_vp8(width, height, extradata)?),
+            color_info,
             reorder: Vec::new(),
             fallback: None,
+            fallback_reason: None,
         })
     }
 
@@ -757,13 +846,19 @@ impl VideoDecoder {
         extradata: &[u8],
         prefs: VideoDecoderPrefs,
     ) -> Result<Self> {
+        let color_info = fallback_color_info();
         #[cfg(feature = "hw")]
         {
             if prefs.try_hw {
                 if let Some(hw) = HwDecoder::try_new(HwCodecId::Vp9, width, height, extradata) {
-                    log::info!("video: VP9 HW decoder selected [hw] hwdec-current=hw video-codec=VP9 width={width} height={height} extradata={}", extradata.len());
+                    log::info!(
+                        "video: VP9 HW decoder selected [hw] hwdec-current=hw video-codec=VP9 width={width} height={height} extradata={}",
+                        extradata.len()
+                    );
                     return Ok(Self {
                         inner: DecoderInner::Hardware(Box::new(hw)),
+                        color_info,
+                        fallback_reason: None,
                         reorder: Vec::new(),
                         fallback: if prefs.allow_sw {
                             Some((FallbackCodec::Vp9, width, height, extradata.to_vec()))
@@ -783,16 +878,21 @@ impl VideoDecoder {
         }
         Ok(Self {
             inner: DecoderInner::Software(Self::software_fallback_vp9(width, height, extradata)?),
+            color_info,
             reorder: Vec::new(),
             fallback: None,
+            fallback_reason: None,
         })
     }
 
     pub fn new_hevc_software(width: u32, height: u32, extradata: &[u8]) -> Result<Self> {
+        let color_info = hvcc_color_info(extradata);
         Ok(Self {
             inner: DecoderInner::Software(Self::software_fallback_hevc(width, height, extradata)?),
+            color_info,
             reorder: Vec::new(),
             fallback: None,
+            fallback_reason: None,
         })
     }
 
@@ -826,13 +926,20 @@ impl VideoDecoder {
         extradata: &[u8],
         prefs: VideoDecoderPrefs,
     ) -> Result<Self> {
+        let color_info = hvcc_color_info(extradata);
         #[cfg(feature = "hw")]
         {
             if prefs.try_hw {
                 if let Some(hw) = HwDecoder::try_new(HwCodecId::Hevc, width, height, extradata) {
-                    log::info!("video: HEVC HW decoder selected [hw] hwdec-current=hw video-codec=HEVC width={width} height={height} extradata={} hvcC-present={}", extradata.len(), !extradata.is_empty());
+                    log::info!(
+                        "video: HEVC HW decoder selected [hw] hwdec-current=hw video-codec=HEVC width={width} height={height} extradata={} hvcC-present={}",
+                        extradata.len(),
+                        !extradata.is_empty()
+                    );
                     return Ok(Self {
                         inner: DecoderInner::Hardware(Box::new(hw)),
+                        color_info,
+                        fallback_reason: None,
                         reorder: Vec::new(),
                         fallback: if prefs.allow_sw {
                             Some((FallbackCodec::H265, width, height, extradata.to_vec()))
@@ -852,8 +959,10 @@ impl VideoDecoder {
         }
         Ok(Self {
             inner: DecoderInner::Software(Self::software_fallback_hevc(width, height, extradata)?),
+            color_info,
             reorder: Vec::new(),
             fallback: None,
+            fallback_reason: None,
         })
     }
 
@@ -891,21 +1000,24 @@ impl VideoDecoder {
                 // stashed frames here where `load_serial` is known.
                 let mut pre: Vec<baabaabaabaabababbababbaa::VideoFrame> = Vec::new();
                 let res = hw.decode(data, pts, is_sync, &mut pre);
+                // Read while `hw` is still the live borrow: this is the
+                // decoder's own explanation for why it stopped producing.
+                let backend_error = hw.output_error().map(str::to_string);
                 for f in pre {
-                    if let Some(decoded) = hw_frame_to_decoded(f, pts, load_serial) {
+                    if let Some(decoded) = hw_frame_to_decoded(f, pts, load_serial, self.color_info)
+                    {
                         self.reorder.push(decoded);
                     }
                 }
                 if let Err(e) = &res {
-                    let msg = format!("{e:?}");
-                    if msg.contains("Dropped")
-                        || msg.contains("NoBackend")
-                        || msg.contains("Platform")
-                        || msg.contains("InvalidConfig")
-                        || msg.contains("Only linear")
-                    {
+                    if hw_error_is_fatal(e) || backend_error.is_some() {
+                        let mut msg = format!("hardware decode error: {e:?}");
+                        if let Some(be) = &backend_error {
+                            msg.push_str(&format!("; decoder output channel: {be}"));
+                        }
                         if let Some((codec, w, h, extradata)) = self.fallback.take() {
-                            log::warn!("HW decode failed ({msg}), falling back to SW");
+                            log::warn!("{msg}, falling back to SW");
+                            self.fallback_reason = Some(msg);
                             let sw: Box<dyn VideoDecoderTrait> = match codec {
                                 FallbackCodec::H264 => {
                                     Self::software_fallback_h264(w, h, &extradata)?
@@ -950,7 +1062,7 @@ impl VideoDecoder {
                         }
                     }
                 }
-                res
+                res.map_err(|e| anyhow::anyhow!("hw decode: {e:?}"))
             }
         }
     }
@@ -1009,7 +1121,14 @@ impl VideoDecoder {
     pub fn fallback_to_software(&mut self, _reason: &str) -> bool {
         #[cfg(feature = "hw")]
         if let Some((codec, w, h, extradata)) = self.fallback.take() {
-            log::warn!("HW drain failed ({_reason}), falling back to SW");
+            // Append the codec's own message when it produced one: a silent
+            // MediaCodec stall gives no detail, a reporting one gives the
+            // exact reason the backend died.
+            let detail = match self.hw_output_error() {
+                Some(be) => format!("{_reason}; decoder reported: {be}"),
+                None => _reason.to_string(),
+            };
+            log::warn!("HW drain failed ({detail}), falling back to SW");
             let sw: Result<Box<dyn VideoDecoderTrait>, anyhow::Error> = match codec {
                 FallbackCodec::H264 => Self::software_fallback_h264(w, h, &extradata),
                 FallbackCodec::H265 => Self::software_fallback_hevc(w, h, &extradata),
@@ -1021,12 +1140,33 @@ impl VideoDecoder {
                 Ok(dec) => {
                     self.inner = DecoderInner::Software(dec);
                     self.reorder.clear();
+                    self.fallback_reason = Some(detail);
                     return true;
                 }
-                Err(e) => log::error!("fallback SW creation failed: {e:?}"),
+                Err(e) => {
+                    log::error!("fallback SW creation failed: {e:?}");
+                    self.fallback_reason =
+                        Some(format!("{detail}; software fallback unavailable: {e:?}"));
+                }
             }
         }
         false
+    }
+
+    /// The hardware backend's own error message, if it reported one.
+    fn hw_output_error(&self) -> Option<String> {
+        #[cfg(feature = "hw")]
+        {
+            if let DecoderInner::Hardware(hw) = &self.inner {
+                return hw.output_error().map(str::to_string);
+            }
+        }
+        None
+    }
+
+    /// Exact reason the hardware backend was dropped, for surfacing to the user.
+    pub fn fallback_reason(&self) -> Option<&str> {
+        self.fallback_reason.as_deref()
     }
 
     pub fn drain_frames(
@@ -1036,6 +1176,7 @@ impl VideoDecoder {
         frame_duration_us: u64,
     ) -> Vec<DecodedVideoFrame> {
         // HW path: poll try_frame
+        let color_info = self.color_info;
         match &mut self.inner {
             #[cfg(feature = "hw")]
             DecoderInner::Hardware(hw) => {
@@ -1044,7 +1185,7 @@ impl VideoDecoder {
                         let mut saw_hw_decode_failure = false;
                         for frame in frames {
                             if let Some(decoded) =
-                                hw_frame_to_decoded(frame, fallback_pts, load_serial)
+                                hw_frame_to_decoded(frame, fallback_pts, load_serial, color_info)
                             {
                                 self.reorder.push(decoded);
                             } else {
@@ -1054,20 +1195,17 @@ impl VideoDecoder {
                             }
                         }
                         if saw_hw_decode_failure && self.fallback.is_some() {
-                            let _ = self.fallback_to_software("hw_frame_to_decoded failed");
+                            let _ = self.fallback_to_software(
+                                "hardware frame conversion failed (unsupported pixel layout)",
+                            );
                         }
                     }
                     Err(e) => {
-                        let msg = format!("{e:?}");
-                        if msg.contains("Dropped")
-                            || msg.contains("NoBackend")
-                            || msg.contains("Platform")
-                            || msg.contains("InvalidConfig")
-                            || msg.contains("Only linear")
-                        {
+                        if hw_error_is_fatal(&e) {
+                            let msg = format!("hardware output error: {e:?}");
                             self.fallback_to_software(&msg);
                         } else {
-                            log::warn!("hw drain error: {msg}");
+                            log::warn!("hw drain error: {e:?}");
                         }
                     }
                 }
@@ -1117,7 +1255,7 @@ impl VideoDecoder {
                         uv_plane,
                         pts,
                         load_serial,
-                        color_info: ColorInfo::default(),
+                        color_info: videoson_color_info(frame.color_info).unwrap_or(color_info),
                         poc: frame.poc,
                     });
                     received += 1;

@@ -53,6 +53,7 @@ fn get_codecs() -> &'static CodecRegistry {
 const MIN_VIDEO_FRAMES_PREROLL: u64 = 8;
 const PREROLL_MS: u32 = 500;
 
+pub mod color;
 pub mod playlist;
 pub mod video;
 
@@ -134,6 +135,10 @@ pub struct PlayerSnapshot {
     pub video_fps: Option<f64>,
     pub video_frames_sent: u64,
     pub error: Option<String>,
+    /// Exact reason hardware decoding was abandoned for this file, if a
+    /// fallback happened. Surfaced to the user so a silent MediaCodec
+    /// failure is diagnosable without a logcat session.
+    pub video_fallback: Option<String>,
 }
 
 impl Default for PlayerSnapshot {
@@ -158,6 +163,7 @@ impl Default for PlayerSnapshot {
             video_fps: None,
             video_frames_sent: 0,
             error: None,
+            video_fallback: None,
         }
     }
 }
@@ -328,7 +334,8 @@ impl AudioPlayer {
         }
 
         #[cfg(target_arch = "wasm32")]
-        audio_thread_wasm(rx, thread_shared, &video_tx, prefs).context("failed to start WASM audio")?;
+        audio_thread_wasm(rx, thread_shared, &video_tx, prefs)
+            .context("failed to start WASM audio")?;
 
         Ok(Self {
             inner: Arc::new(AudioPlayerInner {
@@ -442,7 +449,10 @@ impl AudioPlayer {
     /// Hardware-decode preferences. Takes effect on the next file load
     /// (decoder creation), not mid-stream.
     pub fn set_video_prefs(&self, prefs: video::VideoDecoderPrefs) -> Result<()> {
-        self.inner.shared.video_pref_bits.store(prefs.bits(), Ordering::Release);
+        self.inner
+            .shared
+            .video_pref_bits
+            .store(prefs.bits(), Ordering::Release);
         self.send(Command::SetVideoPrefs(prefs))
     }
     pub fn video_prefs(&self) -> video::VideoDecoderPrefs {
@@ -618,9 +628,7 @@ fn track_fps(track: &symphonia::core::formats::Track) -> Option<f64> {
         return None;
     }
     let fps = match (track.duration, track.num_frames) {
-        (Some(d), Some(nf)) if d.get() > 0 && nf > 0 => {
-            nf as f64 / (d.get() as f64 * tick_secs)
-        }
+        (Some(d), Some(nf)) if d.get() > 0 && nf > 0 => nf as f64 / (d.get() as f64 * tick_secs),
         _ => return None,
     };
     (fps.is_finite() && fps > 0.0).then_some(fps)
@@ -796,7 +804,8 @@ fn set_error(shared: &Shared, err: &(impl std::fmt::Display + ?Sized)) {
 
 #[allow(clippy::too_many_arguments)]
 fn run_command_loop(
-    cmd_rx: &Receiver<Command>,    sample_tx: &Sender<f32>,
+    cmd_rx: &Receiver<Command>,
+    sample_tx: &Sender<f32>,
     flush_rx: &Receiver<f32>,
     shared: &Arc<Shared>,
     out_channels: usize,
@@ -991,6 +1000,20 @@ struct VideoDecodeState {
     frame_duration_us: u64,
     /// Consecutive packets with zero drained frames (HW stall watchdog).
     stall_packets: u32,
+    /// When the current streak of empty HW drains started, for the reason
+    /// reported to the user.
+    stall_since: Option<Instant>,
+    /// PTS (µs) of the packet that restarted this decoder after a
+    /// keyframe-gated resume (fallback, reset or seek).
+    resync_pts: Option<i64>,
+    /// Set on that same resume and cleared once a non-RASL packet arrives:
+    /// the CRA/BLA's skipped-leading pictures must not reach the fresh
+    /// decoder (see `handle_video_packet`).
+    drop_leading: bool,
+    /// Set once the hardware backend hands back a frame. A decoder that has
+    /// already proven it works gets a longer leash before the stall watchdog
+    /// gives up on it.
+    hw_ever_output: bool,
 }
 
 /// State for the two-phase accurate seek / buffering.
@@ -1020,6 +1043,33 @@ fn video_preroll_ok(shared: &Shared) -> bool {
         return true;
     }
     shared.video_frames_sent.load(Ordering::Acquire) >= MIN_VIDEO_FRAMES_PREROLL
+}
+
+/// Start playback when preroll has waited longer than it should.
+///
+/// Preroll normally ends at the gate that runs after each pushed sample, but
+/// both sample-pushing loops can block on a *full* queue — which is exactly
+/// what happens while preroll is still waiting for a video frame (nothing
+/// drains while paused). In that state the gate is unreachable, so the
+/// timeout must also be honoured from inside the blocking loops. Without it
+/// playback hangs in `Buffering` forever and the demuxer never reaches the
+/// video keyframe that preroll is waiting on.
+fn resume_after_preroll_timeout(seek_phase: &mut Option<SeekPhase>, shared: &Shared) {
+    if !seek_phase
+        .as_ref()
+        .is_some_and(|ph| ph.started.elapsed() > Duration::from_secs(5))
+    {
+        return;
+    }
+    let resume = shared.resume_intent.load(Ordering::Acquire);
+    shared.is_playing.store(resume, Ordering::Release);
+    let mut status = lock_status(shared);
+    status.state = if resume {
+        PlaybackState::Playing
+    } else {
+        PlaybackState::Paused
+    };
+    *seek_phase = None;
 }
 
 fn packet_pts_us(packet: &SymphoniaPacket, tb: &TimeBase) -> i64 {
@@ -1060,6 +1110,26 @@ fn hevc_hvcc_has_keyframe(data: &[u8], nal_len_size: usize) -> bool {
         }
         let nal_type = (data[i] >> 1) & 0x3f;
         if matches!(nal_type, 19 | 20 | 21) {
+            return true;
+        }
+        i += n;
+    }
+    false
+}
+
+fn hevc_hvcc_has_leading_picture(data: &[u8], nal_len_size: usize) -> bool {
+    let mut i = 0usize;
+    while i + nal_len_size <= data.len() {
+        let mut n = 0usize;
+        for &b in &data[i..i + nal_len_size] {
+            n = (n << 8) | b as usize;
+        }
+        i += nal_len_size;
+        if n == 0 || i + n > data.len() {
+            return false;
+        }
+        let nal_type = (data[i] >> 1) & 0x3f;
+        if matches!(nal_type, 8 | 9) {
             return true;
         }
         i += n;
@@ -1185,6 +1255,26 @@ fn gcd(a: u64, b: u64) -> u64 {
     if b == 0 { a } else { gcd(b, a % b) }
 }
 
+/// Publish the decoder's hardware-failure reason into the snapshot so the UI
+/// can show it instead of the failure only existing in logcat.
+fn note_hw_fallback(state: &VideoDecodeState, shared: &Shared) {
+    let Some(reason) = state.decoder.fallback_reason() else {
+        return;
+    };
+    let mut status = lock_status(shared);
+    if status.video_fallback.as_deref() != Some(reason) {
+        status.video_fallback = Some(reason.to_string());
+    }
+}
+
+/// Empty-drain window the hardware stall watchdog tolerates, in ms, before
+/// it declares the decoder dead. Split so that a backend which never
+/// produced anything is written off almost immediately, while one that has
+/// already proven itself is only condemned after a full second of silence
+/// (a single slow GOP boundary is not a death sentence).
+const HW_STALL_MIN_MS: u128 = 100;
+const HW_STALL_MIN_MS_PROVEN: u128 = 1_000;
+
 fn handle_video_packet(
     state: &mut VideoDecodeState,
     packet: &SymphoniaPacket,
@@ -1206,10 +1296,38 @@ fn handle_video_packet(
             return;
         }
         state.need_keyframe = false;
+        state.resync_pts = Some(packet_pts_us(packet, &state.time_base));
+        state.drop_leading = true;
     }
 
     let pts_us = packet_pts_us(packet, &state.time_base);
     let fallback = Duration::from_micros(pts_us.max(0) as u64);
+
+    if let Some(resync) = state.resync_pts {
+        if pts_us < resync {
+            log::trace!("[hvp] drop leading picture pts={pts_us} (< resync {resync})");
+            return;
+        }
+    }
+
+    // Drop the CRA/BLA's trailing RASL pictures (NAL types 8/9). In an
+    // open-GOP HEVC stream they follow the IRAP in decode order but predict
+    // from the *previous* GOP, which a decoder that just resumed mid-stream
+    // never saw. Feeding them makes it reject the GOP boundary, reset, and
+    // then wait for the next keyframe that never comes — which is why
+    // open-GOP HEVC stayed black after a hardware fallback while closed-GOP
+    // (IDR) files and H.264 played fine. PTS-based dropping cannot catch
+    // them: the demux reports a DTS-derived PTS, so they score *higher* than
+    // the keyframe above. The flag clears on the first non-RASL packet.
+    if state.drop_leading && !is_sync {
+        if let VideoCodecKind::Hevc { nal_len_size } = state.codec {
+            if hevc_hvcc_has_leading_picture(&packet.data, nal_len_size) {
+                log::trace!("[hvp] drop RASL leading picture pts_us={pts_us}");
+                return;
+            }
+        }
+        state.drop_leading = false;
+    }
 
     // Track GCD of packet PTS ticks to derive correct frame duration.
     // Container PTS may follow B-frame decode order even for no-B-frame
@@ -1256,8 +1374,12 @@ fn handle_video_packet(
         was_hw,
         state.need_keyframe
     );
-    if let Err(e) = state.decoder.send_packet(&packet.data, pts_us, is_sync, load_serial) {
+    if let Err(e) = state
+        .decoder
+        .send_packet(&packet.data, pts_us, is_sync, load_serial)
+    {
         log::warn!("video decode error: {e}, resetting decoder");
+        note_hw_fallback(state, shared);
         state.decoder.reset();
         state.need_keyframe = true;
         state.gcd_pts_ticks = 0;
@@ -1268,6 +1390,7 @@ fn handle_video_packet(
     if was_hw && !state.decoder.is_hardware() {
         log::warn!("HW->SW fallback mid-stream, waiting for next keyframe");
         lock_status(shared).video_hw = false;
+        note_hw_fallback(state, shared);
         state.need_keyframe = true;
         state.gcd_pts_ticks = 0;
         state.non_zero_pts_seen = 0;
@@ -1279,7 +1402,10 @@ fn handle_video_packet(
         // the fresh SW decoder below instead of dropping it.
         let pts_us = packet_pts_us(packet, &state.time_base);
         let fallback = Duration::from_micros(pts_us.max(0) as u64);
-        if let Err(e) = state.decoder.send_packet(&packet.data, pts_us, true, load_serial) {
+        if let Err(e) = state
+            .decoder
+            .send_packet(&packet.data, pts_us, true, load_serial)
+        {
             log::warn!("video decode error after HW->SW fallback: {e}");
             return;
         }
@@ -1307,24 +1433,49 @@ fn handle_video_packet(
     let frames = state.decoder.drain_frames(fallback, load_serial, fd);
     // HW stall watchdog: MediaCodec failures are silent (zero output, zero
     // error), so a HW decoder that accepts packets but emits nothing would
-    // spin forever on a black screen. After 10 consecutive empty drains,
-    // force SW fallback the same way a decode error does. 10 is enough to
-    // ride out normal HW pipeline latency but short enough that files whose
-    // keyframes are minutes apart (e.g. 2 keyframes in a 10s file) still
-    // fall back before the stream ends.
-    if frames.is_empty() && drain_was_hw {
+    // spin forever on a black screen. Once a streak of empty drains spans
+    // the watchdog window, force SW fallback the same way a decode error
+    // does. The time floor matters because the demux can feed those 10
+    // packets in a couple of milliseconds — long before the codec thread
+    // has produced its first frame — which would otherwise demote every
+    // file to software decoding.
+    if drain_was_hw && frames.is_empty() {
+        if state.stall_packets == 0 {
+            state.stall_since = Some(Instant::now());
+        }
         state.stall_packets = state.stall_packets.saturating_add(1);
     } else {
+        if drain_was_hw {
+            state.hw_ever_output = true;
+        }
         state.stall_packets = 0;
+        state.stall_since = None;
     }
-    if state.stall_packets >= 10 && state.decoder.is_hardware() {
-        log::warn!("HW stall: 10 packets with zero output, falling back to SW");
-        let fell_back = state.decoder.fallback_to_software("hw stall watchdog");
+    let stall_elapsed_ms = state
+        .stall_since
+        .map(|t| t.elapsed().as_millis())
+        .unwrap_or(0);
+    let stall_floor_ms = if state.hw_ever_output {
+        HW_STALL_MIN_MS_PROVEN
+    } else {
+        HW_STALL_MIN_MS
+    };
+    if state.stall_packets >= 10
+        && stall_elapsed_ms >= stall_floor_ms
+        && state.decoder.is_hardware()
+    {
+        let elapsed_ms = stall_elapsed_ms;
+        let reason = format!(
+            "hardware decoder accepted 10 packets ({elapsed_ms} ms) with zero output and reported no error"
+        );
+        log::warn!("{reason}; falling back to SW");
+        let fell_back = state.decoder.fallback_to_software(&reason);
         if !fell_back {
             log::warn!("HW stall: no SW fallback available; resetting HW decoder");
             state.decoder.reset();
         } else {
             lock_status(shared).video_hw = false;
+            note_hw_fallback(state, shared);
         }
         // When fallback created a fresh SW decoder, feed the current packet
         // to it if it is a keyframe (it references no prior HW state), then
@@ -1333,7 +1484,11 @@ fn handle_video_packet(
         if fell_back && !state.decoder.is_hardware() && is_sync {
             let pts_us = packet_pts_us(packet, &state.time_base);
             let fb = Duration::from_micros(pts_us.max(0) as u64);
-            if state.decoder.send_packet(&packet.data, pts_us, true, load_serial).is_ok() {
+            if state
+                .decoder
+                .send_packet(&packet.data, pts_us, true, load_serial)
+                .is_ok()
+            {
                 for frame in state.decoder.drain_frames(fb, load_serial, 0) {
                     if let Some(min) = min_pts {
                         if frame.pts + Duration::from_millis(500) < min {
@@ -1352,11 +1507,13 @@ fn handle_video_packet(
         state.non_zero_pts_seen = 0;
         state.frame_duration_us = 0;
         state.stall_packets = 0;
+        state.stall_since = None;
         return;
     }
     if drain_was_hw && !state.decoder.is_hardware() {
         log::warn!("HW->SW fallback during drain, waiting for next keyframe");
         lock_status(shared).video_hw = false;
+        note_hw_fallback(state, shared);
         state.need_keyframe = true;
         state.gcd_pts_ticks = 0;
         state.non_zero_pts_seen = 0;
@@ -1452,9 +1609,8 @@ fn decode_file_to_queue(
     let mut video_state: Option<VideoDecodeState> = None;
     let mut video_duration: Option<Duration> = None;
     'video_init: {
-        let prefs = video::VideoDecoderPrefs::from_bits(
-            shared.video_pref_bits.load(Ordering::Acquire),
-        );
+        let prefs =
+            video::VideoDecoderPrefs::from_bits(shared.video_pref_bits.load(Ordering::Acquire));
         let vtrack = format
             .default_track(TrackType::Video)
             .or_else(|| format.first_track_known_codec(TrackType::Video));
@@ -1555,6 +1711,7 @@ fn decode_file_to_queue(
             s.video_width = w;
             s.video_height = h;
             s.video_fps = track_fps(vtrack);
+            s.video_fallback = None;
         }
         let nal_len_size = match vp.codec {
             c if c == video_codec_ids::CODEC_ID_HEVC => {
@@ -1578,6 +1735,10 @@ fn decode_file_to_queue(
             non_zero_pts_seen: 0,
             frame_duration_us: 0,
             stall_packets: 0,
+            stall_since: None,
+            resync_pts: None,
+            drop_leading: false,
+            hw_ever_output: false,
         });
     }
 
@@ -1592,6 +1753,7 @@ fn decode_file_to_queue(
         s.video_height = 0;
         s.video_fps = None;
         s.video_frames_sent = 0;
+        s.video_fallback = None;
     }
     if audio_track.is_none() && video_state.is_none() {
         anyhow::bail!("no supported audio or video track in this file");
@@ -1676,7 +1838,8 @@ fn decode_file_to_queue(
     // Returns None when done, or Some(action) if a command interrupted.
     let push_silence_to = |target: Duration,
                            seek_base: Duration,
-                           silence_pushed: &mut u64|
+                           silence_pushed: &mut u64,
+                           seek_phase: &mut Option<SeekPhase>|
      -> Option<CommandAction> {
         let relative = target.saturating_sub(seek_base);
         let target_samples =
@@ -1687,6 +1850,7 @@ fn decode_file_to_queue(
                     *silence_pushed += 1;
                 }
                 Err(TrySendError::Full(_)) => {
+                    resume_after_preroll_timeout(seek_phase, &shared);
                     match drain_commands(cmd_rx, &shared) {
                         CommandAction::Continue => {}
                         other => return Some(other),
@@ -1780,7 +1944,9 @@ fn decode_file_to_queue(
                         }
                     }
                 } else if let Some(dur) = duration {
-                    if let Some(action) = (push_silence_to)(dur, seek_base, &mut silence_pushed) {
+                    if let Some(action) =
+                        (push_silence_to)(dur, seek_base, &mut silence_pushed, &mut seek_phase)
+                    {
                         match action {
                             CommandAction::Load(p) => return Ok(DecodeOutcome::Load(p)),
                             CommandAction::Seek(target, serial) => {
@@ -1863,7 +2029,9 @@ fn decode_file_to_queue(
                         }
                     }
                 } else if let Some(dur) = duration {
-                    if let Some(action) = (push_silence_to)(dur, seek_base, &mut silence_pushed) {
+                    if let Some(action) =
+                        (push_silence_to)(dur, seek_base, &mut silence_pushed, &mut seek_phase)
+                    {
                         match action {
                             CommandAction::Load(p) => return Ok(DecodeOutcome::Load(p)),
                             CommandAction::Seek(target, serial) => {
@@ -1995,9 +2163,12 @@ fn decode_file_to_queue(
                     if pkt_pts > max_video_pts {
                         max_video_pts = pkt_pts;
                     }
-                    if let Some(action) =
-                        (push_silence_to)(max_video_pts, seek_base, &mut silence_pushed)
-                    {
+                    if let Some(action) = (push_silence_to)(
+                        max_video_pts,
+                        seek_base,
+                        &mut silence_pushed,
+                        &mut seek_phase,
+                    ) {
                         match action {
                             CommandAction::Load(p) => return Ok(DecodeOutcome::Load(p)),
                             CommandAction::Seek(target, serial) => {
@@ -2129,6 +2300,15 @@ fn decode_file_to_queue(
                     Ok(()) => break,
                     Err(TrySendError::Full(s)) => {
                         sample = s;
+
+                        // The preroll gate below only runs after a successful
+                        // send, but a *full* queue is exactly what a pending
+                        // video preroll produces: nothing drains while paused,
+                        // so the gate is never reached again. Honour the
+                        // preroll timeout here too — otherwise playback hangs
+                        // in Buffering forever and the demuxer can never reach
+                        // the next video keyframe that preroll is waiting on.
+                        resume_after_preroll_timeout(&mut seek_phase, &shared);
 
                         match drain_commands(cmd_rx, &shared) {
                             CommandAction::Continue => {}

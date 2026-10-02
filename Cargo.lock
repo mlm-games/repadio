@@ -3442,6 +3442,8 @@ dependencies = [
  "crossbeam-channel",
  "js-sys",
  "log",
+ "oxideav-bitstream",
+ "oxideav-h265",
  "pls",
  "repose-core",
  "rubato",
