@@ -12,6 +12,10 @@ use std::{
 
 use web_time::Instant;
 
+use game_utils::save::{SaveManager, Versioned};
+use game_utils::save_store::LoadStatus;
+use serde::{Deserialize, Serialize};
+
 use player_core::video::DecodedVideoFrame;
 use player_core::{AudioPlayer, MediaSource, PlaybackState, TrackMeta, probe_media_source};
 use repose_core::modifier::PaddingValues;
@@ -78,6 +82,78 @@ fn app_theme() -> repose_core::locals::Theme {
     repose_core::locals::Theme::default().with_colors(colors)
 }
 
+static DYNAMIC_THEME: AtomicBool = AtomicBool::new(true);
+
+fn dynamic_theme(colors: &rlobkit_app_events::theme::ThemeColors) -> repose_core::locals::Theme {
+    let rgba = colors.rgba;
+    let c = |i: usize| Color::from_rgba(rgba[i][0], rgba[i][1], rgba[i][2], rgba[i][3]);
+    let colors = repose_core::locals::ColorScheme {
+        primary: c(0),
+        on_primary: c(1),
+        primary_container: c(2),
+        on_primary_container: c(3),
+        secondary: c(4),
+        on_secondary: c(5),
+        secondary_container: c(6),
+        on_secondary_container: c(7),
+        tertiary: c(8),
+        on_tertiary: c(9),
+        tertiary_container: c(10),
+        on_tertiary_container: c(11),
+        error: c(12),
+        on_error: c(13),
+        error_container: c(14),
+        on_error_container: c(15),
+        background: c(16),
+        on_background: c(17),
+        surface: c(18),
+        on_surface: c(19),
+        surface_variant: c(20),
+        on_surface_variant: c(21),
+        surface_container_lowest: c(22),
+        surface_container_low: c(23),
+        surface_container: c(24),
+        surface_container_high: c(25),
+        surface_container_highest: c(26),
+        surface_bright: c(27),
+        surface_dim: c(28),
+        surface_tint: c(29),
+        inverse_surface: c(30),
+        inverse_on_surface: c(31),
+        inverse_primary: c(32),
+        outline: c(33),
+        outline_variant: c(34),
+        scrim: c(35),
+        shadow: c(36),
+        focus: c(37),
+    };
+    repose_core::locals::Theme::default().with_colors(colors)
+}
+
+/// Call every compose: only reaches `set_theme_default` (which hashes the
+/// whole theme) when the setting or the pushed palette changed.
+fn sync_theme() {
+    type Palette = Option<[[u8; 4]; rlobkit_app_events::theme::THEME_COLOR_COUNT]>;
+    static APPLIED: Mutex<Option<(bool, Palette)>> = Mutex::new(None);
+
+    let enabled = DYNAMIC_THEME.load(Ordering::Relaxed);
+    let palette = enabled
+        .then(rlobkit_app_events::theme::last_theme)
+        .flatten()
+        .filter(|t| !t.rgba.iter().all(|c| *c == [0, 0, 0, 0]));
+    let key = (enabled, palette.map(|t| t.rgba));
+
+    let mut applied = APPLIED.lock().unwrap_or_else(|e| e.into_inner());
+    if *applied == Some(key) {
+        return;
+    }
+    *applied = Some(key);
+    drop(applied);
+
+    let theme = palette.map_or_else(app_theme, |t| dynamic_theme(&t));
+    repose_core::locals::set_theme_default(theme);
+}
+
 fn surface_tint(fg: Color, alpha: u8) -> Color {
     fg.with_alpha(alpha).composite_over(theme().background)
 }
@@ -141,8 +217,10 @@ fn is_video_source(src: &MediaSource) -> bool {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
 struct PlayerSettings {
+    version: u32,
     auto_fullscreen_on_open: bool,
     hide_controls_ms: u64,
     seek_small_s: f64,
@@ -154,11 +232,13 @@ struct PlayerSettings {
     show_playlist_thumbs: bool,
     hw_accel: bool,
     disable_sw_decoders: bool,
+    dynamic_theme: bool,
 }
 
 impl Default for PlayerSettings {
     fn default() -> Self {
         Self {
+            version: SETTINGS_VERSION,
             auto_fullscreen_on_open: true,
             hide_controls_ms: 2500,
             seek_small_s: 1.0,
@@ -170,7 +250,18 @@ impl Default for PlayerSettings {
             show_playlist_thumbs: true,
             hw_accel: true,
             disable_sw_decoders: false,
+            dynamic_theme: true,
         }
+    }
+}
+
+impl Versioned for PlayerSettings {
+    fn version(&self) -> u32 {
+        self.version
+    }
+
+    fn set_version(&mut self, version: u32) {
+        self.version = version;
     }
 }
 
@@ -181,93 +272,25 @@ impl PlayerSettings {
             allow_sw: !self.disable_sw_decoders,
         }
     }
-
-    fn to_json(&self) -> String {
-        format!(
-            r#"{{"auto_fullscreen_on_open":{},"hide_controls_ms":{},"seek_small_s":{},"seek_medium_s":{},"seek_large_s":{},"volume_step":{},"default_speed":{},"remember_speed":{},"show_playlist_thumbs":{},"hw_accel":{},"disable_sw_decoders":{}}}"#,
-            self.auto_fullscreen_on_open,
-            self.hide_controls_ms,
-            self.seek_small_s,
-            self.seek_medium_s,
-            self.seek_large_s,
-            self.volume_step,
-            self.default_speed,
-            self.remember_speed,
-            self.show_playlist_thumbs,
-            self.hw_accel,
-            self.disable_sw_decoders,
-        )
-    }
-
-    fn from_json(s: &str) -> Self {
-        let mut out = Self::default();
-        let get_bool = |k: &str| s.contains(&format!("\"{k}\":true"));
-        let get_f = |k: &str, default: f64| {
-            s.split(&format!("\"{k}\":"))
-                .nth(1)
-                .and_then(|rest| {
-                    rest.split([',', '}'])
-                        .next()
-                        .and_then(|n| n.trim().parse().ok())
-                })
-                .unwrap_or(default)
-        };
-        out.auto_fullscreen_on_open = get_bool("auto_fullscreen_on_open");
-        out.hide_controls_ms = get_f("hide_controls_ms", 2500.0) as u64;
-        out.seek_small_s = get_f("seek_small_s", 1.0);
-        out.seek_medium_s = get_f("seek_medium_s", 5.0);
-        out.seek_large_s = get_f("seek_large_s", 60.0);
-        out.volume_step = get_f("volume_step", 0.05) as f32;
-        out.default_speed = get_f("default_speed", 1.0) as f32;
-        out.remember_speed = !s.contains("\"remember_speed\":false");
-        out.show_playlist_thumbs = !s.contains("\"show_playlist_thumbs\":false");
-        out.hw_accel = !s.contains("\"hw_accel\":false");
-        out.disable_sw_decoders = get_bool("disable_sw_decoders");
-        out
-    }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn settings_path() -> Option<std::path::PathBuf> {
-    if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from) {
-        return Some(dir.join("repadio").join("settings.json"));
-    }
-    std::env::var_os("HOME").map(|h| {
-        std::path::PathBuf::from(h)
-            .join(".config")
-            .join("repadio")
-            .join("settings.json")
-    })
+const SETTINGS_VERSION: u32 = 1;
+
+fn settings_store() -> SaveManager {
+    SaveManager::new("org", "mlm", "repadio", "settings.ron", SETTINGS_VERSION)
 }
 
 fn load_settings_sync() -> PlayerSettings {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        if let Some(p) = settings_path()
-            && let Ok(s) = std::fs::read_to_string(p)
-        {
-            return PlayerSettings::from_json(&s);
-        }
+    let (settings, status) = settings_store().load_with_status();
+    if !matches!(status, LoadStatus::Ok | LoadStatus::Missing) {
+        log::warn!("settings load {status:?}; using defaults");
     }
-    PlayerSettings::default()
+    settings
 }
 
 fn save_settings_sync(s: &PlayerSettings) {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        if let Some(p) = settings_path() {
-            if let Some(parent) = p.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::write(p, s.to_json());
-        }
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let json = s.to_json();
-        wasm_bindgen_futures::spawn_local(async move {
-            let _ = player_platform::wasm_persist::write("config/settings.json", &json).await;
-        });
+    if let Err(e) = settings_store().save(s) {
+        log::warn!("settings save failed: {e}");
     }
 }
 
@@ -510,11 +533,13 @@ impl VideoSink {
 #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 pub fn run_desktop() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    repose_core::locals::set_theme_default(app_theme());
+    let settings = load_settings_sync();
+    DYNAMIC_THEME.store(settings.dynamic_theme, Ordering::Relaxed);
+    sync_theme();
 
     player_platform::init();
 
-    let player = AudioPlayer::spawn_with_prefs(load_settings_sync().video_prefs())?;
+    let player = AudioPlayer::spawn_with_prefs(settings.video_prefs())?;
     let video_sink = Rc::new(RefCell::new(VideoSink::new(
         player.video_rx(),
         player.clone(),
@@ -533,6 +558,7 @@ pub fn run_desktop() -> anyhow::Result<()> {
     });
 
     repose_platform::run_desktop_app(move |_sched, ctx| {
+        sync_theme();
         video_sink.borrow_mut().poll(ctx);
         App(player.clone(), pending.clone(), &video_sink, ctx)
     })
@@ -543,7 +569,9 @@ pub fn run_desktop() -> anyhow::Result<()> {
 pub async fn wasm_main() {
     console_error_panic_hook::set_once();
     console_log::init_with_level(log::Level::Info).ok();
-    repose_core::locals::set_theme_default(app_theme());
+    let settings = load_settings_sync();
+    DYNAMIC_THEME.store(settings.dynamic_theme, Ordering::Relaxed);
+    sync_theme();
 
     if let Err(e) = player_platform::wasm_persist::init().await {
         log::error!("ropfs init failed: {e}");
@@ -551,8 +579,7 @@ pub async fn wasm_main() {
 
     player_platform::init();
 
-    let player =
-        AudioPlayer::spawn_with_prefs(load_settings_sync().video_prefs()).expect("failed to spawn audio player");
+    let player = AudioPlayer::spawn_with_prefs(settings.video_prefs()).expect("failed to spawn audio player");
     let video_sink = Rc::new(RefCell::new(VideoSink::new(
         player.video_rx(),
         player.clone(),
@@ -583,6 +610,7 @@ pub async fn wasm_main() {
         let vs = video_sink.clone();
         repose_platform::web::run_web_app(
             move |_sched, ctx| {
+                sync_theme();
                 vs.borrow_mut().poll(ctx);
                 App(player.clone(), pending.clone(), &vs, ctx)
             },
@@ -611,7 +639,12 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
             "=debug,player_core=debug,player_sync=debug,player_platform=debug,baabaabaabaabababbababbaa=debug"
         ),
     );
-    repose_core::locals::set_theme_default(app_theme());
+    if let Some(dir) = android_app.internal_data_path() {
+        game_utils::set_android_data_dir(dir);
+    }
+    let settings = load_settings_sync();
+    DYNAMIC_THEME.store(settings.dynamic_theme, Ordering::Relaxed);
+    sync_theme();
     rlobkit_dialogs::init_shared_pending_state();
     rlobkit_dialogs::init_with_android_context(
         android_app.vm_as_ptr().cast(),
@@ -635,6 +668,8 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
         repose_core::locals::set_window_insets_default(r);
     }));
 
+    rlobkit_app_events::theme::set_on_theme(Box::new(|_| repose_platform::wake_event_loop()));
+
     let data_dir = android_app.internal_data_path();
 
     let mut initial = Vec::new();
@@ -647,8 +682,7 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
         }
     }
 
-    let player =
-        AudioPlayer::spawn_with_prefs(load_settings_sync().video_prefs()).expect("failed to spawn audio player");
+    let player = AudioPlayer::spawn_with_prefs(settings.video_prefs()).expect("failed to spawn audio player");
     let video_sink = Rc::new(RefCell::new(VideoSink::new(
         player.video_rx(),
         player.clone(),
@@ -665,6 +699,7 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
         let vs = video_sink.clone();
         if let Err(err) =
             repose_platform::android::run_android_app(android_app, move |_sched, ctx| {
+                sync_theme();
                 // Poll for onNewIntent imports while the app is already running.
                 if let Some(ref dir) = data_dir {
                     if let Some(src) = intent_to_media_source(dir) {
@@ -2477,6 +2512,45 @@ fn make_player_key_handler(
     }
 }
 
+#[cfg(not(target_os = "android"))]
+fn appearance_section(_settings: &Rc<Signal<PlayerSettings>>, _enabled: bool) -> Vec<View> {
+    Vec::new()
+}
+
+#[cfg(target_os = "android")]
+fn appearance_section(settings: &Rc<Signal<PlayerSettings>>, enabled: bool) -> Vec<View> {
+    vec![Column(Modifier::new().fill_max_width().gap(10.0.dp())).child((
+        Text("Appearance").size(14.0.sp()).color(theme().primary),
+        Row(
+            Modifier::new()
+                .fill_max_width()
+                .align_items(AlignItems::CENTER),
+        )
+        .child((
+            Column(Modifier::new().weight(1.0).gap(2.0.dp())).child((
+                Text("Dynamic theme").size(14.0.sp()),
+                Text("Follow the system wallpaper palette (Android 12+).")
+                    .size(12.0.sp())
+                    .color(theme().on_surface.with_alpha(160)),
+            )),
+            m3::Switch(
+                enabled,
+                {
+                    let settings = settings.clone();
+                    move |v| {
+                        let mut s = settings.get();
+                        s.dynamic_theme = v;
+                        save_settings_sync(&s);
+                        DYNAMIC_THEME.store(v, Ordering::Relaxed);
+                        settings.set(s);
+                    }
+                },
+                m3::SwitchConfig::default(),
+            ),
+        )),
+    ))]
+}
+
 fn SettingsScreen(
     settings: Rc<Signal<PlayerSettings>>,
     show: Rc<Signal<bool>>,
@@ -2571,6 +2645,7 @@ fn SettingsScreen(
                         ),
                     )),
                 )),
+                appearance_section(&settings, s.dynamic_theme),
                 Column(Modifier::new().fill_max_width().gap(10.0.dp())).child((
                     Text("Video").size(14.0.sp()).color(theme().primary),
                     Row(

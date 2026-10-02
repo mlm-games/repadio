@@ -20,6 +20,8 @@ rlobkit-dialogs = "0.5"
 rlobkit-app-events = "0.5"
 futures-lite = "2"
 pls = "0.2"
+game-utils = "0.4"
+serde = { version = "1", features = ["derive"] }
 
 repose-core = "0.31"
 repose-ui = "0.31"
@@ -178,6 +180,8 @@ mime_type = "video/*"
 anyhow.workspace = true
 log.workspace = true
 crossbeam-channel.workspace = true
+serde.workspace = true
+game-utils.workspace = true
 
 player-core.workspace = true
 player-sync.workspace = true
