@@ -2277,7 +2277,7 @@ fn decode_file_to_queue(
             if !phase.audio_reached {
                 let pkt_start = {
                     let t = audio_tb.calc_time_saturating(packet.pts);
-                    Duration::from_secs_f64(t.as_secs_f64())
+                    Duration::from_secs_f64(t.as_secs_f64().max(0.0))
                 };
                 let out_frames = converted.len() / out_channels;
                 let pkt_dur = Duration::from_secs_f64(out_frames as f64 / out_rate as f64);
