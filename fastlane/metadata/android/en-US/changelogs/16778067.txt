@@ -1,0 +1,3 @@
+- hevc fixes
+- color profile fix
+- bump minor vers

@@ -1,3 +1,10 @@
+## v0.4.0
+
+- hevc fixes
+- color profile fix
+- bump minor vers
+
+
 ## v0.3.10
 
 - tests: fix send_packet call for load_serial arg
