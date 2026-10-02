@@ -958,15 +958,15 @@ fn App(
     );
 
     m3::Scaffold(
-        move |_padding| {
+        move |padding| {
             Column(
                 Modifier::new()
                     .fill_max_size()
                     .padding_values(PaddingValues {
-                        top: 12.0.dp(),
-                        bottom: 12.0.dp(),
-                        left: 12.0.dp(),
-                        right: 12.0.dp(),
+                        top: padding.top + 12.0.dp(),
+                        bottom: padding.bottom + 12.0.dp(),
+                        left: padding.left + 12.0.dp(),
+                        right: padding.right + 12.0.dp(),
                     })
                     .gap(16.0.dp()),
             )
@@ -1007,14 +1007,12 @@ fn App(
             floating_action_button: Some(fab),
             container_color: theme().background,
             content_color: theme().on_background,
+            modifier: Modifier::new()
+                .focusable(true)
+                .focus_target()
+                .on_key_event(key_handler),
             ..Default::default()
         },
-    )
-    .modifier(
-        Modifier::new()
-            .focusable(true)
-            .focus_target()
-            .on_key_event(key_handler),
     )
 }
 
@@ -1078,6 +1076,7 @@ fn NowPlayingCard(
         (Some(ar), Some(al)) => format!("{ar} - {al}"),
         (Some(ar), None) => ar.clone(),
         (None, Some(al)) => al.clone(),
+        (None, None) if snap.title.is_some() => "Unknown artist".into(),
         (None, None) => "Add a track to get started".into(),
     };
 
@@ -1110,8 +1109,8 @@ fn NowPlayingCard(
     Column(
         Modifier::new()
             .fill_max_width()
-            .padding(20.0.dp())
-            .clip_rounded(24.0.dp())
+            .padding(16.0.dp())
+            .clip_rounded(12.0.dp())
             .background(theme().surface_container)
             .gap(16.0.dp()),
     )
@@ -1122,7 +1121,7 @@ fn NowPlayingCard(
                 Box(Modifier::new()
                     .fill_max_width()
                     .aspect_ratio(aspect)
-                    .clip_rounded(20.0.dp())
+                    .clip_rounded(12.0.dp())
                     .background(art_bg))
                 .child(
                     ZStack(Modifier::new().fill_max_size().on_double_click({
@@ -1183,7 +1182,8 @@ fn NowPlayingCard(
                         .color(theme().on_surface.with_alpha(170))
                         .single_line()
                         .overflow_ellipsize(),
-                    StatusChip(snap.state),
+                    Box(Modifier::new().align_self(AlignSelf::START))
+                        .child(StatusChip(snap.state)),
                 )),)),
             ))
         } else {
@@ -1195,7 +1195,7 @@ fn NowPlayingCard(
                 Box(Modifier::new()
                     .width(88.0.dp())
                     .height(88.0.dp())
-                    .clip_rounded(20.0.dp())
+                    .clip_rounded(12.0.dp())
                     .background(art_bg)
                     .align_items(AlignItems::CENTER)
                     .justify_content(JustifyContent::CENTER))
@@ -1217,7 +1217,8 @@ fn NowPlayingCard(
                         .color(theme().on_surface.with_alpha(170))
                         .single_line()
                         .overflow_ellipsize(),
-                    StatusChip(snap.state),
+                    Box(Modifier::new().align_self(AlignSelf::START))
+                        .child(StatusChip(snap.state)),
                 )),
             ))
         },

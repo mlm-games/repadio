@@ -21,10 +21,10 @@ rlobkit-app-events = "0.5"
 futures-lite = "2"
 pls = "0.2"
 
-repose-core = "0.30"
-repose-ui = "0.30"
-repose-material = "0.30"
-repose-platform = "0.30"
+repose-core = "0.31"
+repose-ui = "0.31"
+repose-material = "0.31"
+repose-platform = "0.31"
 
 web-workers = "0.3"
 
@@ -63,6 +63,7 @@ player-sync = { path = "crates/player-sync" }
 player-platform = { path = "crates/player-platform" }
 
 [patch.crates-io]
+# rlobkit-app-events = { path = "../rlobkit/rlobkit-app-events" }
 # anodecs = { path = "../rust_mediacodec", package = "anodecs" }
 # baabaabaabaabababbababbaa = { path = "../baa4bababab2baa", package = "baabaabaabaabababbababbaa" }
 # videoson-codec-h265 = { path = "../videoson/videoson-codec-h265" }
@@ -144,6 +145,7 @@ name = "android.permission.INTERNET"
 name = "rust.rlobkit.RlobKitMainActivity"
 exported = true
 launch_mode = "singleTask"
+config_changes = "orientation|keyboardHidden|screenSize|uiMode"
 
 [[package.metadata.android.application.activity.intent_filter]]
 actions = ["android.intent.action.MAIN"]
