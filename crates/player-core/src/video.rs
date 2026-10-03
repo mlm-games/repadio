@@ -1067,14 +1067,6 @@ impl VideoDecoder {
         }
     }
 
-    pub fn set_frame_duration_micros(&mut self, us: u64) {
-        match &mut self.inner {
-            DecoderInner::Software(inner) => inner.set_frame_duration_micros(us),
-            #[cfg(feature = "hw")]
-            DecoderInner::Hardware(_) => {}
-        }
-    }
-
     fn plane_to_arc(
         data: &videoson::PlaneData,
         width: usize,
@@ -1173,7 +1165,6 @@ impl VideoDecoder {
         &mut self,
         fallback_pts: Duration,
         load_serial: u64,
-        frame_duration_us: u64,
     ) -> Vec<DecodedVideoFrame> {
         // HW path: poll try_frame
         let color_info = self.color_info;
@@ -1230,23 +1221,10 @@ impl VideoDecoder {
                     let uv_plane =
                         Self::plane_to_arc(&frame.plane_data[1].data, uv_w, uv_h, uv_stride);
 
-                    let pts = if frame_duration_us > 0 {
-                        frame
-                            .poc
-                            .filter(|&p| p >= 0)
-                            .map(|p| Duration::from_micros(p as u64 * frame_duration_us))
-                            .unwrap_or(
-                                frame
-                                    .pts
-                                    .map(|p| Duration::from_micros(p.max(0) as u64))
-                                    .unwrap_or(fallback_pts),
-                            )
-                    } else {
-                        frame
-                            .pts
-                            .map(|p| Duration::from_micros(p.max(0) as u64))
-                            .unwrap_or(fallback_pts)
-                    };
+                    let pts = frame
+                        .pts
+                        .map(|p| Duration::from_micros(p.max(0) as u64))
+                        .unwrap_or(fallback_pts);
 
                     self.reorder.push(DecodedVideoFrame {
                         width: frame.width,
@@ -1284,7 +1262,7 @@ impl VideoDecoder {
         self.reorder.drain(..).collect()
     }
 
-    pub fn finish(&mut self, frame_duration_us: u64) -> Result<Vec<DecodedVideoFrame>> {
+    pub fn finish(&mut self) -> Result<Vec<DecodedVideoFrame>> {
         match &mut self.inner {
             DecoderInner::Software(inner) => {
                 inner
@@ -1299,7 +1277,7 @@ impl VideoDecoder {
         // Drain remaining frames from decoder (including decoder's pending
         // frames flushed by send_eos).  No hold-back in drain_frames, so
         // self.reorder is always empty after the call.
-        let mut result = self.drain_frames(Duration::ZERO, 0, frame_duration_us);
+        let mut result = self.drain_frames(Duration::ZERO, 0);
         result.extend(self.reorder.drain(..));
         Ok(result)
     }

@@ -989,15 +989,7 @@ struct VideoDecodeState {
     time_base: TimeBase,
     codec: VideoCodecKind,
     need_keyframe: bool,
-    /// GCD of all non-zero packet PTS ticks seen so far.
-    /// Used to derive the true frame duration in µs.
-    gcd_pts_ticks: u64,
-    /// Number of non-zero PTS ticks seen so far.  Once >= 2, the GCD has
-    /// converged to the true frame duration and POC correction is activated.
-    non_zero_pts_seen: u64,
-    /// Cached frame_duration_us computed from gcd_pts_ticks + time_base.
-    /// Only meaningful when `non_zero_pts_seen >= 2`.
-    frame_duration_us: u64,
+    keyframe_wait: u32,
     /// Consecutive packets with zero drained frames (HW stall watchdog).
     stall_packets: u32,
     /// When the current streak of empty HW drains started, for the reason
@@ -1251,10 +1243,6 @@ fn vp9_is_keyframe(data: &[u8]) -> bool {
     frame_type == 0
 }
 
-fn gcd(a: u64, b: u64) -> u64 {
-    if b == 0 { a } else { gcd(b, a % b) }
-}
-
 /// Publish the decoder's hardware-failure reason into the snapshot so the UI
 /// can show it instead of the failure only existing in logcat.
 fn note_hw_fallback(state: &VideoDecodeState, shared: &Shared) {
@@ -1274,6 +1262,7 @@ fn note_hw_fallback(state: &VideoDecodeState, shared: &Shared) {
 /// (a single slow GOP boundary is not a death sentence).
 const HW_STALL_MIN_MS: u128 = 100;
 const HW_STALL_MIN_MS_PROVEN: u128 = 1_000;
+const KEYFRAME_WAIT_PACKETS: u32 = 1_000;
 
 fn handle_video_packet(
     state: &mut VideoDecodeState,
@@ -1293,9 +1282,17 @@ fn handle_video_packet(
 
     if state.need_keyframe {
         if !is_sync {
-            return;
+            state.keyframe_wait = state.keyframe_wait.saturating_add(1);
+            if state.keyframe_wait < KEYFRAME_WAIT_PACKETS {
+                return;
+            }
+            log::warn!(
+                "no keyframe after {} packets; feeding anyway",
+                state.keyframe_wait
+            );
         }
         state.need_keyframe = false;
+        state.keyframe_wait = 0;
         state.resync_pts = Some(packet_pts_us(packet, &state.time_base));
         state.drop_leading = true;
     }
@@ -1329,40 +1326,6 @@ fn handle_video_packet(
         state.drop_leading = false;
     }
 
-    // Track GCD of packet PTS ticks to derive correct frame duration.
-    // Container PTS may follow B-frame decode order even for no-B-frame
-    // bitstreams, and the GCD gives the true per-frame tick increment.
-    // We defer POC-based PTS correction until we've seen 2+ non-zero PTS
-    // ticks (at which point the GCD has converged to the true frame duration).
-    let use_poc = matches!(
-        state.codec,
-        VideoCodecKind::H264 { .. } | VideoCodecKind::Hevc { .. } | VideoCodecKind::Av1
-    );
-    if use_poc {
-        let pts_ticks = packet.pts.get();
-        if pts_ticks > 0 {
-            if state.gcd_pts_ticks == 0 {
-                state.gcd_pts_ticks = pts_ticks as u64;
-            } else {
-                state.gcd_pts_ticks = gcd(state.gcd_pts_ticks, pts_ticks as u64);
-            }
-            state.non_zero_pts_seen += 1;
-        }
-        if state.non_zero_pts_seen >= 2 {
-            let new_fd = (state.gcd_pts_ticks * state.time_base.numer.get() as u64 * 1_000_000)
-                / state.time_base.denom.get() as u64;
-            if new_fd != state.frame_duration_us {
-                state.frame_duration_us = new_fd;
-                state.decoder.set_frame_duration_micros(new_fd);
-            }
-        }
-    } else {
-        state.gcd_pts_ticks = 0;
-        state.non_zero_pts_seen = 0;
-        state.frame_duration_us = 0;
-        state.decoder.set_frame_duration_micros(0);
-    }
-
     let was_hw = state.decoder.is_hardware();
     log::trace!(
         "[hvp] packet track={} pts={:?} pts_us={} is_sync={} len={} was_hw={} need_kf={}",
@@ -1382,35 +1345,21 @@ fn handle_video_packet(
         note_hw_fallback(state, shared);
         state.decoder.reset();
         state.need_keyframe = true;
-        state.gcd_pts_ticks = 0;
-        state.non_zero_pts_seen = 0;
-        state.frame_duration_us = 0;
         return;
     }
     if was_hw && !state.decoder.is_hardware() {
         log::warn!("HW->SW fallback mid-stream, waiting for next keyframe");
         lock_status(shared).video_hw = false;
         note_hw_fallback(state, shared);
-        state.need_keyframe = true;
-        state.gcd_pts_ticks = 0;
-        state.non_zero_pts_seen = 0;
-        state.frame_duration_us = 0;
         if !is_sync {
+            state.need_keyframe = true;
             return;
         }
-        // is_sync case was already forwarded inside fallback, so feed it to
-        // the fresh SW decoder below instead of dropping it.
-        let pts_us = packet_pts_us(packet, &state.time_base);
-        let fallback = Duration::from_micros(pts_us.max(0) as u64);
-        if let Err(e) = state
-            .decoder
-            .send_packet(&packet.data, pts_us, true, load_serial)
-        {
-            log::warn!("video decode error after HW->SW fallback: {e}");
-            return;
-        }
-        let _drain_was_hw = false;
-        let frames = state.decoder.drain_frames(fallback, load_serial, 0);
+        state.need_keyframe = false;
+        state.keyframe_wait = 0;
+        state.resync_pts = Some(pts_us);
+        state.drop_leading = true;
+        let frames = state.decoder.drain_frames(fallback, load_serial);
         for frame in frames.into_iter() {
             if let Some(min) = min_pts {
                 if frame.pts + Duration::from_millis(500) < min {
@@ -1425,12 +1374,7 @@ fn handle_video_packet(
         return;
     }
     let drain_was_hw = state.decoder.is_hardware();
-    let fd = if state.non_zero_pts_seen >= 2 {
-        state.frame_duration_us
-    } else {
-        0
-    };
-    let frames = state.decoder.drain_frames(fallback, load_serial, fd);
+    let frames = state.decoder.drain_frames(fallback, load_serial);
     // HW stall watchdog: MediaCodec failures are silent (zero output, zero
     // error), so a HW decoder that accepts packets but emits nothing would
     // spin forever on a black screen. Once a streak of empty drains spans
@@ -1481,31 +1425,32 @@ fn handle_video_packet(
         // to it if it is a keyframe (it references no prior HW state), then
         // drain. Otherwise the SW decoder sits empty until the *next*
         // keyframe while preroll keeps waiting.
-        if fell_back && !state.decoder.is_hardware() && is_sync {
-            let pts_us = packet_pts_us(packet, &state.time_base);
-            let fb = Duration::from_micros(pts_us.max(0) as u64);
-            if state
+        let fed = fell_back
+            && !state.decoder.is_hardware()
+            && is_sync
+            && state
                 .decoder
                 .send_packet(&packet.data, pts_us, true, load_serial)
-                .is_ok()
-            {
-                for frame in state.decoder.drain_frames(fb, load_serial, 0) {
-                    if let Some(min) = min_pts {
-                        if frame.pts + Duration::from_millis(500) < min {
-                            continue;
-                        }
-                    }
-                    shared.video_frames_sent.fetch_add(1, Ordering::Release);
-                    if video_tx.try_send(frame).is_err() {
-                        log::trace!("[hvp] video_tx full, dropping frame (non-blocking)");
+                .is_ok();
+        if fed {
+            for frame in state.decoder.drain_frames(fallback, load_serial) {
+                if let Some(min) = min_pts {
+                    if frame.pts + Duration::from_millis(500) < min {
+                        continue;
                     }
                 }
+                shared.video_frames_sent.fetch_add(1, Ordering::Release);
+                if video_tx.try_send(frame).is_err() {
+                    log::trace!("[hvp] video_tx full, dropping frame (non-blocking)");
+                }
             }
+            state.need_keyframe = false;
+            state.keyframe_wait = 0;
+            state.resync_pts = Some(pts_us);
+            state.drop_leading = true;
+        } else {
+            state.need_keyframe = true;
         }
-        state.need_keyframe = true;
-        state.gcd_pts_ticks = 0;
-        state.non_zero_pts_seen = 0;
-        state.frame_duration_us = 0;
         state.stall_packets = 0;
         state.stall_since = None;
         return;
@@ -1515,9 +1460,6 @@ fn handle_video_packet(
         lock_status(shared).video_hw = false;
         note_hw_fallback(state, shared);
         state.need_keyframe = true;
-        state.gcd_pts_ticks = 0;
-        state.non_zero_pts_seen = 0;
-        state.frame_duration_us = 0;
     }
     for (i, frame) in frames.into_iter().enumerate() {
         if let Some(min) = min_pts {
@@ -1731,9 +1673,7 @@ fn decode_file_to_queue(
                 _ => VideoCodecKind::Av1,
             },
             need_keyframe: false,
-            gcd_pts_ticks: 0,
-            non_zero_pts_seen: 0,
-            frame_duration_us: 0,
+            keyframe_wait: 0,
             stall_packets: 0,
             stall_since: None,
             resync_pts: None,
@@ -1807,9 +1747,6 @@ fn decode_file_to_queue(
         if let Some(ref mut vs) = video_state {
             vs.decoder.reset();
             vs.need_keyframe = true;
-            vs.gcd_pts_ticks = 0;
-            vs.non_zero_pts_seen = 0;
-            vs.frame_duration_us = 0;
         }
         let seek_track_id = video_state
             .as_ref()
@@ -1892,9 +1829,6 @@ fn decode_file_to_queue(
                 if let Some(vs) = &mut video_state {
                     vs.decoder.reset();
                     vs.need_keyframe = true;
-                    vs.gcd_pts_ticks = 0;
-                    vs.non_zero_pts_seen = 0;
-                    vs.frame_duration_us = 0;
                 }
                 shared.video_frames_sent.store(0, Ordering::Release);
                 let seek_track_id = video_state
@@ -1959,13 +1893,8 @@ fn decode_file_to_queue(
                 }
                 // Flush any remaining video frames (B-frame reorder hold-back)
                 if let Some(vs) = video_state.as_mut() {
-                    let fd = if vs.non_zero_pts_seen >= 2 {
-                        vs.frame_duration_us
-                    } else {
-                        0
-                    };
                     let serial = shared.load_serial.load(Ordering::Acquire);
-                    if let Ok(frames) = vs.decoder.finish(fd) {
+                    if let Ok(frames) = vs.decoder.finish() {
                         for mut fr in frames {
                             fr.load_serial = serial;
                             // Deliver with backpressure; handle commands while blocked
@@ -2043,13 +1972,8 @@ fn decode_file_to_queue(
                     }
                 }
                 if let Some(vs) = video_state.as_mut() {
-                    let fd = if vs.non_zero_pts_seen >= 2 {
-                        vs.frame_duration_us
-                    } else {
-                        0
-                    };
                     let serial = shared.load_serial.load(Ordering::Acquire);
-                    if let Ok(frames) = vs.decoder.finish(fd) {
+                    if let Ok(frames) = vs.decoder.finish() {
                         for mut fr in frames {
                             fr.load_serial = serial;
                             loop {
@@ -2175,9 +2099,6 @@ fn decode_file_to_queue(
                                 if let Some(ref mut vs2) = video_state {
                                     vs2.decoder.reset();
                                     vs2.need_keyframe = true;
-                                    vs2.gcd_pts_ticks = 0;
-                                    vs2.non_zero_pts_seen = 0;
-                                    vs2.frame_duration_us = 0;
                                 }
                                 shared.video_frames_sent.store(0, Ordering::Release);
                                 let seek_track_id = video_state
@@ -2318,9 +2239,6 @@ fn decode_file_to_queue(
                                 if let Some(vs) = &mut video_state {
                                     vs.decoder.reset();
                                     vs.need_keyframe = true;
-                                    vs.gcd_pts_ticks = 0;
-                                    vs.non_zero_pts_seen = 0;
-                                    vs.frame_duration_us = 0;
                                 }
                                 shared.video_frames_sent.store(0, Ordering::Release);
                                 let seek_track_id = video_state
