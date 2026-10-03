@@ -2077,15 +2077,22 @@ fn decode_file_to_queue(
                 let min_pts = seek_phase.as_ref().map(|p| p.target);
                 handle_video_packet(vs, &packet, video_tx, serial, min_pts, &shared);
 
-                // Video-only: push silence up to this packet's PTS
-                // so the audio clock reflects the video position.
-                // Use monotonic max PTS (B-frame PTS can go backwards in
-                // decode order).
+                // Video-only: push silence up to this packet's presentation
+                // end so the audio clock reflects the video position.
+                // Use a monotonic max (B-frame PTS can go backwards in decode
+                // order). The end, not the start: the last frame's PTS is one
+                // frame short of the track duration, so a PTS ceiling stops
+                // the seekbar at duration-1frame and leaves ratio 1.0 seeking
+                // past the last presentable sample.
                 if video_only {
                     let pts_us = packet_pts_us(&packet, &vs.time_base);
                     let pkt_pts = Duration::from_micros(pts_us.max(0) as u64);
-                    if pkt_pts > max_video_pts {
-                        max_video_pts = pkt_pts;
+                    let pkt_end = match vs.time_base.calc_duration(packet.dur) {
+                        Some(d) => pkt_pts + Duration::from_secs_f64(d.as_secs_f64()),
+                        None => pkt_pts,
+                    };
+                    if pkt_end > max_video_pts {
+                        max_video_pts = pkt_end;
                     }
                     if let Some(action) = (push_silence_to)(
                         max_video_pts,
