@@ -1006,6 +1006,17 @@ struct VideoDecodeState {
     /// already proven it works gets a longer leash before the stall watchdog
     /// gives up on it.
     hw_ever_output: bool,
+    /// Set when the decoder is swapped for another implementation
+    /// mid-stream. Holds the PTS of the last sync sample the outgoing
+    /// decoder was fed: the replacement cannot resume from the middle of a
+    /// GOP, and waiting forward for the next keyframe stalls until the track
+    /// ends on long-GOP material. The loop rewinds the demuxer here instead.
+    rewind_to: Option<Duration>,
+    /// PTS (µs) of the most recent sync sample handed to the decoder,
+    /// including the first one at load. Independent of `resync_pts`, which
+    /// only tracks keyframe-gated resumes and so is unset when a track simply
+    /// starts on a keyframe.
+    last_sync_pts: Option<i64>,
 }
 
 /// State for the two-phase accurate seek / buffering.
@@ -1264,6 +1275,13 @@ const HW_STALL_MIN_MS: u128 = 100;
 const HW_STALL_MIN_MS_PROVEN: u128 = 1_000;
 const KEYFRAME_WAIT_PACKETS: u32 = 1_000;
 
+fn mark_rewind(state: &mut VideoDecodeState) {
+    state.rewind_to = state
+        .last_sync_pts
+        .filter(|us| *us >= 0)
+        .map(|us| Duration::from_micros(us as u64));
+}
+
 fn handle_video_packet(
     state: &mut VideoDecodeState,
     packet: &SymphoniaPacket,
@@ -1298,6 +1316,9 @@ fn handle_video_packet(
     }
 
     let pts_us = packet_pts_us(packet, &state.time_base);
+    if is_sync {
+        state.last_sync_pts = Some(pts_us);
+    }
     let fallback = Duration::from_micros(pts_us.max(0) as u64);
 
     if let Some(resync) = state.resync_pts {
@@ -1351,6 +1372,7 @@ fn handle_video_packet(
         log::warn!("HW->SW fallback mid-stream, waiting for next keyframe");
         lock_status(shared).video_hw = false;
         note_hw_fallback(state, shared);
+        mark_rewind(state);
         if !is_sync {
             state.need_keyframe = true;
             return;
@@ -1420,6 +1442,7 @@ fn handle_video_packet(
         } else {
             lock_status(shared).video_hw = false;
             note_hw_fallback(state, shared);
+            mark_rewind(state);
         }
         // When fallback created a fresh SW decoder, feed the current packet
         // to it if it is a keyframe (it references no prior HW state), then
@@ -1459,6 +1482,7 @@ fn handle_video_packet(
         log::warn!("HW->SW fallback during drain, waiting for next keyframe");
         lock_status(shared).video_hw = false;
         note_hw_fallback(state, shared);
+        mark_rewind(state);
         state.need_keyframe = true;
     }
     for (i, frame) in frames.into_iter().enumerate() {
@@ -1679,6 +1703,8 @@ fn decode_file_to_queue(
             resync_pts: None,
             drop_leading: false,
             hw_ever_output: false,
+            rewind_to: None,
+            last_sync_pts: None,
         });
     }
 
@@ -1821,11 +1847,8 @@ fn decode_file_to_queue(
             }
         }
 
-        match drain_commands(cmd_rx, &shared) {
-            CommandAction::Continue => {}
-            CommandAction::Load(path) => return Ok(DecodeOutcome::Load(path)),
-            CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
-            CommandAction::Seek(target, serial) => {
+        macro_rules! seek_to {
+            ($target:expr, $serial:expr) => {{
                 if let Some(vs) = &mut video_state {
                     vs.decoder.reset();
                     vs.need_keyframe = true;
@@ -1839,8 +1862,8 @@ fn decode_file_to_queue(
                     &mut *format,
                     &mut decoder,
                     seek_track_id,
-                    target,
-                    serial,
+                    $target,
+                    $serial,
                     duration,
                     &shared,
                     flush_rx,
@@ -1849,11 +1872,27 @@ fn decode_file_to_queue(
                 if let Some(r) = &mut resampler {
                     r.reset();
                 }
-                seek_phase = Some(SeekPhase::new(target, out_rate, out_channels));
+                seek_phase = Some(SeekPhase::new($target, out_rate, out_channels));
                 silence_pushed = 0;
-                max_video_pts = target;
-                seek_base = target;
-            }
+                max_video_pts = $target;
+                seek_base = $target;
+            }};
+        }
+
+        if let Some(target) = video_state.as_mut().and_then(|vs| vs.rewind_to.take()) {
+            log::warn!(
+                "decoder swapped mid-stream; rewinding to last keyframe at {} ms",
+                target.as_millis()
+            );
+            seek_to!(target, shared.seek_serial.fetch_add(1, Ordering::AcqRel) + 1);
+            continue;
+        }
+
+        match drain_commands(cmd_rx, &shared) {
+            CommandAction::Continue => {}
+            CommandAction::Load(path) => return Ok(DecodeOutcome::Load(path)),
+            CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
+            CommandAction::Seek(target, serial) => seek_to!(target, serial),
         }
 
         let packet = match format.next_packet() {
@@ -2102,35 +2141,7 @@ fn decode_file_to_queue(
                     ) {
                         match action {
                             CommandAction::Load(p) => return Ok(DecodeOutcome::Load(p)),
-                            CommandAction::Seek(target, serial) => {
-                                if let Some(ref mut vs2) = video_state {
-                                    vs2.decoder.reset();
-                                    vs2.need_keyframe = true;
-                                }
-                                shared.video_frames_sent.store(0, Ordering::Release);
-                                let seek_track_id = video_state
-                                    .as_ref()
-                                    .map(|vs| vs.track_id)
-                                    .or((track_id != u32::MAX).then_some(track_id));
-                                perform_seek(
-                                    &mut *format,
-                                    &mut decoder,
-                                    seek_track_id,
-                                    target,
-                                    serial,
-                                    duration,
-                                    &shared,
-                                    flush_rx,
-                                    out_rate,
-                                );
-                                if let Some(r) = &mut resampler {
-                                    r.reset();
-                                }
-                                seek_phase = Some(SeekPhase::new(target, out_rate, out_channels));
-                                silence_pushed = 0;
-                                max_video_pts = target;
-                                seek_base = target;
-                            }
+                            CommandAction::Seek(target, serial) => seek_to!(target, serial),
                             CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
                             CommandAction::Continue => {}
                         }

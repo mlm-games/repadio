@@ -1,9 +1,6 @@
-use oxideav_bitstream::BitstreamError;
-use oxideav_bitstream::bit_reader::BitReader;
 use oxideav_bitstream::h264::ebsp_to_rbsp;
+use oxideav_h264 as h264;
 use repose_core::color::{ChromaSiting, ColorInfo, ColorRange, MatrixCoeffs, Primaries, Transfer};
-
-const H264_HIGH_PROFILES: [u8; 13] = [100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135];
 
 /// Colour used when the stream carries no colour description.
 ///
@@ -98,109 +95,21 @@ fn avcc_colour(data: &[u8]) -> Option<ColorInfo> {
             continue;
         }
         let rbsp = ebsp_to_rbsp(nal);
-        if let Ok(colour) = h264_sps_colour(rbsp.get(1..)?) {
-            return Some(colour);
-        }
+        let signal = h264::sps::Sps::parse(rbsp.get(1..)?)
+            .ok()?
+            .vui?
+            .video_signal_type?;
+        let d = signal.colour_description?;
+        return Some(signalled(
+            Some((
+                d.colour_primaries,
+                d.transfer_characteristics,
+                d.matrix_coefficients,
+            )),
+            signal.video_full_range_flag,
+        ));
     }
     None
-}
-
-/// H.264 §7.3.2.1.1 `seq_parameter_set_data()` through the §E.1
-/// `video_signal_type` block. Only the fields needed to walk that far are kept;
-/// anything unrecognised aborts and the caller falls back.
-fn h264_sps_colour(rbsp: &[u8]) -> Result<ColorInfo, BitstreamError> {
-    let mut r = BitReader::new(rbsp);
-    let profile_idc = r.u(8) as u8;
-    r.skip(8); // constraint_set0..5_flag + reserved_zero_2bits
-    r.skip(8); // level_idc
-    r.ue()?; // seq_parameter_set_id
-    if H264_HIGH_PROFILES.contains(&profile_idc) {
-        let chroma = r.ue()?;
-        if chroma > 3 {
-            return Err(BitstreamError::invalid("chroma_format_idc > 3"));
-        }
-        if chroma == 3 {
-            r.skip(1); // separate_colour_plane_flag
-        }
-        r.ue()?; // bit_depth_luma_minus8
-        r.ue()?; // bit_depth_chroma_minus8
-        r.skip(1); // qpprime_y_zero_transform_bypass_flag
-        if r.read_bit() == 1 {
-            let lists = if chroma != 3 { 8 } else { 12 };
-            for i in 0..lists {
-                if r.read_bit() == 1 {
-                    let coefs = if i < 6 { 16 } else { 64 };
-                    for _ in 0..coefs {
-                        r.se()?;
-                    }
-                }
-            }
-        }
-    }
-    r.ue()?; // log2_max_frame_num_minus4
-    match r.ue()? {
-        0 => {
-            r.ue()?; // log2_max_pic_order_cnt_lsb_minus4
-        }
-        1 => {
-            r.skip(1); // delta_pic_order_always_zero_flag
-            r.se()?; // offset_for_non_ref_pic
-            r.se()?; // offset_for_top_to_bottom_field
-            let n = r.ue()?;
-            if n > 255 {
-                return Err(BitstreamError::invalid(
-                    "num_ref_frames_in_pic_order_cnt_cycle > 255",
-                ));
-            }
-            for _ in 0..n {
-                r.se()?;
-            }
-        }
-        2 => {}
-        _ => return Err(BitstreamError::invalid("pic_order_cnt_type > 2")),
-    }
-    r.ue()?; // max_num_ref_frames
-    r.skip(1); // gaps_in_frame_num_value_allowed_flag
-    r.ue()?; // pic_width_in_mbs_minus1
-    r.ue()?; // pic_height_in_map_units_minus1
-    if r.read_bit() == 0 {
-        r.skip(1); // mb_adaptive_frame_field_flag
-    }
-    r.skip(1); // direct_8x8_inference_flag
-    if r.read_bit() == 1 {
-        for _ in 0..4 {
-            r.ue()?;
-        }
-    }
-    if r.read_bit() == 0 {
-        return Ok(signalled(None, false));
-    }
-    h264_vui_colour(&mut r)
-}
-
-fn h264_vui_colour(r: &mut BitReader<'_>) -> Result<ColorInfo, BitstreamError> {
-    if r.read_bit() == 1 {
-        if r.u(8) == 255 {
-            r.skip(32); // EXTENDED_SAR: sar_width + sar_height
-        }
-    }
-    if r.read_bit() == 1 {
-        r.skip(1); // overscan_appropriate_flag
-    }
-    if r.read_bit() == 0 {
-        return Ok(signalled(None, false));
-    }
-    r.skip(3); // video_format
-    let full_range = r.read_bit() == 1;
-    let colour = if r.read_bit() == 1 {
-        let primaries = r.u(8) as u8;
-        let transfer = r.u(8) as u8;
-        let matrix = r.u(8) as u8;
-        Some((primaries, transfer, matrix))
-    } else {
-        None
-    };
-    Ok(signalled(colour, full_range))
 }
 
 /// Colour described by an `HEVCDecoderConfigurationRecord` (ISO/IEC 14496-15
@@ -289,6 +198,12 @@ mod tests {
             w.write_bits(u32::from(t), 8);
             w.write_bits(u32::from(m), 8);
         }
+        w.write_bit(0); // chroma_loc_info_present_flag
+        w.write_bit(0); // timing_info_present_flag
+        w.write_bit(0); // nal_hrd_parameters_present_flag
+        w.write_bit(0); // vcl_hrd_parameters_present_flag
+        w.write_bit(0); // pic_struct_present_flag
+        w.write_bit(0); // bitstream_restriction_flag
         w.finish()
     }
 

@@ -17,6 +17,7 @@ videoson.workspace = true
 repose-core.workspace = true
 web-time.workspace = true
 oxideav-bitstream = "0.0.2"
+oxideav-h264 = { version = "0.1", default-features = false }
 oxideav-h265 = { version = "0.0.10", default-features = false }
 baabaabaabaabababbababbaa = { version = "0.1", optional = true }
 bytes = { version = "1", optional = true }
