@@ -144,11 +144,15 @@ fn hvcc_colour(data: &[u8]) -> Option<ColorInfo> {
     ))
 }
 
-/// Colour reported by a software decoder on the frame itself. videoson leaves
-/// `ColorInfo::default()` (all zeroes, `full_range = false`) when the stream
-/// signals nothing, so that shape stays on the fallback.
+/// Colour reported by a software decoder on the frame itself.
+///
+/// Returns `None` only when the stream signalled no `video_signal_type()` at
+/// all, in which case the caller keeps its own fallback. A stream that signals
+/// the block but leaves `colour_description_present_flag` at 0 still reports
+/// `full_range`, and its unspecified primaries/transfer/matrix fall through
+/// [`signalled`] to the fallback values individually.
 pub fn videoson_color_info(color: videoson::ColorInfo) -> Option<ColorInfo> {
-    if color.primaries == 0 && color.transfer == 0 && color.matrix == 0 && !color.full_range {
+    if !color.signalled {
         return None;
     }
     Some(signalled(
@@ -250,11 +254,25 @@ mod tests {
     fn videoson_unset_stays_on_fallback() {
         assert_eq!(videoson_color_info(videoson::ColorInfo::default()), None);
 
+        // Signalled block with `colour_description_present_flag == 0`: range is
+        // real, the CICP triple is not, so the fallback supplies the matrix.
+        let range_only = videoson_color_info(videoson::ColorInfo {
+            primaries: videoson::CICP_UNSPECIFIED,
+            transfer: videoson::CICP_UNSPECIFIED,
+            matrix: videoson::CICP_UNSPECIFIED,
+            full_range: true,
+            signalled: true,
+        })
+        .unwrap();
+        assert_eq!(range_only.range, ColorRange::Full);
+        assert_eq!(range_only.matrix, fallback_color_info().matrix);
+
         let info = videoson_color_info(videoson::ColorInfo {
             primaries: 1,
             transfer: 1,
             matrix: 1,
             full_range: true,
+            signalled: true,
         })
         .unwrap();
         assert_eq!(info.range, ColorRange::Full);

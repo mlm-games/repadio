@@ -3217,6 +3217,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxideav-h264"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6bbe6bb48d3460e4c5348699de767e9aa43711e75c585e1b61cb3bc2fe6c207"
+dependencies = [
+ "oxideav-core",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "oxideav-h265"
 version = "0.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3443,6 +3453,7 @@ dependencies = [
  "js-sys",
  "log",
  "oxideav-bitstream",
+ "oxideav-h264",
  "oxideav-h265",
  "pls",
  "repose-core",
@@ -5207,10 +5218,11 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "videoson"
-version = "0.5.4"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0ca1d6ef5eafefdd651f0eea75668b3b05354fa325fc2f17942d683d39cb7b7"
+checksum = "4b292052027ce29afd5b3085b212fb050adc8fde5921765af4d61a6428ea287a"
 dependencies = [
+ "oxideav-h265",
  "videoson-codec-h264",
  "videoson-codec-h265",
  "videoson-codec-rav1d",

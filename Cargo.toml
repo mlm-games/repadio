@@ -43,7 +43,7 @@ winit = { version = "0.30" }
 getrandom = { version = "0.4", features = ["wasm_js"] }
 wgpu = { version = "30", features = ["webgpu", "webgl"] }
 
-videoson = { version = "0.5", features = [
+videoson = { version = "0.6", features = [
     "h264",
     "h265",
     "vp8",
