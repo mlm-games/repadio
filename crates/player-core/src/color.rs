@@ -18,12 +18,34 @@ pub fn fallback_color_info() -> ColorInfo {
     }
 }
 
+/// ITU-T H.273 `matrix_coefficients` to the enum `to_yuv_transform` takes.
+///
+/// `None` for code 2 (unspecified), code 3 (reserved) and anything unassigned,
+/// which §E.3.1 leaves to the caller's own documented fallback — here
+/// [`fallback_color_info`]. A code must never be mapped by resemblance: the
+/// table has to agree with the software path's, or the same stream renders
+/// differently depending on which decoder picked it up.
+///
+/// The two constant-luminance codes collapse into `Bt2020Ncl` because
+/// `MatrixCoeffs` has no `Bt2020Cl` variant. That is lossless in practice:
+/// BT.2020 CL and NCL share Kr/Kb (0.2627 / 0.0593) because both derive from
+/// the same primaries, so the two produce an identical transform matrix.
 fn matrix_from_cicp(code: u8) -> Option<MatrixCoeffs> {
     Some(match code {
+        // 0 = identity / GBR.
         0 => MatrixCoeffs::Identity,
-        1 | 8 | 12 => MatrixCoeffs::Bt709,
+        // 1 = BT.709.
+        1 => MatrixCoeffs::Bt709,
+        // 4 = FCC, 5 = BT.470BG (625), 6 = SMPTE 170M, 7 = SMPTE 240M. All
+        // SD-range; H.273 notes 5 and 6 are functionally identical.
         4..=7 => MatrixCoeffs::Bt601,
-        10 | 11 => MatrixCoeffs::Bt2020Ncl,
+        // 8 = YCgCo, defined over the BT.709 luma coefficients.
+        8 => MatrixCoeffs::Bt709,
+        // 9 = BT.2020 NCL. 11 = SMPTE ST 2085 (PQ), 12 = chroma-derived NCL and
+        // 14 = ICtCp all share its coefficients.
+        9 | 11 | 12 | 14 => MatrixCoeffs::Bt2020Ncl,
+        // 10 = BT.2020 CL, 13 = chroma-derived CL.
+        10 | 13 => MatrixCoeffs::Bt2020Ncl,
         _ => return None,
     })
 }
@@ -240,9 +262,20 @@ mod tests {
 
     #[test]
     fn unsupported_matrix_keeps_fallback() {
-        let info = avcc_color_info(&avcc(&h264_sps(true, Some((2, 2, 9)))));
+        // 2 is "unspecified", so the caller keeps its documented fallback.
+        // This used to use code 9, which asserted that BT.2020 fell back to
+        // BT.601 — the bug the table now fixes.
+        let info = avcc_color_info(&avcc(&h264_sps(true, Some((2, 2, 2)))));
         assert_eq!(info.range, ColorRange::Full);
         assert_eq!(info.matrix, MatrixCoeffs::Bt601);
+    }
+
+    /// BT.2020 used to fall through to the BT.601 fallback, which rendered 4K
+    /// content with SD coefficients.
+    #[test]
+    fn bt2020_matrix_is_not_treated_as_unsupported() {
+        let info = avcc_color_info(&avcc(&h264_sps(false, Some((9, 9, 9)))));
+        assert_eq!(info.matrix, MatrixCoeffs::Bt2020Ncl);
     }
 
     #[test]
@@ -279,5 +312,48 @@ mod tests {
         assert_eq!(info.matrix, MatrixCoeffs::Bt709);
         assert_eq!(info.primaries, Primaries::Bt709);
         assert_eq!(info.transfer, Transfer::Bt709);
+    }
+
+    /// Every H.273 `matrix_coefficients` code a stream can legally signal has
+    /// to land somewhere deliberate, and — the reason this is pinned — the
+    /// software decoder's table in the other app maps the same codes. When the
+    /// two disagreed, BT.2020 (code 9) fell through to the BT.601 fallback
+    /// here and rendered 4K with SD coefficients.
+    ///
+    /// The two constant-luminance codes deliberately map to `Bt2020Ncl`:
+    /// `MatrixCoeffs` has no CL variant, and CL/NCL share Kr/Kb (both derive
+    /// from the same primaries), so the transform matrix is identical.
+    #[test]
+    fn matrix_from_cicp_covers_every_code() {
+        assert_eq!(matrix_from_cicp(0), Some(MatrixCoeffs::Identity));
+        assert_eq!(matrix_from_cicp(1), Some(MatrixCoeffs::Bt709));
+        for code in 4..=7 {
+            assert_eq!(
+                matrix_from_cicp(code),
+                Some(MatrixCoeffs::Bt601),
+                "code {code}"
+            );
+        }
+        assert_eq!(matrix_from_cicp(8), Some(MatrixCoeffs::Bt709));
+        for code in [9u8, 11, 12, 14, 10, 13] {
+            assert_eq!(
+                matrix_from_cicp(code),
+                Some(MatrixCoeffs::Bt2020Ncl),
+                "code {code}"
+            );
+        }
+    }
+
+    /// Code 2 is "unspecified" and 3 is reserved. Neither may be guessed at —
+    /// the caller has to fall back on its own documented terms.
+    #[test]
+    fn unspecified_and_reserved_are_not_mapped() {
+        for code in [2u8, 3, 15, 31, 255] {
+            assert_eq!(
+                matrix_from_cicp(code),
+                None,
+                "code {code} must stay unmapped"
+            );
+        }
     }
 }

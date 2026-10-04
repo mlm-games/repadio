@@ -1400,8 +1400,15 @@ pub fn avcc_to_annexb_with_len(data: &[u8], len_size: usize) -> Vec<u8> {
             nalu_len = (nalu_len << 8) | data[offset] as usize;
             offset += 1;
         }
-        if nalu_len == 0 || offset + nalu_len > data.len() {
+        // A zero length is legal padding. Skip it and resync on the next entry.
+        if nalu_len == 0 {
             continue;
+        }
+        // A length reaching past the end means the packet is truncated, so
+        // every remaining byte belongs to that one incomplete NAL. Resyncing
+        // here would reinterpret its payload as length fields and emit garbage.
+        if offset + nalu_len > data.len() {
+            break;
         }
         output.extend_from_slice(start_code);
         output.extend_from_slice(&data[offset..offset + nalu_len]);
@@ -1418,14 +1425,11 @@ pub fn avcc_to_annexb(data: &[u8]) -> Vec<u8> {
     avcc_to_annexb_with_len(data, 4)
 }
 
+/// Annex-B data always opens with a start code, so only the head can carry
+/// one. Scanning the whole buffer also matches a start code inside a NAL
+/// payload, which is not a signal that the buffer is Annex-B.
 pub(crate) fn has_annexb_start_code(data: &[u8]) -> bool {
-    if data.len() >= 4 && data[0..4] == [0x00, 0x00, 0x00, 0x01] {
-        true
-    } else if data.len() >= 3 && data[0..3] == [0x00, 0x00, 0x01] {
-        true
-    } else {
-        false
-    }
+    data.starts_with(&[0x00, 0x00, 0x00, 0x01]) || data.starts_with(&[0x00, 0x00, 0x01])
 }
 
 pub fn yuv420_uv_to_nv12(u_plane: &[u8], v_plane: &[u8], width: u32, height: u32) -> Vec<u8> {
