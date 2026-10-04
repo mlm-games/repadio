@@ -14,6 +14,7 @@ symphonia-adapter-oporus.workspace = true
 log.workspace = true
 rubato.workspace = true
 videoson.workspace = true
+rediakit-bitstream = "0.1"
 repose-core.workspace = true
 web-time.workspace = true
 oxideav-bitstream = "0.0.2"
