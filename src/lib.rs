@@ -580,7 +580,8 @@ pub async fn wasm_main() {
 
     player_platform::init();
 
-    let player = AudioPlayer::spawn_with_prefs(settings.video_prefs()).expect("failed to spawn audio player");
+    let player = AudioPlayer::spawn_with_prefs(settings.video_prefs())
+        .expect("failed to spawn audio player");
     let video_sink = Rc::new(RefCell::new(VideoSink::new(
         player.video_rx(),
         player.clone(),
@@ -622,12 +623,24 @@ pub async fn wasm_main() {
 }
 
 #[cfg(target_os = "android")]
-fn intent_to_media_source(dir: &std::path::Path) -> Option<MediaSource> {
-    let intent = rlobkit_app_events::take_pending_intent(dir)?;
-    Some(MediaSource::Bytes {
-        name: intent.name,
-        bytes: Arc::from(intent.data),
-    })
+fn intent_to_media_sources(dir: &std::path::Path) -> Vec<MediaSource> {
+    rlobkit_app_events::intents::drain_intents_from(dir)
+        .into_iter()
+        .flat_map(|intent| intent.files)
+        .filter_map(|file| {
+            let bytes = match file.read_bytes() {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    log::warn!("cannot read shared file {}: {e}", file.name());
+                    return None;
+                }
+            };
+            Some(MediaSource::Bytes {
+                name: file.name().to_string(),
+                bytes: Arc::from(bytes.to_vec()),
+            })
+        })
+        .collect()
 }
 
 #[cfg(target_os = "android")]
@@ -671,19 +684,22 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
 
     rlobkit_app_events::theme::set_on_theme(Box::new(|_| repose_platform::wake_event_loop()));
 
+    rlobkit_app_events::intents::set_on_new_intent(|| repose_platform::wake_event_loop());
+
     let data_dir = android_app.internal_data_path();
 
     let mut initial = Vec::new();
     let mut auto_fs = false;
     if let Some(ref dir) = data_dir {
-        if let Some(src) = intent_to_media_source(dir) {
+        for src in intent_to_media_sources(dir) {
             log::info!("loaded pending intent file");
-            auto_fs = is_video_source(&src);
+            auto_fs |= is_video_source(&src);
             initial.push(src);
         }
     }
 
-    let player = AudioPlayer::spawn_with_prefs(settings.video_prefs()).expect("failed to spawn audio player");
+    let player = AudioPlayer::spawn_with_prefs(settings.video_prefs())
+        .expect("failed to spawn audio player");
     let video_sink = Rc::new(RefCell::new(VideoSink::new(
         player.video_rx(),
         player.clone(),
@@ -703,12 +719,15 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
                 sync_theme();
                 // Poll for onNewIntent imports while the app is already running.
                 if let Some(ref dir) = data_dir {
-                    if let Some(src) = intent_to_media_source(dir) {
-                        log::info!("loaded late pending intent");
-                        if is_video_source(&src) {
-                            pending.auto_fullscreen.store(true, Ordering::Release);
+                    let sources = intent_to_media_sources(dir);
+                    if !sources.is_empty() {
+                        log::info!("loaded {} late pending intent file(s)", sources.len());
+                        for src in sources {
+                            if is_video_source(&src) {
+                                pending.auto_fullscreen.store(true, Ordering::Release);
+                            }
+                            pending.files.lock().unwrap().push(src);
                         }
-                        pending.files.lock().unwrap().push(src);
                         request_frame();
                     }
                 }
@@ -972,7 +991,9 @@ fn App(
 
     let top_bar = m3::TopAppBar(
         Row(Modifier::new().gap(10.0.dp())).child((
-            Icon(Symbols::graphic_eq).size(22.0.sp()).color(theme().primary),
+            Icon(Symbols::graphic_eq)
+                .size(22.0.sp())
+                .color(theme().primary),
             Text("Repadio").size(20.0.sp()),
         )),
         None,
@@ -1239,7 +1260,9 @@ fn NowPlayingCard(
                                 .clip_rounded(20.0.dp())
                                 .padding(4.0.dp()))
                             .child(m3::IconButton(
-                                Icon(Symbols::fullscreen).size(20.0.sp()).color(Color::WHITE),
+                                Icon(Symbols::fullscreen)
+                                    .size(20.0.sp())
+                                    .color(Color::WHITE),
                                 {
                                     let is_fullscreen = is_fullscreen.clone();
                                     move || is_fullscreen.set(true)
@@ -1257,14 +1280,16 @@ fn NowPlayingCard(
                     .gap(16.0.dp())
                     .align_items(AlignItems::CENTER))
                 .child((Column(Modifier::new().weight(1.0).gap(6.0.dp())).child((
-                    Text(title).size(20.0.sp()).single_line().overflow_ellipsize(),
+                    Text(title)
+                        .size(20.0.sp())
+                        .single_line()
+                        .overflow_ellipsize(),
                     Text(sub_line)
                         .size(13.0.sp())
                         .color(theme().on_surface.with_alpha(170))
                         .single_line()
                         .overflow_ellipsize(),
-                    Box(Modifier::new().align_self(AlignSelf::START))
-                        .child(StatusChip(snap.state)),
+                    Box(Modifier::new().align_self(AlignSelf::START)).child(StatusChip(snap.state)),
                 )),)),
             ))
         } else {
@@ -1292,14 +1317,16 @@ fn NowPlayingCard(
                     .color(art_fg)
                 }),
                 Column(Modifier::new().weight(1.0).gap(6.0.dp())).child((
-                    Text(title).size(20.0.sp()).single_line().overflow_ellipsize(),
+                    Text(title)
+                        .size(20.0.sp())
+                        .single_line()
+                        .overflow_ellipsize(),
                     Text(sub_line)
                         .size(13.0.sp())
                         .color(theme().on_surface.with_alpha(170))
                         .single_line()
                         .overflow_ellipsize(),
-                    Box(Modifier::new().align_self(AlignSelf::START))
-                        .child(StatusChip(snap.state)),
+                    Box(Modifier::new().align_self(AlignSelf::START)).child(StatusChip(snap.state)),
                 )),
             ))
         },
@@ -1829,7 +1856,9 @@ fn FullscreenVideo(
                             },
                         ),
                         m3::IconButton(
-                            Icon(Symbols::forward_10).size(24.0.sp()).color(Color::WHITE),
+                            Icon(Symbols::forward_10)
+                                .size(24.0.sp())
+                                .color(Color::WHITE),
                             {
                                 let player = player.clone();
                                 let snap = snap.clone();
@@ -2216,7 +2245,10 @@ fn EmptyPlaylist(pending: PendingFiles) -> View {
                     }
                 },
                 m3::ButtonConfig::default(),
-                || Row(Modifier::new().gap(8.0.dp())).child((Icon(Symbols::add), Text("Add files"))),
+                || {
+                    Row(Modifier::new().gap(8.0.dp()))
+                        .child((Icon(Symbols::add), Text("Add files")))
+                },
             ),
             Spacer(),
         )),
@@ -2312,7 +2344,9 @@ fn TrackRow(
             } else if is_video_source(&entry.source) {
                 Icon(Symbols::movie).size(18.0.sp()).color(leading_fg)
             } else {
-                Text(format!("{}", idx + 1)).size(13.0.sp()).color(leading_fg)
+                Text(format!("{}", idx + 1))
+                    .size(13.0.sp())
+                    .color(leading_fg)
             }),
             Column(Modifier::new().weight(1.0).gap(2.0.dp())).child((
                 Text(entry.display_title())
@@ -2401,7 +2435,11 @@ fn playback_stats_text(snap: &player_core::PlayerSnapshot) -> String {
         .unwrap_or_else(|| "--:--".into());
     let mut lines = vec![
         format!("state: {:?}  {} / {}", snap.state, pos, dur),
-        format!("speed: {:.2}x  volume: {:.0}%", snap.playback_rate, snap.volume * 100.0),
+        format!(
+            "speed: {:.2}x  volume: {:.0}%",
+            snap.playback_rate,
+            snap.volume * 100.0
+        ),
     ];
     if snap.has_video {
         let codec = snap.video_codec.as_deref().unwrap_or("?");
@@ -2565,36 +2603,36 @@ fn appearance_section(_settings: &Rc<Signal<PlayerSettings>>, _enabled: bool) ->
 
 #[cfg(target_os = "android")]
 fn appearance_section(settings: &Rc<Signal<PlayerSettings>>, enabled: bool) -> Vec<View> {
-    vec![Column(Modifier::new().fill_max_width().gap(10.0.dp())).child((
-        Text("Appearance").size(14.0.sp()).color(theme().primary),
-        Row(
-            Modifier::new()
+    vec![
+        Column(Modifier::new().fill_max_width().gap(10.0.dp())).child((
+            Text("Appearance").size(14.0.sp()).color(theme().primary),
+            Row(Modifier::new()
                 .fill_max_width()
-                .align_items(AlignItems::CENTER),
-        )
-        .child((
-            Column(Modifier::new().weight(1.0).gap(2.0.dp())).child((
-                Text("Dynamic theme").size(14.0.sp()),
-                Text("Follow the system wallpaper palette (Android 12+).")
-                    .size(12.0.sp())
-                    .color(theme().on_surface.with_alpha(160)),
+                .align_items(AlignItems::CENTER))
+            .child((
+                Column(Modifier::new().weight(1.0).gap(2.0.dp())).child((
+                    Text("Dynamic theme").size(14.0.sp()),
+                    Text("Follow the system wallpaper palette (Android 12+).")
+                        .size(12.0.sp())
+                        .color(theme().on_surface.with_alpha(160)),
+                )),
+                m3::Switch(
+                    enabled,
+                    {
+                        let settings = settings.clone();
+                        move |v| {
+                            let mut s = settings.get();
+                            s.dynamic_theme = v;
+                            save_settings_sync(&s);
+                            DYNAMIC_THEME.store(v, Ordering::Relaxed);
+                            settings.set(s);
+                        }
+                    },
+                    m3::SwitchConfig::default(),
+                ),
             )),
-            m3::Switch(
-                enabled,
-                {
-                    let settings = settings.clone();
-                    move |v| {
-                        let mut s = settings.get();
-                        s.dynamic_theme = v;
-                        save_settings_sync(&s);
-                        DYNAMIC_THEME.store(v, Ordering::Relaxed);
-                        settings.set(s);
-                    }
-                },
-                m3::SwitchConfig::default(),
-            ),
         )),
-    ))]
+    ]
 }
 
 fn SettingsScreen(
