@@ -975,12 +975,26 @@ enum DecodeOutcome {
     Shutdown,
 }
 
+#[derive(Clone, Copy)]
 enum VideoCodecKind {
     H264 { nal_len_size: usize },
     Hevc { nal_len_size: usize },
     Av1,
     Vp8,
     Vp9,
+}
+
+impl VideoCodecKind {
+    /// Whether a demuxed packet is a random access point for this codec.
+    fn packet_is_sync(self, data: &[u8]) -> bool {
+        match self {
+            Self::H264 { nal_len_size } => h264_avcc_has_idr(data, nal_len_size),
+            Self::Hevc { nal_len_size } => hevc_hvcc_has_keyframe(data, nal_len_size),
+            Self::Av1 => av1_is_keyframe(data),
+            Self::Vp8 => vp8_is_keyframe(data),
+            Self::Vp9 => vp9_is_keyframe(data),
+        }
+    }
 }
 
 struct VideoDecodeState {
@@ -1097,12 +1111,20 @@ fn note_hw_fallback(state: &VideoDecodeState, shared: &Shared) {
     }
 }
 
-/// Empty-drain window the hardware stall watchdog tolerates, in ms, before
-/// it declares the decoder dead. Split so that a backend which never
-/// produced anything is written off almost immediately, while one that has
-/// already proven itself is only condemned after a full second of silence
-/// (a single slow GOP boundary is not a death sentence).
-const HW_STALL_MIN_MS: u128 = 100;
+/// Empty-drain window the hardware stall watchdog tolerates, in ms, before it
+/// declares the decoder dead.
+///
+/// A decoder that has already emitted a picture gets the shorter window: from
+/// then on silence really is a death sentence, and a single slow GOP boundary
+/// should not condemn a backend that is demonstrably alive.
+///
+/// A decoder that has emitted *nothing* yet gets the longer one. Until the
+/// first picture exists there is no evidence either way, and the first picture
+/// cannot appear before the leading keyframe has been decoded in full — tens of
+/// milliseconds of accelerator work on top of the per-packet framing the decode
+/// thread does on the same core. Judging a backend on a tenth of a second here
+/// demotes healthy hardware on every file whose first packet is a large IDR.
+const HW_STALL_MIN_MS_COLD: u128 = 2_000;
 const HW_STALL_MIN_MS_PROVEN: u128 = 1_000;
 const KEYFRAME_WAIT_PACKETS: u32 = 1_000;
 
@@ -1121,13 +1143,7 @@ fn handle_video_packet(
     min_pts: Option<Duration>,
     shared: &Shared,
 ) {
-    let is_sync = match state.codec {
-        VideoCodecKind::H264 { nal_len_size } => h264_avcc_has_idr(&packet.data, nal_len_size),
-        VideoCodecKind::Hevc { nal_len_size } => hevc_hvcc_has_keyframe(&packet.data, nal_len_size),
-        VideoCodecKind::Av1 => av1_is_keyframe(&packet.data),
-        VideoCodecKind::Vp8 => vp8_is_keyframe(&packet.data),
-        VideoCodecKind::Vp9 => vp9_is_keyframe(&packet.data),
-    };
+    let is_sync = state.codec.packet_is_sync(&packet.data);
 
     if state.need_keyframe {
         if !is_sync {
@@ -1255,7 +1271,7 @@ fn handle_video_packet(
     let stall_floor_ms = if state.hw_ever_output {
         HW_STALL_MIN_MS_PROVEN
     } else {
-        HW_STALL_MIN_MS
+        HW_STALL_MIN_MS_COLD
     };
     if state.stall_packets >= 10
         && stall_elapsed_ms >= stall_floor_ms
@@ -1609,10 +1625,12 @@ fn decode_file_to_queue(
             .as_ref()
             .map(|vs| vs.track_id)
             .or((track_id != u32::MAX).then_some(track_id));
+        let video_sync = video_state.as_ref().map(|vs| (vs.codec, vs.time_base));
         perform_seek(
             &mut *format,
             &mut decoder,
             seek_track_id,
+            video_sync,
             target,
             serial,
             duration,
@@ -1689,10 +1707,12 @@ fn decode_file_to_queue(
                     .as_ref()
                     .map(|vs| vs.track_id)
                     .or((track_id != u32::MAX).then_some(track_id));
+                let video_sync = video_state.as_ref().map(|vs| (vs.codec, vs.time_base));
                 perform_seek(
                     &mut *format,
                     &mut decoder,
                     seek_track_id,
+                    video_sync,
                     $target,
                     $serial,
                     duration,
@@ -1715,7 +1735,10 @@ fn decode_file_to_queue(
                 "decoder swapped mid-stream; rewinding to last keyframe at {} ms",
                 target.as_millis()
             );
-            seek_to!(target, shared.seek_serial.fetch_add(1, Ordering::AcqRel) + 1);
+            seek_to!(
+                target,
+                shared.seek_serial.fetch_add(1, Ordering::AcqRel) + 1
+            );
             continue;
         }
 
@@ -2094,10 +2117,13 @@ fn decode_file_to_queue(
                                     .as_ref()
                                     .map(|vs| vs.track_id)
                                     .or((track_id != u32::MAX).then_some(track_id));
+                                let video_sync =
+                                    video_state.as_ref().map(|vs| (vs.codec, vs.time_base));
                                 perform_seek(
                                     &mut *format,
                                     &mut decoder,
                                     seek_track_id,
+                                    video_sync,
                                     target,
                                     serial,
                                     duration,
@@ -2151,10 +2177,97 @@ fn decode_file_to_queue(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Seeks the container and leaves the demuxer sitting on a sync sample at or
+/// before `target`.
+///
+/// `SeekMode::Accurate` only promises a position *before* the target, and for
+/// MP4 that position is the nearest sample rather than the preceding random
+/// access point — usually a P- or B-picture. A video decoder cannot start
+/// there, so the caller sets `need_keyframe` and drops packets until a sync
+/// sample shows up. A stream that only has one sync sample, at its head, never
+/// supplies another: every packet after the seek is discarded, no frame is ever
+/// decoded again, and playback silently continues as audio only.
+///
+/// So the target is walked backwards until the sample it lands on really is a
+/// sync sample. Each attempt costs a seek plus one packet, and the backoff
+/// grows geometrically so a stream with ordinary keyframe spacing is found in
+/// one or two steps.
+fn seek_to_sync_sample(
+    format: &mut dyn symphonia::core::formats::FormatReader,
+    track_id: u32,
+    time_base: TimeBase,
+    codec: VideoCodecKind,
+    target: Time,
+) -> Result<(), symphonia::core::errors::Error> {
+    const MAX_ATTEMPTS: u32 = 8;
+    const FIRST_BACKOFF_SECS: f64 = 1.0;
+
+    let mut probe = target;
+    let mut tried_head = target == Time::ZERO;
+    for attempt in 0..MAX_ATTEMPTS {
+        format.seek(
+            SeekMode::Accurate,
+            SeekTo::Time {
+                time: probe,
+                track_id: Some(track_id),
+            },
+        )?;
+
+        // Read up to the first packet of the video track, then undo the read.
+        let mut landing = None;
+        loop {
+            let packet = match format.next_packet() {
+                Ok(Some(p)) => p,
+                Ok(None) => break,
+                Err(e) => return Err(e),
+            };
+            if packet.track_id == track_id {
+                landing = Some((packet.pts, codec.packet_is_sync(&packet.data)));
+                break;
+            }
+        }
+        // Nothing left to read: the caller finds out on its next packet.
+        let Some((pts, is_sync)) = landing else {
+            return Ok(());
+        };
+
+        // The probe consumed the landing packet, so go back to exactly it.
+        let landing_time = time_base.calc_time(pts).unwrap_or(Time::ZERO);
+        format.seek(
+            SeekMode::Accurate,
+            SeekTo::Time {
+                time: landing_time,
+                track_id: Some(track_id),
+            },
+        )?;
+        if is_sync {
+            return Ok(());
+        }
+
+        let backoff = FIRST_BACKOFF_SECS * 2f64.powi(attempt as i32);
+        let back = landing_time.as_secs_f64() - backoff;
+        if back <= 0.0 {
+            // The backoff overshot the head of the stream. The start is still
+            // worth one look: a stream can hold its only sync sample in the
+            // first packet, and seeking there is exactly what unblocks it.
+            if tried_head {
+                break;
+            }
+            probe = Time::ZERO;
+            tried_head = true;
+        } else {
+            probe = Time::try_from_secs_f64(back).unwrap_or(Time::ZERO);
+        }
+    }
+    log::warn!("no sync sample at or before the seek target; video may not resume");
+    Ok(())
+}
+
 fn perform_seek(
     format: &mut dyn symphonia::core::formats::FormatReader,
     decoder: &mut Option<Box<dyn AudioDecoder>>,
     seek_track_id: Option<u32>,
+    video_sync: Option<(VideoCodecKind, TimeBase)>,
     target: Duration,
     serial: u64,
     duration: Option<Duration>,
@@ -2171,13 +2284,22 @@ fn perform_seek(
     let was_playing = shared.is_playing.load(Ordering::Acquire);
     shared.resume_intent.store(was_playing, Ordering::Release);
 
-    match format.seek(
-        SeekMode::Accurate,
-        SeekTo::Time {
-            time,
-            track_id: seek_track_id,
-        },
-    ) {
+    let seek = match (video_sync, seek_track_id) {
+        (Some((codec, time_base)), Some(track_id)) => {
+            seek_to_sync_sample(format, track_id, time_base, codec, time)
+        }
+        _ => format
+            .seek(
+                SeekMode::Accurate,
+                SeekTo::Time {
+                    time,
+                    track_id: seek_track_id,
+                },
+            )
+            .map(|_| ()),
+    };
+
+    match seek {
         Ok(_) => {
             if let Some(dec) = decoder {
                 dec.reset();
@@ -2569,5 +2691,94 @@ fn read_mapped_sample(
     } else {
         let ch = out_ch.min(in_channels - 1);
         input.get(base + ch).copied().unwrap_or(0.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn probe_video(
+        path: &std::path::Path,
+    ) -> (
+        Box<dyn symphonia::core::formats::FormatReader>,
+        u32,
+        TimeBase,
+        VideoCodecKind,
+    ) {
+        let file = std::fs::File::open(path).unwrap();
+        let mss = MediaSourceStream::new(
+            Box::new(file),
+            MediaSourceStreamOptions {
+                ..Default::default()
+            },
+        );
+        let format = get_probe()
+            .probe(
+                &Hint::new(),
+                mss,
+                FormatOptions::default(),
+                MetadataOptions::default(),
+            )
+            .unwrap();
+        let track = format
+            .tracks()
+            .iter()
+            .find(|t| matches!(&t.codec_params, Some(CodecParameters::Video(_))))
+            .cloned()
+            .unwrap();
+        let extradata = match &track.codec_params {
+            Some(CodecParameters::Video(vp)) => vp
+                .extra_data
+                .first()
+                .map(|e| e.data.to_vec())
+                .unwrap_or_default(),
+            _ => unreachable!(),
+        };
+        let nal_len_size = video::parse_nal_length_size(&extradata) as usize;
+        (
+            format,
+            track.id,
+            track.time_base.unwrap(),
+            VideoCodecKind::H264 { nal_len_size },
+        )
+    }
+
+    /// Seeking must leave the demuxer on something a decoder can start from.
+    ///
+    /// This fixture is one GOP: its `stss` has a single entry, the keyframe at
+    /// the head. A plain accurate seek to the middle lands on a P-picture, and
+    /// with no later keyframe to wait for the video track then never produces
+    /// another frame — playback carries on as audio only.
+    #[test]
+    fn seek_lands_on_a_sync_sample() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/bframes_single_gop_720p.mp4");
+        if !path.exists() {
+            eprintln!("fixture missing, skipping");
+            return;
+        }
+        let (mut format, track_id, time_base, codec) = probe_video(&path);
+
+        for secs in [0.0f64, 0.188, 1.0, 4.0, 7.0] {
+            seek_to_sync_sample(
+                &mut *format,
+                track_id,
+                time_base,
+                codec,
+                Time::try_from_secs_f64(secs).unwrap(),
+            )
+            .unwrap();
+
+            let packet = format
+                .next_packet()
+                .unwrap()
+                .expect("a packet should follow the seek");
+            assert_eq!(packet.track_id, track_id);
+            assert!(
+                codec.packet_is_sync(&packet.data),
+                "seek to {secs}s left the demuxer on a non-sync sample"
+            );
+        }
     }
 }

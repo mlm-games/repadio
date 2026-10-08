@@ -96,13 +96,9 @@ fn signalled(colour: Option<(u8, u8, u8)>, full_range: bool) -> ColorInfo {
     info
 }
 
-/// Colour described by an `AVCDecoderConfigurationRecord` (ISO/IEC 14496-15
-/// §5.3.3.1): the SPS `vui_parameters()` of the first carried SPS.
-pub fn avcc_color_info(data: &[u8]) -> ColorInfo {
-    avcc_colour(data).unwrap_or_else(fallback_color_info)
-}
-
-fn avcc_colour(data: &[u8]) -> Option<ColorInfo> {
+/// The first SPS (NAL type 7) an `AVCDecoderConfigurationRecord` (ISO/IEC
+/// 14496-15 §5.3.3.1) carries.
+pub(crate) fn avcc_sps(data: &[u8]) -> Option<h264::sps::Sps> {
     if data.len() < 7 || data[0] != 1 {
         return None;
     }
@@ -116,22 +112,28 @@ fn avcc_colour(data: &[u8]) -> Option<ColorInfo> {
         if nal.is_empty() || nal[0] & 0x1F != 7 {
             continue;
         }
-        let rbsp = ebsp_to_rbsp(nal);
-        let signal = h264::sps::Sps::parse(rbsp.get(1..)?)
-            .ok()?
-            .vui?
-            .video_signal_type?;
-        let d = signal.colour_description?;
-        return Some(signalled(
-            Some((
-                d.colour_primaries,
-                d.transfer_characteristics,
-                d.matrix_coefficients,
-            )),
-            signal.video_full_range_flag,
-        ));
+        return h264::sps::Sps::parse(ebsp_to_rbsp(nal).get(1..)?).ok();
     }
     None
+}
+
+/// Colour described by an `AVCDecoderConfigurationRecord` (ISO/IEC 14496-15
+/// §5.3.3.1): the SPS `vui_parameters()` of the first carried SPS.
+pub fn avcc_color_info(data: &[u8]) -> ColorInfo {
+    avcc_colour(data).unwrap_or_else(fallback_color_info)
+}
+
+fn avcc_colour(data: &[u8]) -> Option<ColorInfo> {
+    let signal = avcc_sps(data)?.vui?.video_signal_type?;
+    let d = signal.colour_description?;
+    Some(signalled(
+        Some((
+            d.colour_primaries,
+            d.transfer_characteristics,
+            d.matrix_coefficients,
+        )),
+        signal.video_full_range_flag,
+    ))
 }
 
 /// Colour described by an `HEVCDecoderConfigurationRecord` (ISO/IEC 14496-15

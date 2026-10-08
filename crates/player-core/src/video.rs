@@ -5,7 +5,9 @@ use web_time::Duration;
 use anyhow::Result;
 use repose_core::color::ColorInfo;
 
-use crate::color::{avcc_color_info, fallback_color_info, hvcc_color_info, videoson_color_info};
+use crate::color::{
+    avcc_color_info, avcc_sps, fallback_color_info, hvcc_color_info, videoson_color_info,
+};
 use videoson::{
     NalFormat, VideoCodecParams, VideoDecoder as VideoDecoderTrait, VideoDecoderOptions,
     VideoOutputFormat, codec_h264::H264Decoder, codec_h265::H265Decoder,
@@ -308,7 +310,16 @@ impl HwDecoder {
         {
             let _ = pre_drain;
         }
-        let mut payload: Vec<u8> = if self.nal_len_size > 0 && !has_annexb_start_code(data) {
+        // A non-zero `nal_len_size` means the packet came out of a length-prefixed
+        // container, so it is always converted. Sniffing the first bytes for a
+        // start code cannot be trusted here: an AVCC length prefix of 0x000001xx
+        // makes a packet open with `00 00 01`, which is indistinguishable from
+        // Annex-B framing by inspection. A 720p file whose pictures average a
+        // few hundred bytes hits that on roughly one packet in five, and the
+        // untouched packet then reaches the decoder as length-prefixed bytes
+        // where Annex-B is expected — it reads the high length byte as a NAL
+        // header and fails the whole stream.
+        let mut payload: Vec<u8> = if self.nal_len_size > 0 {
             avcc_to_annexb_with_len(data, self.nal_len_size)
         } else {
             data.to_vec()
@@ -562,6 +573,30 @@ enum FallbackCodec {
     Vp9,
 }
 
+/// Upper bound on the decoded-frame hold-back.
+///
+/// `max_num_reorder_frames` is a `u(32)` in the SPS, so a malformed or
+/// absurd value must not turn into an unbounded video latency.
+const MAX_REORDER_DEPTH: usize = 16;
+
+/// How many decoded frames `drain_frames` must hold back before it can be sure
+/// no earlier-PTS frame is still coming (H.264 §7.4.3 / H.265 §7.4.3):
+/// `vui_parameters_present_flag` → `bitstream_restriction` →
+/// `max_num_reorder_frames`, which is the number of pictures the DPB may
+/// release out of display order.
+///
+/// `0` when the stream does not say, which is also correct for the codecs that
+/// already emit in display order (VP8, VP9, AV1) and for streams with no
+/// reordering at all.
+fn avcc_reorder_depth(extradata: &[u8]) -> usize {
+    let depth = avcc_sps(extradata)
+        .and_then(|sps| sps.vui)
+        .and_then(|vui| vui.bitstream_restriction)
+        .map(|r| r.max_num_reorder_frames as usize)
+        .unwrap_or(0);
+    depth.min(MAX_REORDER_DEPTH)
+}
+
 pub struct VideoDecoder {
     inner: DecoderInner,
 
@@ -573,6 +608,9 @@ pub struct VideoDecoder {
     /// Colour read once from the codec configuration record, so hardware and
     /// software frames of the same stream render identically.
     color_info: ColorInfo,
+    /// Frames that may still be overtaken by an earlier-PTS picture, so they
+    /// stay in `reorder` instead of being handed on out of display order.
+    reorder_depth: usize,
 }
 
 impl VideoDecoder {
@@ -628,6 +666,7 @@ impl VideoDecoder {
         prefs: VideoDecoderPrefs,
     ) -> Result<Self> {
         let color_info = avcc_color_info(extradata);
+        let reorder_depth = avcc_reorder_depth(extradata);
         #[cfg(feature = "hw")]
         {
             if prefs.try_hw {
@@ -650,6 +689,7 @@ impl VideoDecoder {
                         color_info,
                         fallback_reason: None,
                         reorder: Vec::new(),
+                        reorder_depth,
                         fallback: if prefs.allow_sw {
                             Some((FallbackCodec::H264, width, height, extradata.to_vec()))
                         } else {
@@ -670,6 +710,7 @@ impl VideoDecoder {
             inner: DecoderInner::Software(Self::software_fallback_h264(width, height, extradata)?),
             color_info,
             reorder: Vec::new(),
+            reorder_depth,
             fallback: None,
             fallback_reason: None,
         })
@@ -719,6 +760,7 @@ impl VideoDecoder {
                         color_info,
                         fallback_reason: None,
                         reorder: Vec::new(),
+                        reorder_depth: 0,
                         fallback: if prefs.allow_sw {
                             Some((FallbackCodec::Av1, width, height, extradata.to_vec()))
                         } else {
@@ -739,6 +781,7 @@ impl VideoDecoder {
             inner: DecoderInner::Software(Self::software_fallback_av1(width, height, extradata)?),
             color_info,
             reorder: Vec::new(),
+            reorder_depth: 0,
             fallback: None,
             fallback_reason: None,
         })
@@ -787,6 +830,7 @@ impl VideoDecoder {
                         color_info,
                         fallback_reason: None,
                         reorder: Vec::new(),
+                        reorder_depth: 0,
                         fallback: if prefs.allow_sw {
                             Some((FallbackCodec::Vp8, width, height, extradata.to_vec()))
                         } else {
@@ -807,6 +851,7 @@ impl VideoDecoder {
             inner: DecoderInner::Software(Self::software_fallback_vp8(width, height, extradata)?),
             color_info,
             reorder: Vec::new(),
+            reorder_depth: 0,
             fallback: None,
             fallback_reason: None,
         })
@@ -860,6 +905,7 @@ impl VideoDecoder {
                         color_info,
                         fallback_reason: None,
                         reorder: Vec::new(),
+                        reorder_depth: 0,
                         fallback: if prefs.allow_sw {
                             Some((FallbackCodec::Vp9, width, height, extradata.to_vec()))
                         } else {
@@ -880,6 +926,7 @@ impl VideoDecoder {
             inner: DecoderInner::Software(Self::software_fallback_vp9(width, height, extradata)?),
             color_info,
             reorder: Vec::new(),
+            reorder_depth: 0,
             fallback: None,
             fallback_reason: None,
         })
@@ -891,6 +938,7 @@ impl VideoDecoder {
             inner: DecoderInner::Software(Self::software_fallback_hevc(width, height, extradata)?),
             color_info,
             reorder: Vec::new(),
+            reorder_depth: 0,
             fallback: None,
             fallback_reason: None,
         })
@@ -941,6 +989,7 @@ impl VideoDecoder {
                         color_info,
                         fallback_reason: None,
                         reorder: Vec::new(),
+                        reorder_depth: 0,
                         fallback: if prefs.allow_sw {
                             Some((FallbackCodec::H265, width, height, extradata.to_vec()))
                         } else {
@@ -961,6 +1010,7 @@ impl VideoDecoder {
             inner: DecoderInner::Software(Self::software_fallback_hevc(width, height, extradata)?),
             color_info,
             reorder: Vec::new(),
+            reorder_depth: 0,
             fallback: None,
             fallback_reason: None,
         })
@@ -1253,13 +1303,20 @@ impl VideoDecoder {
             return Vec::new();
         }
 
-        // Sort by PTS to handle decoders that emit frames out of display
-        // order (e.g. H.264 with B-frames).  The H.265 decoder emits in
-        // strict POC order, so this sort is redundant but harmless.
-        // No hold-back: frames leave immediately so the renderer's
-        // VideoSink can schedule them by PTS without a 1-frame delay.
+        // Decoders emit in decode order, so an H.264 stream with B-pictures
+        // hands back a picture only after the ones that follow it in display
+        // order. Sorting the batch that just arrived cannot repair that: the
+        // batch holds one packet's worth of pictures, and the reordering
+        // crosses packet boundaries. Holding back `reorder_depth` pictures is
+        // what makes the earliest-PTS frame provably final — with at most that
+        // many pictures able to overtake it, anything older cannot still
+        // arrive. The renderer's own PTS sort then only has to absorb jitter.
         self.reorder.sort_by_key(|f| f.pts);
-        self.reorder.drain(..).collect()
+        let mut out = Vec::new();
+        while self.reorder.len() > self.reorder_depth {
+            out.push(self.reorder.remove(0));
+        }
+        out
     }
 
     pub fn finish(&mut self) -> Result<Vec<DecodedVideoFrame>> {
@@ -1296,8 +1353,6 @@ impl VideoDecoder {
     }
 }
 
-#[cfg(feature = "hw")]
-pub(crate) use rediakit_bitstream::has_annexb_start_code;
 pub use rediakit_bitstream::{
     avcc_to_annexb as avcc_to_annexb_with_len, nal_length_size_avcc as parse_nal_length_size,
     nal_length_size_hvcc as parse_nal_length_size_hevc, parse_avcc, parse_hvcc,
