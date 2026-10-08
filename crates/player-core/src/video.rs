@@ -580,14 +580,14 @@ enum FallbackCodec {
 const MAX_REORDER_DEPTH: usize = 16;
 
 /// How many decoded frames `drain_frames` must hold back before it can be sure
-/// no earlier-PTS frame is still coming (H.264 §7.4.3 / H.265 §7.4.3):
+/// no earlier-PTS frame is still coming (H.264 §7.4.3):
 /// `vui_parameters_present_flag` → `bitstream_restriction` →
 /// `max_num_reorder_frames`, which is the number of pictures the DPB may
 /// release out of display order.
 ///
-/// `0` when the stream does not say, which is also correct for the codecs that
-/// already emit in display order (VP8, VP9, AV1) and for streams with no
-/// reordering at all.
+/// `0` when the stream does not say, which is also the value for every other
+/// codec: videoson emits VP8/VP9/AV1 and H.265 in display order already, so a
+/// hold-back would only add latency. `test_pts_monotonic` pins the H.265 case.
 fn avcc_reorder_depth(extradata: &[u8]) -> usize {
     let depth = avcc_sps(extradata)
         .and_then(|sps| sps.vui)
@@ -1331,9 +1331,7 @@ impl VideoDecoder {
                 hw.flush()?;
             }
         }
-        // Drain remaining frames from decoder (including decoder's pending
-        // frames flushed by send_eos).  No hold-back in drain_frames, so
-        // self.reorder is always empty after the call.
+        // Flush the reorder hold-back, which `drain_frames` never releases itself.
         let mut result = self.drain_frames(Duration::ZERO, 0);
         result.extend(self.reorder.drain(..));
         Ok(result)

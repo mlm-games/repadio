@@ -2232,7 +2232,10 @@ fn seek_to_sync_sample(
         };
 
         // The probe consumed the landing packet, so go back to exactly it.
-        let landing_time = time_base.calc_time(pts).unwrap_or(Time::ZERO);
+        let Some(landing_time) = time_base.calc_time(pts) else {
+            log::warn!("video packet PTS {pts:?} is not a usable seek time");
+            return Ok(());
+        };
         format.seek(
             SeekMode::Accurate,
             SeekTo::Time {
