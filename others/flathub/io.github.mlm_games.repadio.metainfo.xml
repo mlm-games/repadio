@@ -64,6 +64,24 @@
     <control>touch</control>
   </supports>
   <releases>
+    <release version="0.4.1" date="2026-10-09" type="stable">
+      <description>
+        <ul>
+          <li>fix ci</li>
+          <li>bump nightly</li>
+          <li>bump cargo</li>
+          <li>trim review follow-up notes</li>
+          <li>fix avcc hw framing, frame order and seek landing</li>
+          <li>handle multi-file android intents</li>
+          <li>lock videoson to 0.6.2 for VP9 colour</li>
+          <li>stop treating BT.2020 as an unsupported matrix</li>
+          <li>lock videoson sub-crates to the same release as the facade</li>
+          <li>read colour from the decoder instead of reparsing the SPS</li>
+          <li>few more parsimg fixes</li>
+          <li>seekbar fix</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-10-02" type="stable">
       <description>
         <ul>

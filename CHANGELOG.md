@@ -1,3 +1,19 @@
+## v0.4.1
+
+- fix ci
+- bump nightly
+- bump cargo
+- trim review follow-up notes
+- fix avcc hw framing, frame order and seek landing
+- handle multi-file android intents
+- lock videoson to 0.6.2 for VP9 colour
+- stop treating BT.2020 as an unsupported matrix
+- lock videoson sub-crates to the same release as the facade
+- read colour from the decoder instead of reparsing the SPS
+- few more parsimg fixes
+- seekbar fix
+
+
 ## v0.4.0
 
 - hevc fixes
