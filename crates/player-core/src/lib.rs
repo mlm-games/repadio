@@ -319,7 +319,6 @@ impl AudioPlayer {
                             out_channels,
                             out_sample_rate,
                             &thread_video_tx,
-                            prefs,
                         );
 
                         drop(stream);
@@ -334,8 +333,7 @@ impl AudioPlayer {
         }
 
         #[cfg(target_arch = "wasm32")]
-        audio_thread_wasm(rx, thread_shared, &video_tx, prefs)
-            .context("failed to start WASM audio")?;
+        audio_thread_wasm(rx, thread_shared, &video_tx).context("failed to start WASM audio")?;
 
         Ok(Self {
             inner: Arc::new(AudioPlayerInner {
@@ -643,7 +641,6 @@ fn audio_thread_wasm(
     cmd_rx: Receiver<Command>,
     shared: Arc<Shared>,
     video_tx: &crossbeam_channel::Sender<video::DecodedVideoFrame>,
-    prefs: video::VideoDecoderPrefs,
 ) -> Result<()> {
     #[cfg(target_feature = "atomics")]
     let host = cpal::available_hosts()
@@ -722,7 +719,6 @@ fn audio_thread_wasm(
             out_channels,
             out_sample_rate,
             &thread_video_tx,
-            prefs,
         );
         if let Err(err) = result {
             set_error(shared.as_ref(), &err);
@@ -811,7 +807,6 @@ fn run_command_loop(
     out_channels: usize,
     out_sample_rate: u32,
     video_tx: &crossbeam_channel::Sender<video::DecodedVideoFrame>,
-    prefs: video::VideoDecoderPrefs,
 ) -> Result<()> {
     loop {
         match cmd_rx.recv() {
@@ -838,7 +833,6 @@ fn run_command_loop(
                         out_sample_rate,
                         video_tx,
                         pending_seek.take(),
-                        prefs,
                     ) {
                         Ok(DecodeOutcome::Idle) => next = None,
                         Ok(DecodeOutcome::Seek(target, serial)) => {
@@ -869,7 +863,6 @@ fn run_command_loop(
                         out_sample_rate,
                         video_tx,
                         None,
-                        prefs,
                     ) {
                         log::error!("decode error: {err:#}");
                         set_error(shared.as_ref(), &format!("{err:#}"));
@@ -1363,7 +1356,6 @@ fn decode_file_to_queue(
     out_rate: u32,
     video_tx: &crossbeam_channel::Sender<video::DecodedVideoFrame>,
     initial_seek: Option<(Duration, u64)>,
-    prefs: video::VideoDecoderPrefs,
 ) -> Result<DecodeOutcome> {
     reset_audio_queue_and_clock(&shared, flush_rx);
     shared.load_serial.fetch_add(1, Ordering::Release);

@@ -671,7 +671,7 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
         rlobkit_dialogs::helper_activity_available_for_host()
     );
 
-    rlobkit_app_events::insets::set_on_insets(Box::new(|insets| {
+    rlobkit_app_events::insets::set_on_insets(|insets| {
         let r = repose_core::locals::WindowInsets {
             top: insets.top,
             bottom: insets.bottom,
@@ -680,9 +680,9 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
             ime_bottom: insets.ime_bottom,
         };
         repose_core::locals::set_window_insets_default(r);
-    }));
+    });
 
-    rlobkit_app_events::theme::set_on_theme(Box::new(|_| repose_platform::wake_event_loop()));
+    rlobkit_app_events::theme::set_on_theme(|_| repose_platform::wake_event_loop());
 
     rlobkit_app_events::intents::set_on_new_intent(|| repose_platform::wake_event_loop());
 
@@ -714,8 +714,9 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
 
     {
         let vs = video_sink.clone();
-        if let Err(err) =
-            repose_platform::android::run_android_app(android_app, move |_sched, ctx| {
+        if let Err(err) = repose_platform::android::run_android_app_with_options(
+            android_app,
+            move |_sched, ctx| {
                 sync_theme();
                 // Poll for onNewIntent imports while the app is already running.
                 if let Some(ref dir) = data_dir {
@@ -733,8 +734,9 @@ pub extern "C" fn android_main(android_app: winit::platform::android::activity::
                 }
                 vs.borrow_mut().poll(ctx);
                 App(player.clone(), pending.clone(), &vs, ctx)
-            })
-        {
+            },
+            repose_platform::android::AndroidOptions::default(),
+        ) {
             log::error!("Repadio failed: {err:?}");
         }
     }
