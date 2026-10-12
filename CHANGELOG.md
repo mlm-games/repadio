@@ -1,3 +1,8 @@
+## v0.4.2
+
+- vp9 color fix
+
+
 ## v0.4.1
 
 - fix ci

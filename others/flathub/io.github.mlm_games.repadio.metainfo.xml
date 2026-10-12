@@ -64,6 +64,13 @@
     <control>touch</control>
   </supports>
   <releases>
+    <release version="0.4.2" date="2026-10-12" type="stable">
+      <description>
+        <ul>
+          <li>vp9 color fix</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.4.1" date="2026-10-09" type="stable">
       <description>
         <ul>
