@@ -96,6 +96,24 @@ fn signalled(colour: Option<(u8, u8, u8)>, full_range: bool) -> ColorInfo {
     info
 }
 
+/// Colour described by a `VPCodecConfigurationBox` (VP Codec ISO Media File
+/// Format Binding §3.3): a fixed-layout CICP triple rather than an SPS VUI.
+/// Unset codes are 2, which `signalled` already leaves on the fallback.
+pub fn vpcc_color_info(data: &[u8]) -> ColorInfo {
+    vpcc_colour(data).unwrap_or_else(fallback_color_info)
+}
+
+fn vpcc_colour(data: &[u8]) -> Option<ColorInfo> {
+    if data.len() < 10 {
+        return None;
+    }
+    let packed = data[6];
+    Some(signalled(
+        Some((data[7], data[8], data[9])),
+        packed & 0x01 == 1,
+    ))
+}
+
 /// The first SPS (NAL type 7) an `AVCDecoderConfigurationRecord` (ISO/IEC
 /// 14496-15 §5.3.3.1) carries.
 pub(crate) fn avcc_sps(data: &[u8]) -> Option<h264::sps::Sps> {

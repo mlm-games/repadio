@@ -7,6 +7,7 @@ use repose_core::color::ColorInfo;
 
 use crate::color::{
     avcc_color_info, avcc_sps, fallback_color_info, hvcc_color_info, videoson_color_info,
+    vpcc_color_info,
 };
 use videoson::{
     NalFormat, VideoCodecParams, VideoDecoder as VideoDecoderTrait, VideoDecoderOptions,
@@ -891,7 +892,7 @@ impl VideoDecoder {
         extradata: &[u8],
         prefs: VideoDecoderPrefs,
     ) -> Result<Self> {
-        let color_info = fallback_color_info();
+        let color_info = vpcc_color_info(extradata);
         #[cfg(feature = "hw")]
         {
             if prefs.try_hw {

@@ -347,7 +347,7 @@ checksum = "ce7707714970d5cf476caccbae2d282000c6c14ca5aada878e722a10d8e1c153"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -485,7 +485,7 @@ checksum = "4f8abc12baad266b1c8cec146854c195b5864b4221d4b2ca7296a7ae82d9e451"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -520,7 +520,7 @@ checksum = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -754,7 +754,7 @@ checksum = "6a1f896587b6f2c069c73d2f0913e2d590c3990285cd2f0b6aa02b786b4c679c"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -803,9 +803,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.6.0"
+version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f74872d07caf508b30a21f6836e7d7016a2eaf7d9ff4f48deaa58cd8a0407630"
+checksum = "6651c9ed80effdc7db0ff72512157f901af5e3549e341e24b1dd4887d836d838"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1200,7 +1200,7 @@ checksum = "c6232dd377dcc64799954cbd3a9bb882e9cdc1308ccd87b1c098f1fb2eaf82a8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -1594,7 +1594,7 @@ checksum = "ea5190182e6915eb873ddbc16e23b711b6eb1f9c00a0d0a3a91b5f6228475225"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -1654,7 +1654,7 @@ checksum = "9fb9654ba8355388abeb8dcb4fc62f511300867002afc858860463bdd9fe0c44"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -2386,9 +2386,9 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "litrs"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
+checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 
 [[package]]
 name = "lock_api"
@@ -3292,9 +3292,9 @@ dependencies = [
 
 [[package]]
 name = "parlance"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b6937eda350acc1a5d05872c3cbf99fe78619c269096e2be3d4a350058639d5"
+checksum = "73072a9470554c8e794778acece2312661218aaabb635600957d952cf01c716e"
 
 [[package]]
 name = "parley"
@@ -3902,9 +3902,9 @@ dependencies = [
 
 [[package]]
 name = "repose-app"
-version = "0.31.13"
+version = "0.31.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bdeded1e900eeffdcbaf199f73612bfce917cab16fe15b82f1abf5bc81f19b15"
+checksum = "51d64d7563f2db579a6c921919de5ef38d303fca5de2cc71478480d87446036b"
 dependencies = [
  "log",
  "repose-core",
@@ -3915,9 +3915,9 @@ dependencies = [
 
 [[package]]
 name = "repose-canvas"
-version = "0.31.13"
+version = "0.31.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e13d0ee9b114ae693c58ac85e3f66141043034a68db0317c2d849bcecc6ae30"
+checksum = "ac94ff4b7343a1835fe5170faba159520320ceedb671917f8c4e3e0e6177aa72"
 dependencies = [
  "lyon_path",
  "lyon_tessellation",
@@ -3927,9 +3927,9 @@ dependencies = [
 
 [[package]]
 name = "repose-core"
-version = "0.31.13"
+version = "0.31.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96bf8cb054c823414a66289b9cb5a082ffde745ed2ac8408dd0796e83c83f9bc"
+checksum = "42eb1c82450359557fe433b3059b37ca44f672d59609a3c21429e47b2381db54"
 dependencies = [
  "accesskit",
  "log",
@@ -3942,9 +3942,9 @@ dependencies = [
 
 [[package]]
 name = "repose-devtools"
-version = "0.31.13"
+version = "0.31.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "938413c85e2ae08c27375f616efbe87ce4e81fd7743c62e8f9ba78c041d0eafb"
+checksum = "b10a68cb83a9a06794ed06d0a2743621c0d75bef99cd47a7bb612d7634d98992"
 dependencies = [
  "repose-core",
  "web-time",
@@ -3953,9 +3953,9 @@ dependencies = [
 
 [[package]]
 name = "repose-macros"
-version = "0.31.13"
+version = "0.31.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdb39f430819e5faf5c9419f4eb7d3d3d541860cb184b1e272c07eb6b35b2116"
+checksum = "7e3d7eaa4c95babe0c50f306ace5ba983707292f1377352cb1faca0966e603d9"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3964,9 +3964,9 @@ dependencies = [
 
 [[package]]
 name = "repose-material"
-version = "0.31.12"
+version = "0.31.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d195ec679123b42ec95bc4e99c847228e80e3b5c7c9962e822d2d8ec46572d9"
+checksum = "fbba98f0258706177d08943f44634b0e436137c51591fcd989a3dc0b78afdcd9"
 dependencies = [
  "repose-canvas",
  "repose-core",
@@ -3978,9 +3978,9 @@ dependencies = [
 
 [[package]]
 name = "repose-navigation"
-version = "0.31.12"
+version = "0.31.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d177f13a0878c9e1801aa1ae749eef946ea1df28129b363d002da90641d83e06"
+checksum = "4737396483b9168e2c59d0c645e3856fdf848b1b8298c2be83da86f0a3b641f5"
 dependencies = [
  "log",
  "repose-core",
@@ -3991,9 +3991,9 @@ dependencies = [
 
 [[package]]
 name = "repose-platform"
-version = "0.31.12"
+version = "0.31.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa621398507e0c9757b2b666fc0a41d942a4364d6c791a500f89fef86ac0be70"
+checksum = "6999c25502dd1518eb1b5a5717e95f4d6218a6270ec8ea4f0694f37a05e30129"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -4025,9 +4025,9 @@ dependencies = [
 
 [[package]]
 name = "repose-render-wgpu"
-version = "0.31.12"
+version = "0.31.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b14e4488361ac9ddde2c4b209b408d42deebb80cc633202dfc8288882b6ccd8"
+checksum = "b064a3333b6bac312b4785f96bab52eb027e8de9aef78fbec9604e0d01eec7a6"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -4046,9 +4046,9 @@ dependencies = [
 
 [[package]]
 name = "repose-text"
-version = "0.31.13"
+version = "0.31.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af0fa78ad2f71041a2ee288f0e5554117516bb34521f9f3f24361215fa27e193"
+checksum = "439b9aa1ce07bb488958a78ae17030a9aa157266646bcbd182f448215478805d"
 dependencies = [
  "font-awl",
  "js-sys",
@@ -4065,9 +4065,9 @@ dependencies = [
 
 [[package]]
 name = "repose-tree"
-version = "0.31.13"
+version = "0.31.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f81a52bd6afab3ec3975d61f57959c5f7aa20d646053a3f21bf44e2df858b1b"
+checksum = "39d748095f945fb681b234f0065fb46fded1452f80b93c4f99938350070bbf12"
 dependencies = [
  "log",
  "rapidhash",
@@ -4080,9 +4080,9 @@ dependencies = [
 
 [[package]]
 name = "repose-ui"
-version = "0.31.13"
+version = "0.31.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bda501df754debb99153c5431925fa34d586392f1f2b91d89cc54ec0594523d7"
+checksum = "332a7555b04127869c40c9416a4ad60004fe15ed10d8b73d3bc01af5b77799a6"
 dependencies = [
  "log",
  "repose-core",
@@ -4389,14 +4389,14 @@ checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
 name = "serde_json"
-version = "1.0.151"
+version = "1.0.154"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
+checksum = "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6"
 dependencies = [
  "itoa",
  "memchr",
@@ -4413,7 +4413,7 @@ checksum = "8d3b1629de253c70a0508c3899572da79ca359fdab27c7920ff00406df418906"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -4502,9 +4502,9 @@ dependencies = [
 
 [[package]]
 name = "smallvec"
-version = "1.16.2"
+version = "1.16.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9395f0f0eee849a9b707b2f06bb92a6a422090e2123bb2ef8e87a0e61892a8e"
+checksum = "5b3dc8af474f516a851ff4bd12db780f948b9250ad37211e4eec0bccea54e01b"
 
 [[package]]
 name = "smithay-client-toolkit"
@@ -4614,7 +4614,7 @@ dependencies = [
 [[package]]
 name = "symphonia"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#9b8bd0ab0362d9778264589cb6531b24300cba68"
+source = "git+https://github.com/mlm-games/symphonia#45795f95042482d4e3ef675d00620e39644adaa8"
 dependencies = [
  "lazy_static",
  "symphonia-bundle-flac",
@@ -4647,7 +4647,7 @@ dependencies = [
 [[package]]
 name = "symphonia-bundle-flac"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#9b8bd0ab0362d9778264589cb6531b24300cba68"
+source = "git+https://github.com/mlm-games/symphonia#45795f95042482d4e3ef675d00620e39644adaa8"
 dependencies = [
  "log",
  "symphonia-common",
@@ -4658,7 +4658,7 @@ dependencies = [
 [[package]]
 name = "symphonia-bundle-mp3"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#9b8bd0ab0362d9778264589cb6531b24300cba68"
+source = "git+https://github.com/mlm-games/symphonia#45795f95042482d4e3ef675d00620e39644adaa8"
 dependencies = [
  "lazy_static",
  "log",
@@ -4668,7 +4668,7 @@ dependencies = [
 [[package]]
 name = "symphonia-codec-aac"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#9b8bd0ab0362d9778264589cb6531b24300cba68"
+source = "git+https://github.com/mlm-games/symphonia#45795f95042482d4e3ef675d00620e39644adaa8"
 dependencies = [
  "lazy_static",
  "log",
@@ -4679,7 +4679,7 @@ dependencies = [
 [[package]]
 name = "symphonia-codec-adpcm"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#9b8bd0ab0362d9778264589cb6531b24300cba68"
+source = "git+https://github.com/mlm-games/symphonia#45795f95042482d4e3ef675d00620e39644adaa8"
 dependencies = [
  "log",
  "symphonia-core",
@@ -4688,7 +4688,7 @@ dependencies = [
 [[package]]
 name = "symphonia-codec-alac"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#9b8bd0ab0362d9778264589cb6531b24300cba68"
+source = "git+https://github.com/mlm-games/symphonia#45795f95042482d4e3ef675d00620e39644adaa8"
 dependencies = [
  "log",
  "symphonia-common",
@@ -4698,7 +4698,7 @@ dependencies = [
 [[package]]
 name = "symphonia-codec-pcm"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#9b8bd0ab0362d9778264589cb6531b24300cba68"
+source = "git+https://github.com/mlm-games/symphonia#45795f95042482d4e3ef675d00620e39644adaa8"
 dependencies = [
  "log",
  "symphonia-core",
@@ -4707,7 +4707,7 @@ dependencies = [
 [[package]]
 name = "symphonia-codec-vorbis"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#9b8bd0ab0362d9778264589cb6531b24300cba68"
+source = "git+https://github.com/mlm-games/symphonia#45795f95042482d4e3ef675d00620e39644adaa8"
 dependencies = [
  "log",
  "symphonia-common",
@@ -4717,7 +4717,7 @@ dependencies = [
 [[package]]
 name = "symphonia-common"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#9b8bd0ab0362d9778264589cb6531b24300cba68"
+source = "git+https://github.com/mlm-games/symphonia#45795f95042482d4e3ef675d00620e39644adaa8"
 dependencies = [
  "log",
  "symphonia-core",
@@ -4727,7 +4727,7 @@ dependencies = [
 [[package]]
 name = "symphonia-core"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#9b8bd0ab0362d9778264589cb6531b24300cba68"
+source = "git+https://github.com/mlm-games/symphonia#45795f95042482d4e3ef675d00620e39644adaa8"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",
@@ -4741,7 +4741,7 @@ dependencies = [
 [[package]]
 name = "symphonia-format-caf"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#9b8bd0ab0362d9778264589cb6531b24300cba68"
+source = "git+https://github.com/mlm-games/symphonia#45795f95042482d4e3ef675d00620e39644adaa8"
 dependencies = [
  "log",
  "symphonia-common",
@@ -4751,7 +4751,7 @@ dependencies = [
 [[package]]
 name = "symphonia-format-isomp4"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#9b8bd0ab0362d9778264589cb6531b24300cba68"
+source = "git+https://github.com/mlm-games/symphonia#45795f95042482d4e3ef675d00620e39644adaa8"
 dependencies = [
  "log",
  "symphonia-common",
@@ -4762,7 +4762,7 @@ dependencies = [
 [[package]]
 name = "symphonia-format-mkv"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#9b8bd0ab0362d9778264589cb6531b24300cba68"
+source = "git+https://github.com/mlm-games/symphonia#45795f95042482d4e3ef675d00620e39644adaa8"
 dependencies = [
  "lazy_static",
  "log",
@@ -4773,7 +4773,7 @@ dependencies = [
 [[package]]
 name = "symphonia-format-ogg"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#9b8bd0ab0362d9778264589cb6531b24300cba68"
+source = "git+https://github.com/mlm-games/symphonia#45795f95042482d4e3ef675d00620e39644adaa8"
 dependencies = [
  "log",
  "symphonia-common",
@@ -4784,7 +4784,7 @@ dependencies = [
 [[package]]
 name = "symphonia-format-riff"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#9b8bd0ab0362d9778264589cb6531b24300cba68"
+source = "git+https://github.com/mlm-games/symphonia#45795f95042482d4e3ef675d00620e39644adaa8"
 dependencies = [
  "extended",
  "log",
@@ -4795,7 +4795,7 @@ dependencies = [
 [[package]]
 name = "symphonia-metadata"
 version = "0.6.1"
-source = "git+https://github.com/mlm-games/symphonia#9b8bd0ab0362d9778264589cb6531b24300cba68"
+source = "git+https://github.com/mlm-games/symphonia#45795f95042482d4e3ef675d00620e39644adaa8"
 dependencies = [
  "lazy_static",
  "log",
@@ -4817,9 +4817,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "3.0.6"
+version = "3.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8593e8e72159ed2257d083c7a454a85cbf854f37a0966d8d483aff8c8a3ebcee"
+checksum = "d78c8dee4c7bf0e14673097256fed6142ce9d3b85a408189d07482442145823b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4834,7 +4834,7 @@ checksum = "901704edd0dfe137f1987838ee4f259e4e063c31371bdb423f7ae38ec6f77f02"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -4908,7 +4908,7 @@ checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -4981,7 +4981,7 @@ checksum = "78773a2a397f451582ce068015985c33193cf6dea8b74d2a639fe457b2f07b0e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -4995,9 +4995,9 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.25.16+spec-1.1.0"
+version = "0.25.17+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88f38f3af8bf71841c67a990f4e2b52143b2d0a1a994c72513ff4c14977fc722"
+checksum = "e3641d5bbb5349a79e1020a242d251efbc546ad8048d133958323ce9c40a9c9c"
 dependencies = [
  "indexmap",
  "toml_datetime",
@@ -5007,9 +5007,9 @@ dependencies = [
 
 [[package]]
 name = "toml_parser"
-version = "1.1.4+spec-1.1.0"
+version = "1.1.5+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bed810ee007d8e7f9cf20b4774e7198142fa27186e0f805871da7f3c39eaf333"
+checksum = "baa693a8032d7e1cada7d0041e96126df243179ff061456783ac7f12bda4744c"
 dependencies = [
  "winnow",
 ]
@@ -5154,9 +5154,9 @@ checksum = "357cc3acc6a036009fd6c973ed009037c732d60d0b4f6c673e9041497482a28f"
 
 [[package]]
 name = "unicode-ident"
-version = "1.0.26"
+version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
+checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 
 [[package]]
 name = "unicode-segmentation"
@@ -5202,9 +5202,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.27.0"
+version = "1.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97277d36b9c3ace13e58fa6e753f8b0bbbf302a18dd193240d70f9e29681059a"
+checksum = "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
 dependencies = [
  "js-sys",
  "serde_core",
@@ -5390,7 +5390,7 @@ dependencies = [
  "bumpalo",
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
  "wasm-bindgen-shared",
 ]
 
@@ -5581,7 +5581,7 @@ checksum = "4bc7d5d2a8d6b2347fdf1af4a1c01c4cb78366e94dfa1f3765dc4731fa7001e9"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -6237,7 +6237,7 @@ checksum = "ec8ebde2db3681e8c9980cc27822030e68752690ddfa9473e739aeb4dbde6d71"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
  "synstructure",
 ]
 
@@ -6309,7 +6309,7 @@ dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
  "zbus_names",
  "zvariant",
  "zvariant_utils",
@@ -6390,7 +6390,7 @@ checksum = "f75b4683f6c7f45248d4d64056a24298c6281e0993356d7d1b4a1a962ef10d4a"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
  "synstructure",
 ]
 
@@ -6426,7 +6426,7 @@ checksum = "34df6fc39dbd26ddc9c10e6a2984476e13acce22e64e4487636ef494369225da"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -6480,7 +6480,7 @@ dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn 3.0.6",
+ "syn 3.0.9",
  "zvariant_utils",
 ]
 
@@ -6493,6 +6493,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "serde",
- "syn 3.0.6",
+ "syn 3.0.9",
  "winnow",
 ]
