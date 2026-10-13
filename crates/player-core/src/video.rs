@@ -23,7 +23,7 @@ use baabaabaabaabababbababbaa::traits::VideoDecoderInputBoxed;
 use baabaabaabaabababbababbaa::traits::VideoDecoderOutputBoxed;
 #[cfg(feature = "hw")]
 use baabaabaabaabababbababbaa::{
-    Dimensions, VideoCodecId as HwCodecId, VideoDecoderConfig, VideoDescriptionFormat,
+    Dimensions, Error, VideoCodecId as HwCodecId, VideoDecoderConfig, VideoDescriptionFormat,
     VideoOutputMode,
 };
 #[cfg(feature = "hw")]
@@ -127,6 +127,9 @@ struct HwDecoder {
     /// swallowing it would turn a hard failure into a silent stall.
     #[cfg(not(target_arch = "wasm32"))]
     output_error: Option<String>,
+    /// `output_error` has already been handed to the caller as a hard failure.
+    #[cfg(not(target_arch = "wasm32"))]
+    output_error_reported: bool,
 }
 
 /// A completed async `copyTo()` from a WebCodecs hardware frame (wasm only).
@@ -234,6 +237,7 @@ impl HwDecoder {
             description_format,
             hardware_acceleration: Some(true),
             output_mode,
+            color: None,
         };
         let (initial_config, nal_len_size) = match &codec {
             HwCodecId::H264 { .. } => (
@@ -289,6 +293,7 @@ impl HwDecoder {
                 pending_config,
                 initial_config,
                 output_error: None,
+                output_error_reported: false,
             })
         }
     }
@@ -370,6 +375,16 @@ impl HwDecoder {
                 }
             }
         }
+        // `poll_hw_output` runs inside `send_packet`, so a failure raised there
+        // is already off the channel by the time we drain. Hand it on once as a
+        // hard error, or the caller sees a healthy decoder that produces
+        // nothing and plays to the end black.
+        if !self.output_error_reported {
+            if let Some(msg) = self.output_error.clone() {
+                self.output_error_reported = true;
+                return Err(Error::Platform(msg));
+            }
+        }
         Ok(out)
     }
 
@@ -426,6 +441,7 @@ impl HwDecoder {
                 format: f.format,
                 timestamp: f.pts,
                 planes: VideoPlanes::Cpu(f.data),
+                color: None,
             });
         }
         Ok(out)
@@ -468,7 +484,14 @@ impl HwDecoder {
             match self.output.try_frame() {
                 Ok(Some(_)) => {}
                 Ok(None) => break,
-                Err(_) => break,
+                Err(e) => {
+                    // Keep it: this is the decoder reporting why it died, and
+                    // dropping it turns a hard failure into a silent stall.
+                    if self.output_error.is_none() {
+                        self.output_error = Some(format!("{e:?}"));
+                    }
+                    break;
+                }
             }
         }
         #[cfg(target_arch = "wasm32")]
