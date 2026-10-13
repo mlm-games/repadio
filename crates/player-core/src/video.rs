@@ -876,7 +876,7 @@ impl VideoDecoder {
             nal_format: None,
         };
         #[cfg(not(target_arch = "wasm32"))]
-        let threads = Some(4);
+        let threads = Some(std::thread::available_parallelism().map_or(4, |n| n.get().clamp(1, 8)));
         #[cfg(target_arch = "wasm32")]
         let threads = None;
         let opts = VideoDecoderOptions {
