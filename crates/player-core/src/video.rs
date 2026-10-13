@@ -729,10 +729,15 @@ impl VideoDecoder {
             extradata: extradata.to_vec(),
             nal_format: None,
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        let threads = Some(4);
+        #[cfg(target_arch = "wasm32")]
+        let threads = None;
         let opts = VideoDecoderOptions {
             verify: false,
             output_format: VideoOutputFormat::Nv12,
             tolerate_truncated_chroma: false,
+            threads,
             ..Default::default()
         };
         let inner = Rav1dSafeDecoder::try_new(&params, &opts)
