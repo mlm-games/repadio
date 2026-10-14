@@ -64,6 +64,20 @@
     <control>touch</control>
   </supports>
   <releases>
+    <release version="0.4.3" date="2026-10-14" type="stable">
+      <description>
+        <ul>
+          <li>bump videoson for av1 seek config replay</li>
+          <li>bump symphonia for correct backward seeks</li>
+          <li>drain video frames while video-only preroll waits</li>
+          <li>surface hw decoder errors and deliver 10-bit vaapi readback</li>
+          <li>scale vp9 thread budget to cpu count</li>
+          <li>bump videoson to 0.6.4 for rav1d frame threading</li>
+          <li>scale av1 thread budget to cpu count</li>
+          <li>use threaded rav1d for sw av1</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.4.2" date="2026-10-12" type="stable">
       <description>
         <ul>

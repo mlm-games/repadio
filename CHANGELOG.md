@@ -1,3 +1,15 @@
+## v0.4.3
+
+- bump videoson for av1 seek config replay
+- bump symphonia for correct backward seeks
+- drain video frames while video-only preroll waits
+- surface hw decoder errors and deliver 10-bit vaapi readback
+- scale vp9 thread budget to cpu count
+- bump videoson to 0.6.4 for rav1d frame threading
+- scale av1 thread budget to cpu count
+- use threaded rav1d for sw av1
+
+
 ## v0.4.2
 
 - vp9 color fix
