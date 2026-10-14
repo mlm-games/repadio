@@ -1979,6 +1979,45 @@ fn decode_file_to_queue(
                     if pkt_end > max_video_pts {
                         max_video_pts = pkt_end;
                     }
+                    // A video-only file is paced solely by the audio device
+                    // draining the synthetic silence. While that queue is
+                    // full no new packet arrives, so the packet handler never
+                    // runs and the decoder's output is never collected: frames
+                    // pile up unread, the preroll gate never sees them, and
+                    // playback waits out its timeout. Collect frames here, at
+                    // the point we would otherwise be blocked.
+                    while video_only
+                        && seek_phase.is_some()
+                        && lock_status(&shared).state == PlaybackState::Buffering
+                        && sample_tx.len()
+                            >= (out_rate as usize * out_channels * PREROLL_MS as usize) / 1000
+                    {
+                        let serial = shared.load_serial.load(Ordering::Acquire);
+                        let min_pts = seek_phase.as_ref().map(|p| p.target);
+                        let clock = seek_base
+                            + Duration::from_micros(
+                                silence_pushed / (out_rate as u64 * out_channels as u64).max(1),
+                            );
+                        for frame in vs.decoder.drain_frames(clock, serial) {
+                            if let Some(min) = min_pts {
+                                if frame.pts + Duration::from_millis(500) < min {
+                                    continue;
+                                }
+                            }
+                            shared.video_frames_sent.fetch_add(1, Ordering::Release);
+                            if video_tx.try_send(frame).is_err() {
+                                log::trace!("preroll-wait: video_tx full, dropping frame");
+                            }
+                        }
+                        resume_after_preroll_timeout(&mut seek_phase, &shared);
+                        match drain_commands(cmd_rx, &shared) {
+                            CommandAction::Continue => {}
+                            CommandAction::Load(p) => return Ok(DecodeOutcome::Load(p)),
+                            CommandAction::Shutdown => return Ok(DecodeOutcome::Shutdown),
+                            CommandAction::Seek(t, s) => return Ok(DecodeOutcome::Seek(t, s)),
+                        }
+                        thread::sleep(Duration::from_millis(1));
+                    }
                     if let Some(action) = (push_silence_to)(
                         max_video_pts,
                         seek_base,
