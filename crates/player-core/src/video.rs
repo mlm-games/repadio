@@ -651,6 +651,36 @@ impl VideoDecoder {
         }
     }
 
+    /// How long this backend may legitimately produce nothing after being fed
+    /// packets before the stall watchdog treats it as dead.
+    ///
+    /// VAAPI builds its `VAContext` lazily, on the first packet of a stream,
+    /// and that call blocks for seconds on drivers that have to bring up the
+    /// hardware path — measured at a consistent 5.0-5.4s here across H.264,
+    /// HEVC and 4K, against a 5.4s spread while the machine's load average
+    /// swung from 4 to 18, so it is a fixed setup cost rather than work. A
+    /// flat two-second floor therefore demoted every file to software decode
+    /// (`vf` 605 -> 342 on 1080p60 H.264, 294 -> 22 on HEVC) and was the
+    /// reason sparse-keyframe seeks took tens of seconds. VAAPI also reports
+    /// real failures through `try_drain_hw_frames`, so it does not need the
+    /// watchdog to catch them.
+    ///
+    /// MediaCodec and WebCodecs genuinely fail silently — packets accepted,
+    /// zero output, zero error — and there the short window is the point.
+    pub fn stall_watchdog_floor(&self, proven: bool) -> std::time::Duration {
+        if proven {
+            return std::time::Duration::from_millis(super::HW_STALL_MIN_MS_PROVEN as u64);
+        }
+        #[cfg(all(feature = "hw", target_os = "linux"))]
+        {
+            std::time::Duration::from_millis(20_000)
+        }
+        #[cfg(not(all(feature = "hw", target_os = "linux")))]
+        {
+            std::time::Duration::from_millis(super::HW_STALL_MIN_MS_COLD as u64)
+        }
+    }
+
     pub fn decoder_kind(&self) -> &'static str {
         if self.is_hardware() { "hw" } else { "sw" }
     }

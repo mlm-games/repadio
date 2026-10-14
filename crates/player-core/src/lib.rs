@@ -1261,11 +1261,7 @@ fn handle_video_packet(
         .stall_since
         .map(|t| t.elapsed().as_millis())
         .unwrap_or(0);
-    let stall_floor_ms = if state.hw_ever_output {
-        HW_STALL_MIN_MS_PROVEN
-    } else {
-        HW_STALL_MIN_MS_COLD
-    };
+    let stall_floor_ms = state.decoder.stall_watchdog_floor(state.hw_ever_output).as_millis();
     if state.stall_packets >= 10
         && stall_elapsed_ms >= stall_floor_ms
         && state.decoder.is_hardware()
@@ -2315,8 +2311,21 @@ fn perform_seek(
     };
     let time = Time::try_from_secs_f64(clamped.as_secs_f64()).unwrap_or(Time::ZERO);
 
-    let was_playing = shared.is_playing.load(Ordering::Acquire);
-    shared.resume_intent.store(was_playing, Ordering::Release);
+    // A single user seek runs `perform_seek` twice: the command handler seeks
+    // and returns `DecodeOutcome::Seek`, then the fresh decode thread re-seeks
+    // to the same target on startup. The first pass clears `is_playing` via
+    // `reset_audio_queue_and_clock`, so recording the intent unconditionally
+    // would let the second pass read that cleared flag and record the seek as
+    // "was paused" — the preroll gate then resumes into `Paused` and playback
+    // never restarts. Keep an intent already recorded for an in-flight seek,
+    // which also preserves an explicit pause the user made while buffering.
+    if {
+        let s = lock_status(shared);
+        s.state != PlaybackState::Buffering
+    } {
+        let was_playing = shared.is_playing.load(Ordering::Acquire);
+        shared.resume_intent.store(was_playing, Ordering::Release);
+    }
 
     let seek = match (video_sync, seek_track_id) {
         (Some((codec, time_base)), Some(track_id)) => {
