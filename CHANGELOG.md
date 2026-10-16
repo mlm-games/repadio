@@ -1,3 +1,9 @@
+## v0.4.4
+
+- keep the seek intent and stop demoting vaapi to software
+- test that playback never emits an empty frame
+
+
 ## v0.4.3
 
 - bump videoson for av1 seek config replay

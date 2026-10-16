@@ -1,0 +1,2 @@
+- keep the seek intent and stop demoting vaapi to software
+- test that playback never emits an empty frame

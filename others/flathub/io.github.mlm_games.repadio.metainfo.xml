@@ -64,6 +64,14 @@
     <control>touch</control>
   </supports>
   <releases>
+    <release version="0.4.4" date="2026-10-16" type="stable">
+      <description>
+        <ul>
+          <li>keep the seek intent and stop demoting vaapi to software</li>
+          <li>test that playback never emits an empty frame</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.4.3" date="2026-10-14" type="stable">
       <description>
         <ul>
