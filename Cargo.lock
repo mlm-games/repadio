@@ -3204,9 +3204,9 @@ checksum = "776a36e8f0011eaacfb833e8e5b978609babb1f94e204f9c7d996bff3fe4f06c"
 
 [[package]]
 name = "oxideav-core"
-version = "0.1.39"
+version = "0.1.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f49a13fc8a75d81fb4af6108bd67d080d52213ffa008340212246d543d63f982"
+checksum = "64502aa4210ff04a5d574ca86f2c22e064a6c3bda812914b138c777e8ce6b023"
 dependencies = [
  "bytemuck",
  "serde_json",
@@ -3215,9 +3215,9 @@ dependencies = [
 
 [[package]]
 name = "oxideav-h264"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6bbe6bb48d3460e4c5348699de767e9aa43711e75c585e1b61cb3bc2fe6c207"
+checksum = "6757ee6e7db4622536409825bec9fda8642e8225f8e49fb9331d995e9e357322"
 dependencies = [
  "oxideav-core",
  "thiserror 2.0.21",
@@ -3225,9 +3225,9 @@ dependencies = [
 
 [[package]]
 name = "oxideav-h265"
-version = "0.0.10"
+version = "0.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1cea8de28a522e9824535756388a28ee4bdd335ac71e193b9300fa3197f581b2"
+checksum = "1b3361cbebe79d6b5fbcc8c36dede89acf3ce8b5d1b28f673f43f98760d5dc46"
 dependencies = [
  "oxideav-core",
 ]
@@ -5225,9 +5225,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "videoson"
-version = "0.6.5"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c1457ea4a07abc6e38a03a56622816a984b5c29d4c277e072ccefa9e01986ac"
+checksum = "3d18f3e6f1833a198c335e0cd70684a1f059c00e1f7bbc3a2e57be48bbb88f60"
 dependencies = [
  "oxideav-h265",
  "videoson-codec-h264",
@@ -5242,9 +5242,9 @@ dependencies = [
 
 [[package]]
 name = "videoson-codec-h264"
-version = "0.6.5"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c33607c8aaa8536120bcb2c1fc1d1661b28c0048df29ae6c6aca826bac7861b"
+checksum = "9b2f8cd43b3b10e51b80615f54ec82816452b6c7ff77d24ec97f2dee74e0e8a9"
 dependencies = [
  "oxideav-h264",
  "rust_h264",
@@ -5253,9 +5253,9 @@ dependencies = [
 
 [[package]]
 name = "videoson-codec-h265"
-version = "0.6.5"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6d11dbbe0e5c341109515733d8b7c0cecd48f779f1201587dc49dbc0308da6e"
+checksum = "3c9e11181dc167a7e2c2d54ef03a882c47547fc9e3c8d178ae1becfcf6b7c5fa"
 dependencies = [
  "oxideav-core",
  "oxideav-h265",
@@ -5265,9 +5265,9 @@ dependencies = [
 
 [[package]]
 name = "videoson-codec-rav1d"
-version = "0.6.5"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7295df60554b4c9392fa19bff1eb1fbaba6f7a5fdc943cfe807d38161bc1e7b1"
+checksum = "01a5291eca796223056f0256840274d8b11e34cd14ea7b7028f85cfe921b934e"
 dependencies = [
  "rav1d-safe",
  "videoson-core",
@@ -5275,9 +5275,9 @@ dependencies = [
 
 [[package]]
 name = "videoson-codec-vp8"
-version = "0.6.5"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "706af54c044bf8484f47bbd038f13aea5dd27c74193c915d23eaac46c88cdd22"
+checksum = "b55995f25a804e63b5e7b30491613a6a56217d1cb69a5911351ecf3b7907bbfa"
 dependencies = [
  "oxideav-vp8",
  "videoson-core",
@@ -5285,9 +5285,9 @@ dependencies = [
 
 [[package]]
 name = "videoson-codec-vp9"
-version = "0.6.5"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "314b1adfdcb73475b17c8f9bc73d88ab4eb30615ad2cd737034f1ef58e4eb35c"
+checksum = "d92913b5d1051ea21596b439051f9c91b816fc3fb2032cd21e560f643c6e3160"
 dependencies = [
  "oxideav-core",
  "oxideav-vp9",
@@ -5296,21 +5296,21 @@ dependencies = [
 
 [[package]]
 name = "videoson-common"
-version = "0.6.5"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5531a752339a9731022e14f7f9628c437b73442863dc0c51a0aa315cb9f7c20"
+checksum = "6157bbbf8765b52e06480081fd373f2167a5b08e211b61431449b416578e1025"
 
 [[package]]
 name = "videoson-core"
-version = "0.6.5"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "328b8e10086b5e2659e456b3496cf0afab53f46f589ccbe35fe8946fa4d2c5ee"
+checksum = "8cf90318f96aefe141c3347e936f815237b8ead96c296e5ebc260b1248929222"
 
 [[package]]
 name = "videoson-format-ivf"
-version = "0.6.5"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54a7f6b6730a8738a9fc262f294218d71c8d8e47a26a8ec894451484b7502bcc"
+checksum = "4ec4c0b1ac5d9b92ae2aab721dfc38b94ed643f93fa1e0ae21731f01635ee487"
 dependencies = [
  "oxideav-bitstream",
  "videoson-common",

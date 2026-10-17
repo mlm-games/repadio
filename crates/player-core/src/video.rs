@@ -1016,10 +1016,15 @@ impl VideoDecoder {
             extradata: extradata.to_vec(),
             nal_format: Some(NalFormat::Hvcc { nal_len_size }),
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        let threads = Some(std::thread::available_parallelism().map_or(4, |n| n.get().clamp(1, 8)));
+        #[cfg(target_arch = "wasm32")]
+        let threads = None;
         let opts = VideoDecoderOptions {
             verify: false,
             output_format: VideoOutputFormat::Nv12,
             tolerate_truncated_chroma: false,
+            threads,
             ..Default::default()
         };
         let inner = H265Decoder::try_new(&params, &opts)
@@ -1181,6 +1186,7 @@ impl VideoDecoder {
         width: usize,
         height: usize,
         stride: usize,
+        shift: u8,
     ) -> Arc<[u8]> {
         let size = width * height;
         let mut arc = Arc::new_uninit_slice(size);
@@ -1210,13 +1216,69 @@ impl VideoDecoder {
                         if src_start + col >= s.len() {
                             break;
                         }
-                        dst[dst_start + col] = (s[src_start + col] >> 2) as u8;
+                        dst[dst_start + col] = (s[src_start + col] >> shift) as u8;
                     }
                 }
             }
         }
         // Safety: all `size` elements were written above.
         unsafe { arc.assume_init() }
+    }
+
+    /// Interleaved U/V at the NV12 chroma grid (`ceil(w/2) x ceil(h/2)` from a
+    /// planar 4:2:0 / 4:2:2 / 4:4:4 frame.
+    ///
+    /// 4:2:0 is copied tap-for-tap, 4:2:2 averages each row pair and 4:4:4 each
+    /// 2x2 block, so every planar layout lands on the half-resolution grid the
+    /// renderer samples. Reads clamp to the stored stride and rows, so a short
+    /// or padded plane degrades to edge replication instead of reading past it.
+    /// Above 8 bits the samples are shifted down by the stream's depth.
+    fn planar_uv_to_nv12(frame: &videoson::VideoFrame) -> Arc<[u8]> {
+        let cw = (frame.width as usize).div_ceil(2);
+        let ch = (frame.height as usize).div_ceil(2);
+        let (taps_x, taps_y) = match frame.planes {
+            videoson::VideoFramePlanes::Yuv422 => (1usize, 2usize),
+            videoson::VideoFramePlanes::Yuv444 => (2, 2),
+            _ => (1, 1),
+        };
+        let shift = frame.bit_depth.saturating_sub(8);
+
+        let read = |plane: &videoson::VideoPlane, x: usize, y: usize| -> u32 {
+            let stride = plane.stride.max(1);
+            let x = x.min(stride - 1);
+            match &plane.data {
+                videoson::PlaneData::U8(s) => {
+                    let y = y.min((s.len() / stride).saturating_sub(1));
+                    s.get(y * stride + x).copied().unwrap_or(0) as u32
+                }
+                videoson::PlaneData::U16(s) => {
+                    let y = y.min((s.len() / stride).saturating_sub(1));
+                    (s.get(y * stride + x).copied().unwrap_or(0) as u32) >> shift
+                }
+            }
+        };
+
+        let u = &frame.plane_data[1];
+        let v = &frame.plane_data[2];
+        let taps = (taps_x * taps_y) as u32;
+        let mut uv = Vec::with_capacity(cw * ch * 2);
+        for cy in 0..ch {
+            for cx in 0..cw {
+                let mut u_sum = 0u32;
+                let mut v_sum = 0u32;
+                for dy in 0..taps_y {
+                    for dx in 0..taps_x {
+                        let x = cx * taps_x + dx;
+                        let y = cy * taps_y + dy;
+                        u_sum += read(u, x, y);
+                        v_sum += read(v, x, y);
+                    }
+                }
+                uv.push((u_sum / taps).min(255) as u8);
+                uv.push((v_sum / taps).min(255) as u8);
+            }
+        }
+        Arc::from(uv)
     }
 
     pub fn fallback_to_software(&mut self, _reason: &str) -> bool {
@@ -1314,21 +1376,53 @@ impl VideoDecoder {
                 let mut received = 0u32;
                 let mut skipped = 0u32;
                 while let Ok(Some(frame)) = inner.receive_frame() {
-                    if frame.plane_data.len() < 2 {
-                        skipped += 1;
-                        continue;
-                    }
-
                     let w = frame.width as usize;
                     let h = frame.height as usize;
-                    let y_stride = frame.plane_data[0].stride;
-                    let uv_stride = frame.plane_data[1].stride;
                     let uv_w = ((frame.width + 1) / 2 * 2) as usize;
                     let uv_h = ((frame.height + 1) / 2) as usize;
+                    let depth_shift = frame.bit_depth.saturating_sub(8);
 
-                    let y_plane = Self::plane_to_arc(&frame.plane_data[0].data, w, h, y_stride);
-                    let uv_plane =
-                        Self::plane_to_arc(&frame.plane_data[1].data, uv_w, uv_h, uv_stride);
+                    let uv_plane = match frame.planes {
+                        // NV12 hands the interleaved plane over directly.
+                        videoson::VideoFramePlanes::Nv12 => {
+                            if frame.plane_data.len() < 2 {
+                                skipped += 1;
+                                continue;
+                            }
+                            Self::plane_to_arc(
+                                &frame.plane_data[1].data,
+                                uv_w,
+                                uv_h,
+                                frame.plane_data[1].stride,
+                                depth_shift,
+                            )
+                        }
+                        // Planar 4:2:0 / 4:2:2 / 4:4:4 at any depth: interleave
+                        // U/V, resampled onto the NV12 chroma grid.
+                        videoson::VideoFramePlanes::Yuv420
+                        | videoson::VideoFramePlanes::Yuv422
+                        | videoson::VideoFramePlanes::Yuv444 => {
+                            if frame.plane_data.len() < 3 {
+                                skipped += 1;
+                                continue;
+                            }
+                            Self::planar_uv_to_nv12(&frame)
+                        }
+                        // Monochrome and anything newer has no interleaved
+                        // chroma plane to feed the renderer.
+                        _ => {
+                            skipped += 1;
+                            continue;
+                        }
+                    };
+
+                    let y_plane = Self::plane_to_arc(
+                        &frame.plane_data[0].data,
+                        w,
+                        h,
+                        frame.plane_data[0].stride,
+                        depth_shift,
+                    );
 
                     let pts = frame
                         .pts
