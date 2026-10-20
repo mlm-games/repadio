@@ -2036,7 +2036,11 @@ fn decode_file_to_queue(
                             (out_rate as usize * out_channels * PREROLL_MS as usize) / 1000;
                         let video_ok = video_preroll_ok(&shared);
                         let audio_ok = sample_tx.len() >= min_samples;
-                        let timed_out = phase.started.elapsed() > Duration::from_secs(5);
+                        // Starting before the demuxer reaches the target would advance the
+                        // injected-silence clock past the frames the decoder has produced, and
+                        // the sink would race through the rest of the section to catch up.
+                        let timed_out = phase.started.elapsed() > Duration::from_secs(5)
+                            && max_video_pts >= phase.target;
                         if (audio_ok && video_ok) || timed_out {
                             let resume = shared.resume_intent.load(Ordering::Acquire);
                             shared.is_playing.store(resume, Ordering::Release);
@@ -2186,7 +2190,11 @@ fn decode_file_to_queue(
                 audio_ok
             };
             let timed_out = phase.started.elapsed() > Duration::from_secs(5);
-            if can_resume || timed_out {
+            // A timeout may only end the preroll once the audio has reached the target.
+            // Otherwise playback starts from the middle of the section while the clock is
+            // already at the target, and the output races (or plays the wrong audio) to
+            // catch up. The EOF paths end preroll for tracks that never get there.
+            if can_resume || (timed_out && phase.audio_reached) {
                 let resume = shared.resume_intent.load(Ordering::Acquire);
                 shared.is_playing.store(resume, Ordering::Release);
                 {
@@ -2207,18 +2215,18 @@ fn decode_file_to_queue(
 /// Seeks the container and leaves the demuxer sitting on a sync sample at or
 /// before `target`.
 ///
-/// `SeekMode::Accurate` only promises a position *before* the target, and for
-/// MP4 that position is the nearest sample rather than the preceding random
-/// access point — usually a P- or B-picture. A video decoder cannot start
-/// there, so the caller sets `need_keyframe` and drops packets until a sync
-/// sample shows up. A stream that only has one sync sample, at its head, never
-/// supplies another: every packet after the seek is discarded, no frame is ever
-/// decoded again, and playback silently continues as audio only.
+/// `SeekMode::Coarse` lets a reader with a sync sample index (ISO MP4 `stss`)
+/// land on the preceding random access point directly. Readers without one
+/// seek to the nearest sample instead, usually a P- or B-picture, which a
+/// video decoder cannot start from. A stream that only has one sync sample, at
+/// its head, never supplies another: every packet after that seek is discarded,
+/// no frame is ever decoded again, and playback continues as audio only.
 ///
-/// So the target is walked backwards until the sample it lands on really is a
-/// sync sample. Each attempt costs a seek plus one packet, and the backoff
-/// grows geometrically so a stream with ordinary keyframe spacing is found in
-/// one or two steps.
+/// So when the coarse landing is not a sync sample, the target is scanned for
+/// the last sync sample at or before it. The search runs forward in growing
+/// windows. Probing one packet per window and always backing off from the
+/// landing used to step over every keyframe and end at the head of the file,
+/// making each seek decode everything from the start.
 fn seek_to_sync_sample(
     format: &mut dyn symphonia::core::formats::FormatReader,
     track_id: u32,
@@ -2226,71 +2234,133 @@ fn seek_to_sync_sample(
     codec: VideoCodecKind,
     target: Time,
 ) -> Result<(), symphonia::core::errors::Error> {
-    const MAX_ATTEMPTS: u32 = 8;
-    const FIRST_BACKOFF_SECS: f64 = 1.0;
+    const MAX_WINDOWS: u32 = 8;
+    const FIRST_WINDOW_SECS: f64 = 1.0;
 
-    let mut probe = target;
-    let mut tried_head = target == Time::ZERO;
-    for attempt in 0..MAX_ATTEMPTS {
-        format.seek(
-            SeekMode::Accurate,
-            SeekTo::Time {
-                time: probe,
-                track_id: Some(track_id),
-            },
-        )?;
+    format.seek(
+        SeekMode::Coarse,
+        SeekTo::Time {
+            time: target,
+            track_id: Some(track_id),
+        },
+    )?;
 
-        // Read up to the first packet of the video track, then undo the read.
-        let mut landing = None;
-        loop {
-            let packet = match format.next_packet() {
-                Ok(Some(p)) => p,
-                Ok(None) => break,
-                Err(e) => return Err(e),
-            };
-            if packet.track_id == track_id {
-                landing = Some((packet.pts, codec.packet_is_sync(&packet.data)));
-                break;
-            }
-        }
+    // Read up to the first packet of the video track, then undo the read.
+    let Some((landing_time, is_sync)) = next_video_packet(format, track_id, codec, time_base)? else {
         // Nothing left to read: the caller finds out on its next packet.
-        let Some((pts, is_sync)) = landing else {
-            return Ok(());
-        };
+        return Ok(());
+    };
 
-        // The probe consumed the landing packet, so go back to exactly it.
-        let Some(landing_time) = time_base.calc_time(pts) else {
-            log::warn!("video packet PTS {pts:?} is not a usable seek time");
-            return Ok(());
-        };
+    if is_sync {
+        // The probe consumed the landing packet. A coarse seek from the sync
+        // sample's own timestamp lands on that same sample again.
         format.seek(
-            SeekMode::Accurate,
+            SeekMode::Coarse,
             SeekTo::Time {
                 time: landing_time,
                 track_id: Some(track_id),
             },
         )?;
-        if is_sync {
+        return Ok(());
+    }
+
+    let mut probe = landing_time;
+    let mut window = FIRST_WINDOW_SECS;
+    for _ in 0..MAX_WINDOWS {
+        let back = probe.as_secs_f64() - window;
+        let start = if back <= 0.0 {
+            Time::ZERO
+        } else {
+            Time::try_from_secs_f64(back).unwrap_or(Time::ZERO)
+        };
+        format.seek(
+            SeekMode::Accurate,
+            SeekTo::Time {
+                time: start,
+                track_id: Some(track_id),
+            },
+        )?;
+
+        if let Some(sync_time) = scan_sync_sample(format, track_id, codec, time_base, target)? {
+            format.seek(
+                SeekMode::Coarse,
+                SeekTo::Time {
+                    time: sync_time,
+                    track_id: Some(track_id),
+                },
+            )?;
             return Ok(());
         }
 
-        let backoff = FIRST_BACKOFF_SECS * 2f64.powi(attempt as i32);
-        let back = landing_time.as_secs_f64() - backoff;
-        if back <= 0.0 {
-            // The backoff overshot the head of the stream. The start is still
-            // worth one look: a stream can hold its only sync sample in the
-            // first packet, and seeking there is exactly what unblocks it.
-            if tried_head {
-                break;
-            }
-            probe = Time::ZERO;
-            tried_head = true;
-        } else {
-            probe = Time::try_from_secs_f64(back).unwrap_or(Time::ZERO);
+        if start == Time::ZERO {
+            break;
         }
+        probe = start;
+        window *= 2.0;
     }
+
     log::warn!("no sync sample at or before the seek target; video may not resume");
     Ok(())
+}
+
+fn next_video_packet(
+    format: &mut dyn symphonia::core::formats::FormatReader,
+    track_id: u32,
+    codec: VideoCodecKind,
+    time_base: TimeBase,
+) -> Result<Option<(Time, bool)>, symphonia::core::errors::Error> {
+    loop {
+        let packet = match format.next_packet() {
+            Ok(Some(p)) => p,
+            Ok(None) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        if packet.track_id != track_id {
+            continue;
+        }
+        let Some(time) = time_base.calc_time(packet.pts) else {
+            log::warn!("video packet PTS {:?} is not a usable seek time", packet.pts);
+            continue;
+        };
+        return Ok(Some((time, codec.packet_is_sync(&packet.data))));
+    }
+}
+
+/// Scans forward from the demuxer's current position for the last sync sample
+/// at or before `target`. Stops at the first sync sample past the target, or
+/// after a short grace period, because decode order can put a few frames
+/// behind the target after a packet past it.
+fn scan_sync_sample(
+    format: &mut dyn symphonia::core::formats::FormatReader,
+    track_id: u32,
+    codec: VideoCodecKind,
+    time_base: TimeBase,
+    target: Time,
+) -> Result<Option<Time>, symphonia::core::errors::Error> {
+    let grace = target.as_secs_f64() + 2.0;
+    let mut last = None;
+    loop {
+        let packet = match format.next_packet() {
+            Ok(Some(p)) => p,
+            Ok(None) => return Ok(last),
+            Err(e) => return Err(e),
+        };
+        if packet.track_id != track_id {
+            continue;
+        }
+        let Some(time) = time_base.calc_time(packet.pts) else {
+            continue;
+        };
+        if codec.packet_is_sync(&packet.data) {
+            if time <= target {
+                last = Some(time);
+            } else {
+                return Ok(last);
+            }
+        } else if time.as_secs_f64() > grace {
+            return Ok(last);
+        }
+    }
 }
 
 fn perform_seek(
