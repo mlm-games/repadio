@@ -1,3 +1,8 @@
+## v0.4.7
+
+- No user-facing changes were mentioned since previous release
+
+
 ## v0.4.6
 
 - No user-facing changes were mentioned since previous release
