@@ -1,3 +1,8 @@
+## v0.4.6
+
+- No user-facing changes were mentioned since previous release
+
+
 ## v0.4.5
 
 - seek to sync samples with the container index
