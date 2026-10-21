@@ -1,3 +1,9 @@
+## v0.4.5
+
+- seek to sync samples with the container index
+- bump videoson for hevc 4:2:2/4:4:4
+
+
 ## v0.4.4
 
 - keep the seek intent and stop demoting vaapi to software

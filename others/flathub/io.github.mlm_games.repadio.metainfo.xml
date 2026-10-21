@@ -64,6 +64,14 @@
     <control>touch</control>
   </supports>
   <releases>
+    <release version="0.4.5" date="2026-10-21" type="stable">
+      <description>
+        <ul>
+          <li>seek to sync samples with the container index</li>
+          <li>bump videoson for hevc 4:2:2/4:4:4</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.4.4" date="2026-10-16" type="stable">
       <description>
         <ul>

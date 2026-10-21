@@ -1,0 +1,2 @@
+- seek to sync samples with the container index
+- bump videoson for hevc 4:2:2/4:4:4
