@@ -1,5 +1,3 @@
-use oxideav_bitstream::h264::ebsp_to_rbsp;
-use oxideav_h264 as h264;
 use repose_core::color::{ChromaSiting, ColorInfo, ColorRange, MatrixCoeffs, Primaries, Transfer};
 
 /// Colour used when the stream carries no colour description.
@@ -104,35 +102,7 @@ pub fn vpcc_color_info(data: &[u8]) -> ColorInfo {
 }
 
 fn vpcc_colour(data: &[u8]) -> Option<ColorInfo> {
-    if data.len() < 10 {
-        return None;
-    }
-    let packed = data[6];
-    Some(signalled(
-        Some((data[7], data[8], data[9])),
-        packed & 0x01 == 1,
-    ))
-}
-
-/// The first SPS (NAL type 7) an `AVCDecoderConfigurationRecord` (ISO/IEC
-/// 14496-15 §5.3.3.1) carries.
-pub(crate) fn avcc_sps(data: &[u8]) -> Option<h264::sps::Sps> {
-    if data.len() < 7 || data[0] != 1 {
-        return None;
-    }
-    let num_sps = usize::from(data[5] & 0x1F);
-    let mut pos = 6;
-    for _ in 0..num_sps {
-        let len = usize::from(u16::from_be_bytes([*data.get(pos)?, *data.get(pos + 1)?]));
-        pos += 2;
-        let nal = data.get(pos..pos.checked_add(len)?)?;
-        pos += len;
-        if nal.is_empty() || nal[0] & 0x1F != 7 {
-            continue;
-        }
-        return h264::sps::Sps::parse(ebsp_to_rbsp(nal).get(1..)?).ok();
-    }
-    None
+    videoson_color_info(videoson::color::vpcc_color(data)?)
 }
 
 /// Colour described by an `AVCDecoderConfigurationRecord` (ISO/IEC 14496-15
@@ -142,16 +112,7 @@ pub fn avcc_color_info(data: &[u8]) -> ColorInfo {
 }
 
 fn avcc_colour(data: &[u8]) -> Option<ColorInfo> {
-    let signal = avcc_sps(data)?.vui?.video_signal_type?;
-    let d = signal.colour_description?;
-    Some(signalled(
-        Some((
-            d.colour_primaries,
-            d.transfer_characteristics,
-            d.matrix_coefficients,
-        )),
-        signal.video_full_range_flag,
-    ))
+    videoson_color_info(videoson::color::avcc_color(data)?)
 }
 
 /// Colour described by an `HEVCDecoderConfigurationRecord` (ISO/IEC 14496-15
@@ -161,29 +122,7 @@ pub fn hvcc_color_info(data: &[u8]) -> ColorInfo {
 }
 
 fn hvcc_colour(data: &[u8]) -> Option<ColorInfo> {
-    let record = oxideav_h265::hvcc::parse_hvcc(data).ok()?;
-    let sps = record
-        .nal_units
-        .iter()
-        .find(|n| n.header.nal_unit_type == 33)?;
-    let sps = oxideav_h265::sps::SeqParameterSet::parse(&sps.rbsp).ok()?;
-    let signal = sps
-        .vui_parameters
-        .as_ref()
-        .and_then(|v| v.video_signal_type);
-    let colour = signal.as_ref().and_then(|s| {
-        s.colour_description.as_ref().map(|c| {
-            (
-                c.colour_primaries,
-                c.transfer_characteristics,
-                c.matrix_coeffs,
-            )
-        })
-    });
-    Some(signalled(
-        colour,
-        signal.is_some_and(|s| s.video_full_range_flag),
-    ))
+    videoson_color_info(videoson::color::hvcc_color(data)?)
 }
 
 /// Colour reported by a software decoder on the frame itself.
@@ -206,7 +145,51 @@ pub fn videoson_color_info(color: videoson::ColorInfo) -> Option<ColorInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxideav_bitstream::bit_writer::BitWriter;
+
+    struct BitWriter {
+        bytes: Vec<u8>,
+        bits: usize,
+    }
+
+    impl BitWriter {
+        fn new() -> Self {
+            Self {
+                bytes: Vec::new(),
+                bits: 0,
+            }
+        }
+
+        fn write_bit(&mut self, value: u32) {
+            if self.bits % 8 == 0 {
+                self.bytes.push(0);
+            }
+            if value & 1 != 0 {
+                let index = self.bytes.len() - 1;
+                self.bytes[index] |= 1 << (7 - self.bits % 8);
+            }
+            self.bits += 1;
+        }
+
+        fn write_bits(&mut self, value: u32, count: u32) {
+            for shift in (0..count).rev() {
+                self.write_bit((value >> shift) & 1);
+            }
+        }
+
+        fn write_ue(&mut self, value: u32) -> Result<(), ()> {
+            let code = value + 1;
+            let count = 32 - code.leading_zeros();
+            for _ in 1..count {
+                self.write_bit(0);
+            }
+            self.write_bits(code, count);
+            Ok(())
+        }
+
+        fn finish(self) -> Vec<u8> {
+            self.bytes
+        }
+    }
 
     const HVCC: &[u8] = &[
         0x01, 0x01, 0x60, 0x00, 0x00, 0x00, 0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5d, 0xf0, 0x00,
@@ -299,8 +282,8 @@ mod tests {
     }
 
     #[test]
-    fn hvcc_extradata_reaches_the_vui() {
-        assert_eq!(hvcc_colour(HVCC), Some(fallback_color_info()));
+    fn hvcc_without_a_video_signal_type_uses_the_fallback() {
+        assert_eq!(hvcc_color_info(HVCC), fallback_color_info());
     }
 
     #[test]

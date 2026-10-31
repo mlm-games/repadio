@@ -6,8 +6,7 @@ use anyhow::Result;
 use repose_core::color::ColorInfo;
 
 use crate::color::{
-    avcc_color_info, avcc_sps, fallback_color_info, hvcc_color_info, videoson_color_info,
-    vpcc_color_info,
+    avcc_color_info, fallback_color_info, hvcc_color_info, videoson_color_info, vpcc_color_info,
 };
 use videoson::{
     NalFormat, VideoCodecParams, VideoDecoder as VideoDecoderTrait, VideoDecoderOptions,
@@ -613,12 +612,9 @@ const MAX_REORDER_DEPTH: usize = 16;
 /// codec: videoson emits VP8/VP9/AV1 and H.265 in display order already, so a
 /// hold-back would only add latency. `test_pts_monotonic` pins the H.265 case.
 fn avcc_reorder_depth(extradata: &[u8]) -> usize {
-    let depth = avcc_sps(extradata)
-        .and_then(|sps| sps.vui)
-        .and_then(|vui| vui.bitstream_restriction)
-        .map(|r| r.max_num_reorder_frames as usize)
-        .unwrap_or(0);
-    depth.min(MAX_REORDER_DEPTH)
+    videoson::codec_h264::avcc_reorder_depth(extradata)
+        .unwrap_or(0)
+        .min(MAX_REORDER_DEPTH)
 }
 
 pub struct VideoDecoder {
