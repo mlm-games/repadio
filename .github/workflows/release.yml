@@ -65,11 +65,11 @@ jobs:
       kotlin-version: '2.2.10'
       include-android: true
       include-universal: true
-      play-track: ${{ inputs.play_track }}
+      play-track: ${{ github.event.inputs.play_track || 'production' }}
       play-package-name: "org.mlm.repadio"
-      prerelease: ${{ inputs.mark_prerelease }}
-      bump-type: ${{ inputs.bump_type }}
-      generate-release-notes: true
+      prerelease: ${{ github.event.inputs.mark_prerelease == 'true' }}
+      bump-type: ${{ github.event.inputs.bump_type || 'none' }}
+      generate-release-notes: ${{ github.event_name == 'workflow_dispatch' }}
       changelog-path: 'CHANGELOG.md'
       version-file-path: './fastlane/metadata/android/en-US/changelogs/{{version_code}}.txt'
       metainfo-path: './others/flathub/io.github.mlm_games.repadio.metainfo.xml'
